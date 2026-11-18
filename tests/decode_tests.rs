@@ -60,8 +60,11 @@ fn nmt_sync_time_lss() {
     // 12:00:00.000 = 43,200,000 ms, day 1.
     let t = d(0x100, &[0x00, 0x2E, 0x93, 0x02, 0x01, 0x00]);
     assert!(t.text.starts_with("TIME 12:00:00.000 day 1"), "{}", t.text);
-    assert_eq!(d(0x7E5, &[0x04, 1]).text, "LSS master request cs 0x04");
-    assert_eq!(d(0x7E4, &[0x44]).text, "LSS slave response cs 0x44");
+    assert_eq!(d(0x7E5, &[0x04, 1]).text, "LSS switch state global configuration");
+    assert_eq!(d(0x7E4, &[0x5E, 7]).text, "LSS node-ID = 7");
+    assert_eq!(d(0x7E5, &[0x77]).text, "LSS master request cs 0x77");
+    assert_eq!(d(0x7E4, &[0x44]).text, "LSS switch state selective confirmed");
+    assert_eq!(d(0x7E4, &[0x77]).text, "LSS slave response cs 0x77");
 }
 
 #[test]

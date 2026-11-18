@@ -374,7 +374,7 @@ impl Worker {
             if self.sdo.is_busy() {
                 // No abort frame: the channel is closed.
                 let out = self.sdo.cancel();
-                self.handle_sdo_output(SdoOutput { tx: None, done: out.done });
+                self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
             }
             if let Some(s) = self.scan.take() {
                 self.emit(BusEvent::ScanFinished { cancelled: true, found: s.found });
@@ -404,6 +404,9 @@ impl Worker {
 
     fn handle_sdo_output(&mut self, out: SdoOutput) {
         if let Some(f) = out.tx {
+            self.transmit(f);
+        }
+        for f in out.burst {
             self.transmit(f);
         }
         let Some(done) = out.done else { return };
@@ -442,7 +445,7 @@ impl Worker {
                     self.running = Running::Job(j.tag);
                     if !self.transmit(f) {
                         let out = self.sdo.cancel();
-                        self.handle_sdo_output(SdoOutput { tx: None, done: out.done });
+                        self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
                     }
                 }
                 Err(e) => {
@@ -468,7 +471,7 @@ impl Worker {
             self.running = Running::Scan(node);
             if !self.transmit(f) {
                 let out = self.sdo.cancel();
-                self.handle_sdo_output(SdoOutput { tx: None, done: out.done });
+                self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
             }
         }
     }

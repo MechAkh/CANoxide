@@ -98,30 +98,92 @@ pub fn classify(id: u32, extended: bool) -> (MsgClass, Option<u8>, String) {
 
 /// Assigned dictionaries per node and the PDO lookup by COB-ID.
 #[derive(Clone, Default)]
+///
+/// The PDO lookup comes from the EDS defaults of each assigned node, unless
+/// a PDO configuration read from the device was set for the node
+/// (`set_node_pdos`): that one is used instead of the EDS defaults, also for
+/// a node without an EDS.
 pub struct DecodeContext {
     pub nodes: HashMap<u8, Arc<ObjectDictionary>>,
+    overrides: HashMap<u8, Vec<PdoConfig>>,
     pdos: HashMap<u32, (u8, PdoConfig)>,
+}
+
+fn put_pdo(pdos: &mut HashMap<u32, (u8, PdoConfig)>, node: u8, c: PdoConfig) {
+    if c.extended || c.mapping.is_empty() {
+        return;
+    }
+    match pdos.get(&c.cob_id) {
+        Some((_, old)) if old.valid || !c.valid => {}
+        _ => {
+            pdos.insert(c.cob_id, (node, c));
+        }
+    }
 }
 
 impl DecodeContext {
     pub fn new(nodes: HashMap<u8, Arc<ObjectDictionary>>) -> Self {
+        let mut c = DecodeContext { nodes, overrides: HashMap::new(), pdos: HashMap::new() };
+        c.rebuild();
+        c
+    }
+
+    fn rebuild(&mut self) {
         let mut pdos: HashMap<u32, (u8, PdoConfig)> = HashMap::new();
-        let mut ids: Vec<u8> = nodes.keys().copied().collect();
+        let mut ids: Vec<u8> = self.nodes.keys().copied().filter(|n| !self.overrides.contains_key(n)).collect();
         ids.sort_unstable();
         for node in ids {
-            for c in configs_from_od(&nodes[&node], node) {
-                if c.extended || c.mapping.is_empty() {
-                    continue;
-                }
-                match pdos.get(&c.cob_id) {
-                    Some((_, old)) if old.valid || !c.valid => {}
-                    _ => {
-                        pdos.insert(c.cob_id, (node, c));
-                    }
-                }
+            for c in configs_from_od(&self.nodes[&node], node) {
+                put_pdo(&mut pdos, node, c);
             }
         }
-        DecodeContext { nodes, pdos }
+        // Read configurations win over EDS defaults.
+        let mut read: HashMap<u32, (u8, PdoConfig)> = HashMap::new();
+        let mut ids: Vec<u8> = self.overrides.keys().copied().collect();
+        ids.sort_unstable();
+        for node in ids {
+            for c in &self.overrides[&node] {
+                put_pdo(&mut read, node, c.clone());
+            }
+        }
+        pdos.extend(read);
+        self.pdos = pdos;
+    }
+
+    /// Replace the assigned dictionaries (keeps the read PDO configurations).
+    pub fn set_nodes(&mut self, nodes: HashMap<u8, Arc<ObjectDictionary>>) {
+        self.nodes = nodes;
+        self.rebuild();
+    }
+
+    /// Decode the PDOs of `node` with this configuration (read from the device).
+    pub fn set_node_pdos(&mut self, node: u8, pdos: Vec<PdoConfig>) {
+        self.overrides.insert(node, pdos);
+        self.rebuild();
+    }
+
+    /// Back to the EDS defaults for `node`.
+    pub fn clear_node_pdos(&mut self, node: u8) {
+        if self.overrides.remove(&node).is_some() {
+            self.rebuild();
+        }
+    }
+
+    /// The read PDO configuration set for `node`.
+    pub fn node_pdos(&self, node: u8) -> Option<&[PdoConfig]> {
+        self.overrides.get(&node).map(|v| v.as_slice())
+    }
+
+    /// Nodes with a read PDO configuration, sorted.
+    pub fn nodes_with_read_pdos(&self) -> Vec<u8> {
+        let mut v: Vec<u8> = self.overrides.keys().copied().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Data type of an object of the node's assigned EDS.
+    pub fn entry_type(&self, node: u8, index: u16, sub: u8) -> Option<DataType> {
+        self.dtype_of(Some(node), index, sub)
     }
 
     pub fn pdo(&self, cob: u32) -> Option<&(u8, PdoConfig)> {
@@ -176,13 +238,7 @@ pub fn decode(f: &CanFrame, ctx: &DecodeContext) -> Decoded {
                 s
             }
         }
-        MsgClass::Lss => {
-            let who = if f.id == COB_LSS_MASTER { "LSS master request" } else { "LSS slave response" };
-            match d.first() {
-                Some(cs) => format!("{who} cs 0x{cs:02X}"),
-                None => who.to_string(),
-            }
-        }
+        MsgClass::Lss => super::lss::lss_text(f.id == COB_LSS_MASTER, d),
         MsgClass::Other => String::new(),
     };
     Decoded { class, node, label, text }
@@ -354,8 +410,19 @@ fn sdo_text(f: &CanFrame, request: bool, node: Option<u8>, ctx: &DecodeContext) 
             }
             2 => with_name(format!("SDO upload req {r}"), ctx, node, index, sub),
             3 => format!("SDO upload segment req t={}", (d[0] >> 4) & 1),
-            5 => "SDO block upload (not decoded)".to_string(),
-            6 => "SDO block download (not decoded)".to_string(),
+            5 => match d[0] & 0x03 {
+                0 => with_name(format!("SDO block upload init {r} blksize {} pst {}{}", d[4], d[5], crc_flag(d[0])), ctx, node, index, sub),
+                3 => "SDO block upload start".to_string(),
+                2 => format!("SDO block upload ack seq {} blksize {}", d[1], d[2]),
+                _ => "SDO block upload end resp".to_string(),
+            },
+            6 => {
+                if d[0] & 0x01 == 0 {
+                    with_name(format!("SDO block download init {r}{}{}", block_size_text(&d), crc_flag(d[0])), ctx, node, index, sub)
+                } else {
+                    block_end_text("download", &d)
+                }
+            }
             _ => format!("SDO request cs {cs}"),
         }
     } else {
@@ -378,9 +445,120 @@ fn sdo_text(f: &CanFrame, request: bool, node: Option<u8>, ctx: &DecodeContext) 
             }
             3 => with_name(format!("SDO download resp {r} OK"), ctx, node, index, sub),
             1 => format!("SDO download segment resp t={}", (d[0] >> 4) & 1),
-            5 | 6 => "SDO block transfer (not decoded)".to_string(),
+            5 => match d[0] & 0x03 {
+                0 => with_name(format!("SDO block download init resp {r} blksize {}{}", d[4], crc_flag(d[0])), ctx, node, index, sub),
+                2 => format!("SDO block download ack seq {} blksize {}", d[1], d[2]),
+                _ => "SDO block download end resp OK".to_string(),
+            },
+            6 => {
+                if d[0] & 0x01 == 0 {
+                    with_name(format!("SDO block upload init resp {r}{}{}", block_size_text(&d), crc_flag(d[0])), ctx, node, index, sub)
+                } else {
+                    block_end_text("upload", &d)
+                }
+            }
             _ => format!("SDO response cs {cs}"),
         }
+    }
+}
+
+fn crc_flag(b0: u8) -> &'static str {
+    if b0 & 0x04 != 0 {
+        " CRC"
+    } else {
+        ""
+    }
+}
+
+fn block_size_text(d: &[u8; 8]) -> String {
+    if d[0] & 0x02 != 0 {
+        format!(" size {}", u32::from_le_bytes([d[4], d[5], d[6], d[7]]))
+    } else {
+        String::new()
+    }
+}
+
+fn block_end_text(dir: &str, d: &[u8; 8]) -> String {
+    format!("SDO block {dir} end, {} bytes unused, CRC 0x{:04X}", (d[0] >> 2) & 7, u16::from_le_bytes([d[1], d[2]]))
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BlockState {
+    /// Client sends sub-block segments (block download).
+    client_segs: bool,
+    /// Server sends sub-block segments (block upload).
+    server_segs: bool,
+    /// The last segment of the transfer was seen; the next frame is the end.
+    last_seen: bool,
+}
+
+/// Stateful SDO decoder that labels the sub-block segments of a block
+/// transfer, which a single frame cannot tell from other SDO frames.
+/// Feed it every frame in order (both directions).
+#[derive(Clone, Debug, Default)]
+pub struct SdoBlockTracker {
+    nodes: HashMap<u8, BlockState>,
+}
+
+impl SdoBlockTracker {
+    pub fn new() -> Self {
+        SdoBlockTracker::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.nodes.clear();
+    }
+
+    /// Decode one frame (like `decode`), with the block state.
+    pub fn decode(&mut self, f: &CanFrame, ctx: &DecodeContext) -> Decoded {
+        let mut dec = decode(f, ctx);
+        let request = dec.class == MsgClass::SdoReq;
+        if !(request || dec.class == MsgClass::SdoResp) || f.dlc < 1 {
+            return dec;
+        }
+        let Some(node) = dec.node else { return dec };
+        let st = self.nodes.entry(node).or_default();
+        let b0 = f.data[0];
+        let seg_dir = if request { st.client_segs } else { st.server_segs };
+        if seg_dir && !st.last_seen {
+            let seq = b0 & 0x7F;
+            let last = b0 & 0x80 != 0;
+            let what = if request { "download" } else { "upload" };
+            dec.text = format!("SDO block {what} segment seq {seq}{} {}", if last { " last" } else { "" }, types::hex_bytes(&f.data[1..8]));
+            if last {
+                st.last_seen = true;
+            }
+            return dec;
+        }
+        let cs = b0 >> 5;
+        if cs == 4 {
+            self.nodes.remove(&node);
+            return dec;
+        }
+        match (request, cs) {
+            // Client block download init: wait for the server's init resp.
+            (true, 6) if b0 & 0x01 == 0 => *st = BlockState::default(),
+            // Server block download init resp or ack: client sends segments.
+            (false, 5) if b0 & 0x03 == 0 => *st = BlockState { client_segs: true, ..BlockState::default() },
+            // After the ack of the last sub-block the end follows.
+            (false, 5) if b0 & 0x03 == 2 => st.client_segs = !st.last_seen,
+            (true, 6) if b0 & 0x01 == 1 => {
+                self.nodes.remove(&node);
+            }
+            (false, 5) => {
+                self.nodes.remove(&node);
+            }
+            // Block upload: client start or ack starts server segments.
+            (true, 5) if b0 & 0x03 == 3 => *st = BlockState { server_segs: true, ..BlockState::default() },
+            (true, 5) if b0 & 0x03 == 2 => st.server_segs = !st.last_seen,
+            (true, 5) if b0 & 0x03 == 1 => {
+                self.nodes.remove(&node);
+            }
+            (true, 5) => *st = BlockState::default(),
+            (false, 6) if b0 & 0x01 == 1 => st.server_segs = false,
+            _ => {}
+        }
+        dec
     }
 }
 

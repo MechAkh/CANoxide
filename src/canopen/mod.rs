@@ -2,9 +2,11 @@
 //! NMT and PDO mapping. No I/O in here.
 
 pub mod decode;
+pub mod lss;
 pub mod nmt;
 pub mod pdo;
 pub mod sdo;
+pub mod task;
 pub mod types;
 
 pub const COB_NMT: u32 = 0x000;

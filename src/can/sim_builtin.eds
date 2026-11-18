@@ -25,7 +25,7 @@ SupportedObjects=3
 3=0x1018
 
 [OptionalObjects]
-SupportedObjects=10
+SupportedObjects=11
 1=0x1008
 2=0x1009
 3=0x100A
@@ -36,9 +36,10 @@ SupportedObjects=10
 8=0x1801
 9=0x1A00
 10=0x1A01
+11=0x1010
 
 [ManufacturerObjects]
-SupportedObjects=7
+SupportedObjects=8
 1=0x2000
 2=0x2001
 3=0x2002
@@ -46,6 +47,7 @@ SupportedObjects=7
 5=0x6000
 6=0x6200
 7=0x2004
+8=0x2100
 
 [1000]
 ParameterName=Device type
@@ -93,6 +95,27 @@ ObjectType=0x7
 DataType=0x0006
 AccessType=rw
 DefaultValue=1000
+PDOMapping=0
+
+[1010]
+ParameterName=Store parameters
+ObjectType=0x8
+SubNumber=2
+
+[1010sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=1
+PDOMapping=0
+
+[1010sub1]
+ParameterName=Save all parameters
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0x00000001
 PDOMapping=0
 
 [1018]
@@ -172,7 +195,7 @@ PDOMapping=0
 [1600]
 ParameterName=RPDO1 mapping parameter
 ObjectType=0x9
-SubNumber=3
+SubNumber=9
 
 [1600sub0]
 ParameterName=Number of mapped objects
@@ -196,6 +219,54 @@ ObjectType=0x7
 DataType=0x0007
 AccessType=rw
 DefaultValue=0x62000208
+PDOMapping=0
+
+[1600sub3]
+ParameterName=Mapped object 3
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1600sub4]
+ParameterName=Mapped object 4
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1600sub5]
+ParameterName=Mapped object 5
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1600sub6]
+ParameterName=Mapped object 6
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1600sub7]
+ParameterName=Mapped object 7
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1600sub8]
+ParameterName=Mapped object 8
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
 PDOMapping=0
 
 [1800]
@@ -246,14 +317,14 @@ PDOMapping=0
 [1801]
 ParameterName=TPDO2 communication parameter
 ObjectType=0x9
-SubNumber=5
+SubNumber=6
 
 [1801sub0]
 ParameterName=Highest sub-index supported
 ObjectType=0x7
 DataType=0x0005
 AccessType=ro
-DefaultValue=5
+DefaultValue=6
 PDOMapping=0
 
 [1801sub1]
@@ -288,10 +359,18 @@ AccessType=rw
 DefaultValue=1000
 PDOMapping=0
 
+[1801sub6]
+ParameterName=SYNC start value
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
 [1A00]
 ParameterName=TPDO1 mapping parameter
 ObjectType=0x9
-SubNumber=3
+SubNumber=9
 
 [1A00sub0]
 ParameterName=Number of mapped objects
@@ -317,10 +396,58 @@ AccessType=rw
 DefaultValue=0x60000208
 PDOMapping=0
 
+[1A00sub3]
+ParameterName=Mapped object 3
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A00sub4]
+ParameterName=Mapped object 4
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A00sub5]
+ParameterName=Mapped object 5
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A00sub6]
+ParameterName=Mapped object 6
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A00sub7]
+ParameterName=Mapped object 7
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A00sub8]
+ParameterName=Mapped object 8
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
 [1A01]
 ParameterName=TPDO2 mapping parameter
 ObjectType=0x9
-SubNumber=3
+SubNumber=9
 
 [1A01sub0]
 ParameterName=Number of mapped objects
@@ -344,6 +471,54 @@ ObjectType=0x7
 DataType=0x0007
 AccessType=rw
 DefaultValue=0x20020020
+PDOMapping=0
+
+[1A01sub3]
+ParameterName=Mapped object 3
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A01sub4]
+ParameterName=Mapped object 4
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A01sub5]
+ParameterName=Mapped object 5
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A01sub6]
+ParameterName=Mapped object 6
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A01sub7]
+ParameterName=Mapped object 7
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+
+[1A01sub8]
+ParameterName=Mapped object 8
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
 PDOMapping=0
 
 [2000]
@@ -385,6 +560,13 @@ ObjectType=0x7
 DataType=0x0005
 AccessType=wo
 DefaultValue=0
+PDOMapping=0
+
+[2100]
+ParameterName=Large data block
+ObjectType=0x7
+DataType=0x000F
+AccessType=rw
 PDOMapping=0
 
 [6000]
