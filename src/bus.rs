@@ -1,19 +1,36 @@
 //! Bus worker thread. It owns the adapter, receives and timestamps frames,
-//! drives the SDO client, the node scan and the cyclic frames, tracks the
-//! node states, and talks to the UI through channels. The UI never blocks
-//! on the bus.
+//! drives the SDO client, SDO tasks (PDO read/apply, node info, DCF), the
+//! node scan, SDO signal polling, the LSS master and the transmit list,
+//! tracks node states, bus load and the network overview, writes the
+//! continuous trace log, and talks to the UI through channels. The UI
+//! never blocks on the bus.
 //!
 //! Nothing is sent unless a command asks for it: `Connect` only opens the
-//! channel.
+//! channel. SDO signal polling sends only after `SetSignalPolling(true)`.
+//! In listen-only mode every sending command is refused.
+//!
+//! SDO priority: user requests (`Sdo`) first, then the scan, then tasks,
+//! then signal polls. One request at a time.
 
+use crate::busload::{BusLoad, BusLoadStats};
 use crate::can::pcan::PcanAdapter;
 use crate::can::sim::{SimAdapter, SimNode};
 use crate::can::{Bitrate, CanAdapter, CanFrame, ChannelInfo, Dir};
+use crate::canopen::decode::{DecodeContext, SdoBlockTracker};
+use crate::canopen::lss::{LssCommand, LssError, LssMaster, LssOutput, LssResult};
 use crate::canopen::nmt::{nmt_frame, sync_frame, NmtCommand, NodeTracker};
-use crate::canopen::sdo::{SdoClient, SdoError, SdoOutcome, SdoOutput, SdoRequest};
+use crate::canopen::pdo::NodePdoConfig;
+use crate::canopen::sdo::{SdoClient, SdoError, SdoOutcome, SdoOutput, SdoRequest, StartOptions};
+use crate::canopen::task::{SdoTask, StepsTask, TaskResult};
+use crate::canopen::types::DisplayMode;
 use crate::eds::ObjectDictionary;
+use crate::netinfo::{heartbeat_steps, NetworkOverview, NodeInfoTask};
 use crate::settings::AdapterKind;
-use std::collections::VecDeque;
+use crate::signals::{PollRequest, SignalStore};
+use crate::trace::{TraceEntry, TraceFilter, TraceLogger};
+use crate::txlist::{Trigger, TxEntry, TxList};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -29,9 +46,13 @@ pub enum BusCommand {
     Connect { adapter: AdapterChoice, channel: u32, bitrate: Bitrate, listen_only: bool },
     Disconnect,
     Send(CanFrame),
+    /// A periodic frame. It is an entry of the transmit list with this key
+    /// (the keys share one name space with `TxUpsert`).
     StartCyclic { key: u64, frame: CanFrame, period_ms: u64 },
     StopCyclic(u64),
     Sdo { tag: u64, node: u8, req: SdoRequest },
+    /// An SDO request with a transfer mode / timeout (`StartOptions`).
+    SdoOpts { tag: u64, node: u8, req: SdoRequest, opts: StartOptions },
     /// Drop the queued SDO jobs and abort the running one.
     CancelSdo,
     Nmt { cmd: NmtCommand, node: u8 },
@@ -39,7 +60,49 @@ pub enum BusCommand {
     Scan { from: u8, to: u8, timeout_ms: u64 },
     CancelScan,
     SetSdoTimeout(u64),
+    /// Block size the SDO client offers on a block transfer (1..127).
+    SetSdoBlockSize(u8),
     SimEmcy { code: u16, reg: u8 },
+    // ---- v0.2 ----
+    /// Queue a multi-step SDO task (PDO read/apply, node info, DCF, ...).
+    /// Ends with `TaskDone`; progress in `TaskProgress` and `Shared::task`.
+    Task { tag: u64, task: Box<dyn SdoTask> },
+    /// Cancel a queued or running task (it ends with its partial result).
+    CancelTask(u64),
+    /// Read 0x1000, 0x1001, 0x1018, 0x1008 of these nodes (`None`: every
+    /// node of the network overview). A task.
+    RefreshNodeInfo { tag: u64, nodes: Option<Vec<u8>> },
+    /// Write 0x1017 = `ms` on these nodes (`None`: every known node). A task.
+    SetHeartbeatAll { tag: u64, ms: u16, nodes: Option<Vec<u8>> },
+    /// EDS of each node for the worker decoder (signals, trace log).
+    SetDecodeNodes(HashMap<u8, Arc<ObjectDictionary>>),
+    /// Use a PDO configuration (read earlier, from the library) for the
+    /// decoder instead of the EDS defaults of that node.
+    SetNodePdos(NodePdoConfig),
+    /// Back to the EDS defaults for this node.
+    ClearNodePdos(u8),
+    /// Allow (true) or stop SDO signal polling. Off after `Connect`.
+    SetSignalPolling(bool),
+    /// One LSS service. Ends with `LssDone`.
+    Lss { tag: u64, cmd: LssCommand },
+    CancelLss,
+    SetLssTimeout(u64),
+    /// Transmit list: add or replace an entry (does not start it).
+    TxUpsert(TxEntry),
+    TxRemove(u64),
+    /// Start a periodic / on-receive entry (refused in listen-only).
+    TxStart(u64),
+    TxStop(u64),
+    TxStopAll,
+    /// Send an entry once.
+    TxFire(u64),
+    /// Replace the whole list (all entries stopped).
+    TxLoad(Vec<TxEntry>),
+    /// Start the continuous trace log to a CSV file (export columns).
+    StartLog { path: PathBuf, mode: DisplayMode, filter: Option<TraceFilter> },
+    StopLog,
+    /// Reset the bus load peak and average.
+    ResetBusLoad,
     Shutdown,
 }
 
@@ -54,6 +117,15 @@ pub enum BusEvent {
     SdoDone { tag: u64, outcome: SdoOutcome },
     ScanFound { node: u8, result: Result<u32, String> },
     ScanFinished { cancelled: bool, found: usize },
+    // ---- v0.2 ----
+    TaskProgress { tag: u64, done: usize, total: Option<usize> },
+    TaskDone { tag: u64, result: TaskResult },
+    /// A task read a PDO configuration; the worker decoder uses it now.
+    PdoConfigRead(NodePdoConfig),
+    LssDone { tag: u64, result: Result<LssResult, LssError> },
+    LogStarted { path: PathBuf },
+    /// The log ended (`StopLog`, disconnect, or a write error).
+    LogStopped { path: PathBuf, rows: u64, error: Option<String> },
 }
 
 /// State the UI reads (locked briefly).
@@ -68,6 +140,22 @@ pub struct Shared {
     pub scan: Option<(usize, usize)>,
     pub now_us: u64,
     pub sdo_queue: usize,
+    // ---- v0.2 ----
+    pub bus_load: BusLoadStats,
+    pub network: NetworkOverview,
+    /// PDO configurations in use by the worker decoder, by node.
+    pub pdo_configs: BTreeMap<u8, NodePdoConfig>,
+    /// Running task: (tag, label, done, total).
+    pub task: Option<(u64, String, usize, Option<usize>)>,
+    /// Queued tasks (not counting the running one).
+    pub task_queue: usize,
+    /// (done, total) of a running LSS service.
+    pub lss: Option<(usize, usize)>,
+    /// Copy of the transmit list (with `enabled` = running).
+    pub txlist: Vec<TxEntry>,
+    pub signal_polling: bool,
+    /// Path and rows of the running trace log.
+    pub log: Option<(PathBuf, u64)>,
 }
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -76,6 +164,9 @@ pub struct BusHandle {
     tx: Sender<BusCommand>,
     rx: Receiver<BusEvent>,
     pub shared: Arc<Mutex<Shared>>,
+    /// Signal store fed by the worker (PDO and raw signals from every
+    /// frame, SDO polls). The UI adds/removes signals and reads slices.
+    pub signals: Arc<Mutex<SignalStore>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -84,12 +175,14 @@ impl BusHandle {
         let (ctx, crx) = mpsc::channel();
         let (etx, erx) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared { status: "not connected".to_string(), ..Default::default() }));
+        let signals = Arc::new(Mutex::new(SignalStore::default()));
         let sh = shared.clone();
+        let sg = signals.clone();
         let thread = std::thread::Builder::new()
             .name("bus".to_string())
-            .spawn(move || Worker::new(etx, sh, waker).run(crx))
+            .spawn(move || Worker::new(etx, sh, sg, waker).run(crx))
             .ok();
-        BusHandle { tx: ctx, rx: erx, shared, thread }
+        BusHandle { tx: ctx, rx: erx, shared, signals, thread }
     }
 
     pub fn send(&self, c: BusCommand) {
@@ -114,6 +207,7 @@ struct Job {
     tag: u64,
     node: u8,
     req: SdoRequest,
+    opts: StartOptions,
 }
 
 struct Scan {
@@ -125,22 +219,23 @@ struct Scan {
     timeout_ms: u64,
 }
 
-struct Cyclic {
-    key: u64,
-    frame: CanFrame,
-    period_ms: u64,
-    next_ms: u64,
-}
-
 enum Running {
     None,
     Job(u64),
     Scan(u8),
+    /// A step of the front task.
+    Task,
+    Poll(u64),
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 struct Worker {
     events: Sender<BusEvent>,
     shared: Arc<Mutex<Shared>>,
+    signals: Arc<Mutex<SignalStore>>,
     waker: Waker,
     adapter: Option<Box<dyn CanAdapter>>,
     listen_only: bool,
@@ -149,7 +244,17 @@ struct Worker {
     jobs: VecDeque<Job>,
     running: Running,
     scan: Option<Scan>,
-    cyclic: Vec<Cyclic>,
+    tasks: VecDeque<(u64, Box<dyn SdoTask>)>,
+    polling: bool,
+    polls: VecDeque<PollRequest>,
+    lss: LssMaster,
+    lss_tag: Option<u64>,
+    txlist: TxList,
+    decode: DecodeContext,
+    block: SdoBlockTracker,
+    log: Option<TraceLogger>,
+    log_seq: u64,
+    load: BusLoad,
     batch: Vec<CanFrame>,
     rx_count: u64,
     fps_t: Instant,
@@ -158,10 +263,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(events: Sender<BusEvent>, shared: Arc<Mutex<Shared>>, waker: Waker) -> Worker {
+    fn new(events: Sender<BusEvent>, shared: Arc<Mutex<Shared>>, signals: Arc<Mutex<SignalStore>>, waker: Waker) -> Worker {
         Worker {
             events,
             shared,
+            signals,
             waker,
             adapter: None,
             listen_only: false,
@@ -170,7 +276,17 @@ impl Worker {
             jobs: VecDeque::new(),
             running: Running::None,
             scan: None,
-            cyclic: Vec::new(),
+            tasks: VecDeque::new(),
+            polling: false,
+            polls: VecDeque::new(),
+            lss: LssMaster::default(),
+            lss_tag: None,
+            txlist: TxList::default(),
+            decode: DecodeContext::default(),
+            block: SdoBlockTracker::new(),
+            log: None,
+            log_seq: 0,
+            load: BusLoad::new(250),
             batch: Vec::new(),
             rx_count: 0,
             fps_t: Instant::now(),
@@ -216,6 +332,7 @@ impl Worker {
             }
         }
         self.disconnect();
+        self.stop_log(None);
     }
 
     fn guard_send(&self, what: &str) -> bool {
@@ -228,6 +345,11 @@ impl Worker {
             return false;
         }
         true
+    }
+
+    fn cancelled_outcome(node: u8, req: &SdoRequest) -> SdoOutcome {
+        let (index, sub) = req.index_sub();
+        SdoOutcome { node, index, sub, upload: req.is_upload(), result: Err(SdoError::Cancelled) }
     }
 
     fn command(&mut self, c: BusCommand) {
@@ -266,15 +388,22 @@ impl Worker {
                 self.fps_t = self.t0;
                 self.rx_count = 0;
                 self.listen_only = listen_only;
+                self.load = BusLoad::new(bitrate.kbit());
+                self.block.reset();
+                self.polling = false;
+                self.polls.clear();
                 let text = format!("{} at {}{}", a.name(), bitrate.label(), if listen_only { ", listen only" } else { "" });
                 self.adapter = Some(a);
                 {
-                    let mut s = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut s = lock(&self.shared);
                     s.connected = true;
                     s.listen_only = listen_only;
                     s.nodes.clear();
+                    s.network.clear();
                     s.status = "OK".to_string();
                     s.fps = 0.0;
+                    s.bus_load = BusLoadStats::default();
+                    s.signal_polling = false;
                 }
                 self.emit(BusEvent::Connected { text, listen_only });
             }
@@ -288,27 +417,22 @@ impl Worker {
             }
             BusCommand::StartCyclic { key, frame, period_ms } => {
                 if self.guard_send("cyclic send") {
-                    self.cyclic.retain(|c| c.key != key);
-                    let next_ms = self.now_ms();
-                    self.cyclic.push(Cyclic { key, frame, period_ms: period_ms.max(1), next_ms });
+                    self.txlist.upsert(TxEntry::from_frame(key, format!("cyclic {key}"), &frame, Trigger::Periodic { period_ms: period_ms.max(1) }));
+                    let now = self.now_ms();
+                    self.txlist.start(key, now);
+                    self.update_tx_shared();
                 }
             }
-            BusCommand::StopCyclic(key) => self.cyclic.retain(|c| c.key != key),
-            BusCommand::Sdo { tag, node, req } => {
-                if !self.guard_send("SDO") {
-                    let (index, sub) = req.index_sub();
-                    let outcome = SdoOutcome { node, index, sub, upload: req.is_upload(), result: Err(SdoError::Cancelled) };
-                    self.emit(BusEvent::SdoDone { tag, outcome });
-                    return;
-                }
-                self.jobs.push_back(Job { tag, node, req });
+            BusCommand::StopCyclic(key) => {
+                self.txlist.remove(key);
+                self.update_tx_shared();
             }
+            BusCommand::Sdo { tag, node, req } => self.queue_sdo(tag, node, req, StartOptions::default()),
+            BusCommand::SdoOpts { tag, node, req, opts } => self.queue_sdo(tag, node, req, opts),
             BusCommand::CancelSdo => {
                 let dropped: Vec<Job> = self.jobs.drain(..).collect();
                 for j in dropped {
-                    let (index, sub) = j.req.index_sub();
-                    let outcome = SdoOutcome { node: j.node, index, sub, upload: j.req.is_upload(), result: Err(SdoError::Cancelled) };
-                    self.emit(BusEvent::SdoDone { tag: j.tag, outcome });
+                    self.emit(BusEvent::SdoDone { tag: j.tag, outcome: Self::cancelled_outcome(j.node, &j.req) });
                 }
                 if let Running::Job(_) = self.running {
                     let out = self.sdo.cancel();
@@ -336,40 +460,231 @@ impl Worker {
             }
             BusCommand::CancelScan => {
                 if let Some(s) = self.scan.take() {
-                    self.shared.lock().unwrap_or_else(|p| p.into_inner()).scan = None;
+                    lock(&self.shared).scan = None;
                     self.emit(BusEvent::ScanFinished { cancelled: true, found: s.found });
                 }
             }
             BusCommand::SetSdoTimeout(ms) => self.sdo.timeout_ms = ms.max(10),
+            BusCommand::SetSdoBlockSize(n) => self.sdo.block_size = n.clamp(1, crate::canopen::sdo::MAX_BLOCK_SIZE),
             BusCommand::SimEmcy { code, reg } => match self.adapter.as_mut().and_then(|a| a.as_sim()) {
                 Some(sim) => sim.send_emcy(code, reg),
                 None => self.emit(BusEvent::Error("EMCY trigger works only with the simulator".to_string())),
             },
+            BusCommand::Task { tag, task } => self.queue_task(tag, task),
+            BusCommand::CancelTask(tag) => self.cancel_task(tag),
+            BusCommand::RefreshNodeInfo { tag, nodes } => {
+                let nodes = nodes.unwrap_or_else(|| lock(&self.shared).network.known_nodes());
+                self.queue_task(tag, Box::new(NodeInfoTask::new(&nodes)));
+            }
+            BusCommand::SetHeartbeatAll { tag, ms, nodes } => {
+                let nodes = nodes.unwrap_or_else(|| lock(&self.shared).network.known_nodes());
+                let steps = heartbeat_steps(&nodes, ms);
+                self.queue_task(tag, Box::new(StepsTask::new(format!("set heartbeat {ms} ms"), steps, false)));
+            }
+            BusCommand::SetDecodeNodes(nodes) => self.decode.set_nodes(nodes),
+            BusCommand::SetNodePdos(cfg) => self.use_pdo_config(cfg),
+            BusCommand::ClearNodePdos(node) => {
+                self.decode.clear_node_pdos(node);
+                lock(&self.shared).pdo_configs.remove(&node);
+            }
+            BusCommand::SetSignalPolling(on) => {
+                if on && !self.guard_send("signal polling") {
+                    return;
+                }
+                self.polling = on;
+                if !on {
+                    self.polls.clear();
+                }
+                lock(&self.shared).signal_polling = on;
+            }
+            BusCommand::Lss { tag, cmd } => {
+                if !self.guard_send("LSS") {
+                    self.emit(BusEvent::LssDone { tag, result: Err(LssError::Cancelled) });
+                    return;
+                }
+                if self.lss.is_busy() {
+                    self.emit(BusEvent::LssDone { tag, result: Err(LssError::Busy) });
+                    return;
+                }
+                self.lss_tag = Some(tag);
+                let out = self.lss.start(cmd, self.now_ms());
+                self.handle_lss_output(out);
+            }
+            BusCommand::CancelLss => {
+                if self.lss.is_busy() {
+                    let out = self.lss.cancel();
+                    self.handle_lss_output(out);
+                }
+            }
+            BusCommand::SetLssTimeout(ms) => self.lss.timeout_ms = ms.max(1),
+            BusCommand::TxUpsert(e) => {
+                let running = self.txlist.get(e.key).is_some_and(|o| o.enabled);
+                let key = e.key;
+                self.txlist.upsert(TxEntry { enabled: false, ..e });
+                if running {
+                    let now = self.now_ms();
+                    self.txlist.start(key, now);
+                }
+                self.update_tx_shared();
+            }
+            BusCommand::TxRemove(key) => {
+                self.txlist.remove(key);
+                self.update_tx_shared();
+            }
+            BusCommand::TxStart(key) => {
+                if self.guard_send("transmit list") {
+                    let now = self.now_ms();
+                    self.txlist.start(key, now);
+                    self.update_tx_shared();
+                }
+            }
+            BusCommand::TxStop(key) => {
+                self.txlist.stop(key);
+                self.update_tx_shared();
+            }
+            BusCommand::TxStopAll => {
+                self.txlist.stop_all();
+                self.update_tx_shared();
+            }
+            BusCommand::TxFire(key) => {
+                if self.guard_send("transmit list") {
+                    match self.txlist.fire(key) {
+                        Some(f) => {
+                            self.transmit(f);
+                        }
+                        None => self.emit(BusEvent::Error(format!("transmit list: no entry {key}"))),
+                    }
+                }
+            }
+            BusCommand::TxLoad(entries) => {
+                self.txlist = TxList::new(entries.into_iter().map(|e| TxEntry { enabled: false, ..e }).collect());
+                self.update_tx_shared();
+            }
+            BusCommand::StartLog { path, mode, filter } => {
+                self.stop_log(None);
+                match TraceLogger::start(&path, mode, filter, self.now_ms()) {
+                    Ok(l) => {
+                        self.log = Some(l);
+                        lock(&self.shared).log = Some((path.clone(), 0));
+                        self.emit(BusEvent::LogStarted { path });
+                    }
+                    Err(e) => self.emit(BusEvent::Error(format!("trace log {}: {e}", path.display()))),
+                }
+            }
+            BusCommand::StopLog => self.stop_log(None),
+            BusCommand::ResetBusLoad => {
+                self.load.reset();
+                lock(&self.shared).bus_load = BusLoadStats::default();
+            }
         }
+    }
+
+    fn queue_sdo(&mut self, tag: u64, node: u8, req: SdoRequest, opts: StartOptions) {
+        if !self.guard_send("SDO") {
+            self.emit(BusEvent::SdoDone { tag, outcome: Self::cancelled_outcome(node, &req) });
+            return;
+        }
+        self.jobs.push_back(Job { tag, node, req, opts });
+    }
+
+    fn queue_task(&mut self, tag: u64, task: Box<dyn SdoTask>) {
+        if !self.guard_send(&task.label()) {
+            let mut task = task;
+            task.cancel();
+            self.emit(BusEvent::TaskDone { tag, result: task.into_result() });
+            return;
+        }
+        self.tasks.push_back((tag, task));
+        self.update_task_shared();
+    }
+
+    fn cancel_task(&mut self, tag: u64) {
+        let Some(pos) = self.tasks.iter().position(|(t, _)| *t == tag) else { return };
+        if pos == 0 && matches!(self.running, Running::Task) {
+            // The outcome of the aborted step goes to the task first.
+            let out = self.sdo.cancel();
+            self.handle_sdo_output(out);
+        }
+        if let Some((_, t)) = self.tasks.get_mut(pos) {
+            t.cancel();
+        }
+        if pos != 0 || !matches!(self.running, Running::Task) {
+            if let Some((tag, t)) = self.tasks.remove(pos) {
+                self.finish_task(tag, t);
+            }
+        }
+        self.update_task_shared();
+    }
+
+    fn finish_task(&mut self, tag: u64, t: Box<dyn SdoTask>) {
+        let result = t.into_result();
+        if let TaskResult::PdoConfig(cfg) = &result {
+            self.use_pdo_config(cfg.clone());
+            self.emit(BusEvent::PdoConfigRead(cfg.clone()));
+        }
+        if let TaskResult::NodeInfo(infos) = &result {
+            let mut s = lock(&self.shared);
+            for i in infos {
+                s.network.merge(i);
+            }
+        }
+        self.emit(BusEvent::TaskDone { tag, result });
+    }
+
+    fn use_pdo_config(&mut self, cfg: NodePdoConfig) {
+        self.decode.set_node_pdos(cfg.node, cfg.pdos.clone());
+        lock(&self.shared).pdo_configs.insert(cfg.node, cfg);
+    }
+
+    fn update_task_shared(&self) {
+        let v = self.tasks.front().map(|(tag, t)| {
+            let (d, n) = t.progress();
+            (*tag, t.label(), d, n)
+        });
+        let mut s = lock(&self.shared);
+        s.task = v;
+        s.task_queue = self.tasks.len().saturating_sub(1);
+    }
+
+    fn update_tx_shared(&self) {
+        lock(&self.shared).txlist = self.txlist.entries.clone();
     }
 
     fn update_scan_shared(&self) {
         let v = self.scan.as_ref().map(|s| (s.done, s.total));
-        self.shared.lock().unwrap_or_else(|p| p.into_inner()).scan = v;
+        lock(&self.shared).scan = v;
+    }
+
+    fn stop_log(&mut self, error: Option<String>) {
+        if let Some(l) = self.log.take() {
+            let path = l.path().to_path_buf();
+            let (rows, err) = match l.stop() {
+                Ok(n) => (n, error),
+                Err(e) => (0, Some(error.unwrap_or_else(|| e.to_string()))),
+            };
+            lock(&self.shared).log = None;
+            self.emit(BusEvent::LogStopped { path, rows, error: err });
+        }
     }
 
     fn disconnect(&mut self) {
         if let Some(mut a) = self.adapter.take() {
             a.close();
             self.flush();
-            let mut s = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            s.connected = false;
-            s.listen_only = false;
-            s.status = "not connected".to_string();
-            s.scan = None;
-            s.fps = 0.0;
-            drop(s);
+            {
+                let mut s = lock(&self.shared);
+                s.connected = false;
+                s.listen_only = false;
+                s.status = "not connected".to_string();
+                s.scan = None;
+                s.fps = 0.0;
+                s.lss = None;
+                s.signal_polling = false;
+            }
             // Pending SDO work ends.
             let pending: Vec<Job> = self.jobs.drain(..).collect();
             for j in pending {
-                let (index, sub) = j.req.index_sub();
-                let outcome = SdoOutcome { node: j.node, index, sub, upload: j.req.is_upload(), result: Err(SdoError::Cancelled) };
-                self.emit(BusEvent::SdoDone { tag: j.tag, outcome });
+                self.emit(BusEvent::SdoDone { tag: j.tag, outcome: Self::cancelled_outcome(j.node, &j.req) });
             }
             if self.sdo.is_busy() {
                 // No abort frame: the channel is closed.
@@ -379,7 +694,21 @@ impl Worker {
             if let Some(s) = self.scan.take() {
                 self.emit(BusEvent::ScanFinished { cancelled: true, found: s.found });
             }
-            self.cyclic.clear();
+            let tasks: Vec<(u64, Box<dyn SdoTask>)> = self.tasks.drain(..).collect();
+            for (tag, mut t) in tasks {
+                t.cancel();
+                self.finish_task(tag, t);
+            }
+            self.update_task_shared();
+            if self.lss.is_busy() {
+                let out = self.lss.cancel();
+                self.handle_lss_output(LssOutput { tx: Vec::new(), done: out.done });
+            }
+            self.polling = false;
+            self.polls.clear();
+            self.txlist.stop_all();
+            self.update_tx_shared();
+            self.stop_log(None);
             self.running = Running::None;
             self.emit(BusEvent::Disconnected);
         }
@@ -392,6 +721,7 @@ impl Worker {
             Ok(()) => {
                 f.dir = Dir::Tx;
                 f.timestamp_us = self.t0.elapsed().as_micros() as u64;
+                self.on_bus_frame(&f);
                 self.batch.push(f);
                 true
             }
@@ -399,6 +729,34 @@ impl Worker {
                 self.emit(BusEvent::Error(format!("send 0x{:03X} failed: {e}", f.id)));
                 false
             }
+        }
+    }
+
+    /// Bookkeeping for each frame on the bus (sent or received): bus load,
+    /// signals, trace log.
+    fn on_bus_frame(&mut self, f: &CanFrame) {
+        self.load.add(f);
+        lock(&self.signals).on_frame(f, &self.decode);
+        if self.log.is_some() {
+            let d = self.block.decode(f, &self.decode);
+            let e = TraceEntry::new(self.log_seq, *f, d);
+            self.log_seq += 1;
+            let now = self.now_ms();
+            let r = self.log.as_mut().map(|l| l.write(&e, now));
+            if let Some(Err(err)) = r {
+                self.stop_log(Some(err.to_string()));
+            }
+        }
+    }
+
+    fn handle_lss_output(&mut self, out: LssOutput) {
+        for f in out.tx {
+            self.transmit(f);
+        }
+        lock(&self.shared).lss = self.lss.progress();
+        if let Some(result) = out.done {
+            let tag = self.lss_tag.take().unwrap_or(0);
+            self.emit(BusEvent::LssDone { tag, result });
         }
     }
 
@@ -426,11 +784,45 @@ impl Worker {
                     }
                 }
                 if let Some(r) = result {
+                    lock(&self.shared).network.add(node);
                     self.emit(BusEvent::ScanFound { node, result: r });
                 }
                 self.update_scan_shared();
             }
+            Running::Task => {
+                if let Some((tag, t)) = self.tasks.front_mut() {
+                    t.on_outcome(&done);
+                    let (d, n) = t.progress();
+                    let tag = *tag;
+                    self.emit(BusEvent::TaskProgress { tag, done: d, total: n });
+                }
+                self.update_task_shared();
+            }
+            Running::Poll(id) => {
+                if let Ok(data) = &done.result {
+                    let t = self.now_us() as f64 / 1e6;
+                    lock(&self.signals).on_poll_value(id, t, data, &self.decode);
+                }
+            }
             Running::None => {}
+        }
+    }
+
+    /// Start an SDO request; a start error or a failed send ends it at once.
+    fn start_sdo(&mut self, node: u8, req: SdoRequest, opts: StartOptions, running: Running) -> Result<(), SdoOutcome> {
+        let now = self.now_ms();
+        let (index, sub) = req.index_sub();
+        let upload = req.is_upload();
+        match self.sdo.start_opts(node, req, now, opts) {
+            Ok(f) => {
+                self.running = running;
+                if !self.transmit(f) {
+                    let out = self.sdo.cancel();
+                    self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
+                }
+                Ok(())
+            }
+            Err(e) => Err(SdoOutcome { node, index, sub, upload, result: Err(e) }),
         }
     }
 
@@ -438,40 +830,61 @@ impl Worker {
         if self.sdo.is_busy() || self.listen_only {
             return;
         }
-        let now = self.now_ms();
         if let Some(j) = self.jobs.pop_front() {
-            match self.sdo.start(j.node, j.req.clone(), now) {
-                Ok(f) => {
-                    self.running = Running::Job(j.tag);
-                    if !self.transmit(f) {
-                        let out = self.sdo.cancel();
-                        self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
-                    }
-                }
-                Err(e) => {
-                    let (index, sub) = j.req.index_sub();
-                    let outcome = SdoOutcome { node: j.node, index, sub, upload: j.req.is_upload(), result: Err(e) };
-                    self.emit(BusEvent::SdoDone { tag: j.tag, outcome });
-                }
+            if let Err(outcome) = self.start_sdo(j.node, j.req, j.opts, Running::Job(j.tag)) {
+                self.emit(BusEvent::SdoDone { tag: j.tag, outcome });
             }
             return;
         }
-        let Some(s) = self.scan.as_mut() else { return };
-        if s.next > s.to {
-            let found = s.found;
-            self.scan = None;
-            self.update_scan_shared();
-            self.emit(BusEvent::ScanFinished { cancelled: false, found });
+        if let Some(s) = self.scan.as_mut() {
+            if s.next > s.to {
+                let found = s.found;
+                self.scan = None;
+                self.update_scan_shared();
+                self.emit(BusEvent::ScanFinished { cancelled: false, found });
+                return;
+            }
+            let node = s.next;
+            let timeout = s.timeout_ms;
+            s.next += 1;
+            let opts = StartOptions { timeout_ms: Some(timeout), abort_on_timeout: false, ..Default::default() };
+            let _ = self.start_sdo(node, SdoRequest::Upload { index: 0x1000, sub: 0 }, opts, Running::Scan(node));
             return;
         }
-        let node = s.next;
-        let timeout = s.timeout_ms;
-        s.next += 1;
-        if let Ok(f) = self.sdo.start_with(node, SdoRequest::Upload { index: 0x1000, sub: 0 }, now, timeout, false) {
-            self.running = Running::Scan(node);
-            if !self.transmit(f) {
-                let out = self.sdo.cancel();
-                self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
+        // Tasks: a step that cannot start is answered at once; a few per
+        // service round at most.
+        for _ in 0..16 {
+            let Some((_, t)) = self.tasks.front_mut() else { break };
+            match t.next() {
+                Some(call) => {
+                    match self.start_sdo(call.node, call.req, StartOptions::mode(call.mode), Running::Task) {
+                        Ok(()) => return,
+                        Err(outcome) => {
+                            if let Some((_, t)) = self.tasks.front_mut() {
+                                t.on_outcome(&outcome);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if let Some((tag, t)) = self.tasks.pop_front() {
+                        self.finish_task(tag, t);
+                    }
+                    self.update_task_shared();
+                }
+            }
+        }
+        if !self.tasks.is_empty() {
+            return;
+        }
+        if self.polling {
+            if self.polls.is_empty() {
+                let now = self.now_ms();
+                let due = lock(&self.signals).polls_due(now);
+                self.polls.extend(due);
+            }
+            if let Some(p) = self.polls.pop_front() {
+                let _ = self.start_sdo(p.node, SdoRequest::Upload { index: p.index, sub: p.sub }, StartOptions::default(), Running::Poll(p.id));
             }
         }
     }
@@ -488,11 +901,24 @@ impl Worker {
                 Ok(Some(mut f)) => {
                     f.dir = Dir::Rx;
                     f.timestamp_us = self.now_us();
-                    let out = self.sdo.on_frame(&f, f.timestamp_us / 1000);
+                    let now = f.timestamp_us / 1000;
+                    let out = self.sdo.on_frame(&f, now);
                     received.push(f);
                     self.batch.push(f);
+                    self.on_bus_frame(&f);
                     if out != SdoOutput::default() {
                         self.handle_sdo_output(out);
+                    }
+                    if self.lss.is_busy() {
+                        let out = self.lss.on_frame(&f, now);
+                        if out != LssOutput::default() {
+                            self.handle_lss_output(out);
+                        }
+                    }
+                    if !self.listen_only {
+                        for t in self.txlist.on_rx(&f) {
+                            self.transmit(t);
+                        }
                     }
                 }
                 Ok(None) => break,
@@ -508,20 +934,26 @@ impl Worker {
         if out != SdoOutput::default() {
             self.handle_sdo_output(out);
         }
-        self.start_next();
-        // Cyclic frames.
-        let due: Vec<CanFrame> = self
-            .cyclic
-            .iter_mut()
-            .filter(|c| now >= c.next_ms)
-            .map(|c| {
-                c.next_ms = if now > c.next_ms + c.period_ms { now + c.period_ms } else { c.next_ms + c.period_ms };
-                c.frame
-            })
-            .collect();
-        for f in due {
-            self.transmit(f);
+        if self.lss.is_busy() {
+            let out = self.lss.poll(now);
+            if out != LssOutput::default() {
+                self.handle_lss_output(out);
+            }
         }
+        self.start_next();
+        // Periodic entries of the transmit list.
+        if !self.listen_only {
+            for f in self.txlist.due(now) {
+                self.transmit(f);
+            }
+        }
+        if let Some(l) = self.log.as_mut() {
+            if let Err(e) = l.tick(now) {
+                self.stop_log(Some(e.to_string()));
+            }
+        }
+        let now_us = self.now_us();
+        self.load.advance(now_us);
         let status_due = self.status_t.elapsed() >= Duration::from_millis(500);
         let status = if status_due {
             self.status_t = Instant::now();
@@ -530,12 +962,17 @@ impl Worker {
             None
         };
         {
-            let mut s = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            let mut s = lock(&self.shared);
             for f in &received {
                 s.nodes.on_frame(f);
+                s.network.on_frame(f);
             }
-            s.now_us = self.now_us();
+            s.now_us = now_us;
             s.sdo_queue = self.jobs.len() + self.sdo.is_busy() as usize;
+            s.bus_load = self.load.stats();
+            if let (Some(l), Some(v)) = (self.log.as_ref(), s.log.as_mut()) {
+                v.1 = l.rows();
+            }
             if let Some(st) = status {
                 s.status = st;
             }
@@ -545,6 +982,9 @@ impl Worker {
                 self.rx_count = 0;
                 self.fps_t = Instant::now();
             }
+        }
+        if self.tasks.front().is_some() {
+            self.update_task_shared();
         }
         self.flush();
     }

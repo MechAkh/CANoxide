@@ -1,12 +1,23 @@
-//! Device library (`devices.json`) and the managed `eds\` folder in the
-//! portable data folder.
+//! Device library (`devices.json`), the managed `eds\` folder, the saved
+//! PDO configurations, and the rule that finds the data folder.
 
+use crate::canopen::pdo::NodePdoConfig;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const DATA_DIR_NAME: &str = "CANopenTester_data";
+/// Portable data folder next to the exe.
+pub const DATA_DIR_NAME: &str = "CANoxide_data";
+/// Portable data folder of the versions before the rename (migrated).
+pub const LEGACY_DATA_DIR_NAME: &str = "CANopenTester_data";
+/// Marker file next to the exe of an installed copy.
+pub const INSTALLED_MARKER: &str = "CANoxide.installed";
+/// Folder name inside `%APPDATA%` for an installed copy.
+pub const APPDATA_DIR_NAME: &str = "CANoxide";
+/// Folder of the last read PDO configuration of each device.
+pub const PDO_CONFIG_DIR: &str = "pdo_configs";
 pub const DEVICES_FILE: &str = "devices.json";
 pub const SETTINGS_FILE: &str = "settings.json";
 pub const EDS_DIR: &str = "eds";
@@ -49,11 +60,92 @@ fn io_err(what: &str, p: &Path, e: std::io::Error) -> LibError {
     LibError(format!("{what} {}: {e}", p.display()))
 }
 
-/// `CANopenTester_data` next to the running exe.
-pub fn default_data_dir() -> Result<PathBuf, LibError> {
+/// How the data folder was chosen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataDirMode {
+    /// `CANoxide.installed` next to the exe: `%APPDATA%\CANoxide`.
+    Installed,
+    /// `CANoxide_data` next to the exe.
+    Portable,
+}
+
+impl DataDirMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            DataDirMode::Installed => "installed",
+            DataDirMode::Portable => "portable",
+        }
+    }
+}
+
+/// The data folder of the GUI and how it was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataDirInfo {
+    pub path: PathBuf,
+    pub mode: DataDirMode,
+    /// Something the status line should say (a migration, a fallback).
+    pub note: Option<String>,
+}
+
+impl DataDirInfo {
+    /// "Data folder (portable): D:\x\CANoxide_data".
+    pub fn text(&self) -> String {
+        format!("Data folder ({}): {}", self.mode.label(), self.path.display())
+    }
+}
+
+/// Resolve the data folder of the GUI. `exe_dir` is the folder of the exe,
+/// `appdata` the value of the `APPDATA` environment variable.
+///
+/// 1. `CANoxide.installed` next to the exe: `<APPDATA>\CANoxide` (created
+///    when missing). Without `APPDATA`, rule 2 applies, with a note.
+/// 2. Else portable: `CANoxide_data` next to the exe. When it is missing and
+///    `CANopenTester_data` exists, the old folder is renamed; when the
+///    rename fails, the old folder is used in place, with a note. The
+///    migration runs only in portable mode.
+///
+/// The portable folder is not created here (`ensure_writable` does that).
+pub fn resolve_data_dir(exe_dir: &Path, appdata: Option<&OsStr>) -> DataDirInfo {
+    let mut note = None;
+    if exe_dir.join(INSTALLED_MARKER).is_file() {
+        match appdata.filter(|a| !a.is_empty()) {
+            Some(a) => {
+                let path = Path::new(a).join(APPDATA_DIR_NAME);
+                if let Err(e) = fs::create_dir_all(&path) {
+                    note = Some(format!("cannot create {}: {e}", path.display()));
+                }
+                return DataDirInfo { path, mode: DataDirMode::Installed, note };
+            }
+            None => note = Some(format!("{INSTALLED_MARKER} found but APPDATA is not set; the portable data folder is used")),
+        }
+    }
+    let path = exe_dir.join(DATA_DIR_NAME);
+    let old = exe_dir.join(LEGACY_DATA_DIR_NAME);
+    if !path.exists() && old.is_dir() {
+        match fs::rename(&old, &path) {
+            Ok(()) => note = join_note(note, format!("data folder {LEGACY_DATA_DIR_NAME} renamed to {DATA_DIR_NAME}")),
+            Err(e) => {
+                let n = format!("{LEGACY_DATA_DIR_NAME} could not be renamed to {DATA_DIR_NAME} ({e}); the old folder is used");
+                return DataDirInfo { path: old, mode: DataDirMode::Portable, note: join_note(note, n) };
+            }
+        }
+    }
+    DataDirInfo { path, mode: DataDirMode::Portable, note }
+}
+
+fn join_note(a: Option<String>, b: String) -> Option<String> {
+    Some(match a {
+        Some(a) => format!("{a}; {b}"),
+        None => b,
+    })
+}
+
+/// The data folder of the running exe (`resolve_data_dir` with the exe
+/// folder and `%APPDATA%`).
+pub fn default_data_dir() -> Result<DataDirInfo, LibError> {
     let exe = std::env::current_exe().map_err(|e| LibError(format!("exe path unknown: {e}")))?;
     let dir = exe.parent().ok_or_else(|| LibError("exe has no folder".to_string()))?;
-    Ok(dir.join(DATA_DIR_NAME))
+    Ok(resolve_data_dir(dir, std::env::var_os("APPDATA").as_deref()))
 }
 
 /// Create the folder (and `eds\`) and prove that it is writable.
@@ -189,6 +281,51 @@ impl Library {
         Ok(())
     }
 
+    /// `signals.json` (signal definitions).
+    pub fn signals_path(&self) -> PathBuf {
+        self.root.join(crate::signals::SIGNALS_FILE)
+    }
+
+    /// `txlist.json` (transmit list).
+    pub fn txlist_path(&self) -> PathBuf {
+        self.root.join(crate::txlist::TXLIST_FILE)
+    }
+
+    /// File of the saved PDO configuration of a device.
+    pub fn pdo_config_path(&self, device: &str) -> PathBuf {
+        self.root.join(PDO_CONFIG_DIR).join(format!("{}.json", safe_file_stem(device)))
+    }
+
+    /// Save the last read PDO configuration of a device (its read time is
+    /// inside).
+    pub fn save_pdo_config(&self, device: &str, cfg: &NodePdoConfig) -> Result<(), LibError> {
+        let p = self.pdo_config_path(device);
+        if let Some(d) = p.parent() {
+            fs::create_dir_all(d).map_err(|e| io_err("cannot create", d, e))?;
+        }
+        let text = serde_json::to_string_pretty(cfg).map_err(|e| LibError(e.to_string()))?;
+        write_atomic(&p, text.as_bytes())
+    }
+
+    /// The saved PDO configuration of a device; `Ok(None)` when none.
+    pub fn load_pdo_config(&self, device: &str) -> Result<Option<NodePdoConfig>, LibError> {
+        let p = self.pdo_config_path(device);
+        match fs::read_to_string(&p) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_err("cannot read", &p, e)),
+            Ok(t) => serde_json::from_str(&t).map(Some).map_err(|e| LibError(format!("{}: {e}", p.display()))),
+        }
+    }
+
+    /// Delete the saved PDO configuration of a device (no error when none).
+    pub fn remove_pdo_config(&self, device: &str) -> Result<(), LibError> {
+        let p = self.pdo_config_path(device);
+        match fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io_err("cannot delete", &p, e)),
+            _ => Ok(()),
+        }
+    }
+
     pub fn find_device(&self, name: &str) -> Option<usize> {
         self.devices.iter().position(|d| d.name == name)
     }
@@ -242,5 +379,17 @@ impl Library {
         let d = self.devices.remove(idx);
         self.save()?;
         Ok(d)
+    }
+}
+
+/// A device name as a file name stem: characters that Windows does not
+/// allow in a file name become `_`.
+pub fn safe_file_stem(name: &str) -> String {
+    let s: String = name.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
+    let s = s.trim_end_matches(['.', ' ']);
+    if s.is_empty() {
+        "_".to_string()
+    } else {
+        s.to_string()
     }
 }

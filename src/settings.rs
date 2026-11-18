@@ -21,6 +21,38 @@ impl AdapterKind {
     }
 }
 
+/// Colour theme of the GUI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Theme {
+    /// Follow the Windows setting.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+/// How the trace shows time stamps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TimestampFormat {
+    /// Seconds since the connection was opened.
+    #[default]
+    Relative,
+    /// Time since the previous row, in ms.
+    Delta,
+    /// Local wall-clock time of day.
+    WallClock,
+}
+
+/// The trace view shown first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DataView {
+    /// One row per frame, oldest first.
+    #[default]
+    Chronological,
+    /// One row per COB-ID.
+    Fixed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedFrame {
@@ -55,6 +87,25 @@ pub struct Settings {
     pub window_height: f32,
     pub active_device: Option<String>,
     pub saved_frames: Vec<SavedFrame>,
+    // ---- v0.2 ----
+    pub theme: Theme,
+    /// GUI zoom factor, 0.5..3.0.
+    pub ui_scale: f32,
+    /// SDO block transfer: block size the client offers, 1..127.
+    pub sdo_block_size: u8,
+    /// Node-ID range of the scan.
+    pub scan_first: u8,
+    pub scan_last: u8,
+    /// Points per signal ring buffer.
+    pub signal_capacity: usize,
+    pub timestamp_format: TimestampFormat,
+    pub default_data_view: DataView,
+    /// Consecutive missing PDOs that end the PDO read of one direction.
+    pub pdo_scan_stop: u16,
+    /// Ask before an SDO write, a PDO apply or a DCF restore.
+    pub confirm_before_write: bool,
+    /// LSS answer timeout.
+    pub lss_timeout_ms: u64,
 }
 
 impl Default for Settings {
@@ -73,6 +124,17 @@ impl Default for Settings {
             window_height: 800.0,
             active_device: None,
             saved_frames: Vec::new(),
+            theme: Theme::System,
+            ui_scale: 1.0,
+            sdo_block_size: 127,
+            scan_first: 1,
+            scan_last: 127,
+            signal_capacity: crate::signals::DEFAULT_SIGNAL_CAPACITY,
+            timestamp_format: TimestampFormat::Relative,
+            default_data_view: DataView::Chronological,
+            pdo_scan_stop: crate::canopen::pdo::DEFAULT_PDO_SCAN_STOP,
+            confirm_before_write: true,
+            lss_timeout_ms: crate::canopen::lss::DEFAULT_LSS_TIMEOUT_MS,
         }
     }
 }
@@ -109,5 +171,14 @@ impl Settings {
         if !(300.0..=10_000.0).contains(&self.window_height) {
             self.window_height = 800.0;
         }
+        if !(0.5..=3.0).contains(&self.ui_scale) {
+            self.ui_scale = 1.0;
+        }
+        self.sdo_block_size = self.sdo_block_size.clamp(1, 127);
+        self.scan_first = self.scan_first.clamp(1, 127);
+        self.scan_last = self.scan_last.clamp(self.scan_first, 127);
+        self.signal_capacity = self.signal_capacity.clamp(100, 1_000_000);
+        self.pdo_scan_stop = self.pdo_scan_stop.clamp(1, crate::canopen::pdo::MAX_PDOS);
+        self.lss_timeout_ms = self.lss_timeout_ms.clamp(10, 5_000);
     }
 }

@@ -41,6 +41,7 @@ pub fn run() -> eframe::Result {
 /// What is loaded before the window opens.
 struct Boot {
     data_dir: Option<PathBuf>,
+    data_mode: Option<library::DataDirMode>,
     data_error: Option<String>,
     settings: Settings,
     library: Option<Library>,
@@ -50,8 +51,14 @@ struct Boot {
 impl Boot {
     fn load() -> Boot {
         match library::default_data_dir() {
-            Ok(dir) => Boot::load_dir(dir),
+            Ok(info) => {
+                let mut b = Boot::load_dir(info.path.clone());
+                b.notes.extend(info.note.clone());
+                b.data_mode = Some(info.mode);
+                b
+            }
             Err(e) => Boot {
+                data_mode: None,
                 data_dir: None,
                 data_error: Some(format!("No data folder: {e}. Nothing is saved.")),
                 settings: Settings::default(),
@@ -64,7 +71,7 @@ impl Boot {
     /// Load settings and library from a given data folder (the UI tests
     /// use a temporary folder; the app uses `CANopenTester_data`).
     fn load_dir(dir: PathBuf) -> Boot {
-        let mut b = Boot { data_dir: None, data_error: None, settings: Settings::default(), library: None, notes: Vec::new() };
+        let mut b = Boot { data_dir: None, data_mode: None, data_error: None, settings: Settings::default(), library: None, notes: Vec::new() };
         b.data_dir = Some(dir.clone());
         if let Err(e) = library::ensure_writable(&dir) {
             b.data_error = Some(format!("The data folder {} is not writable: {e}. Nothing is saved.", dir.display()));
@@ -100,6 +107,7 @@ enum Dialog {
 
 pub(crate) struct App {
     data_dir: Option<PathBuf>,
+    data_mode: Option<library::DataDirMode>,
     data_error: Option<String>,
     settings: Settings,
     settings_dirty: bool,
@@ -135,6 +143,7 @@ impl App {
         let bus = BusHandle::spawn(Arc::new(move || ctx.request_repaint()));
         let mut app = App {
             data_dir: boot.data_dir,
+            data_mode: boot.data_mode,
             data_error: boot.data_error,
             trace: TraceStore::new(boot.settings.trace_capacity),
             settings: boot.settings,
@@ -327,6 +336,8 @@ impl App {
                     let what = if cancelled { "Scan cancelled" } else { "Scan finished" };
                     self.set_status(format!("{what}: {found} node(s) answered"), false);
                 }
+                // v0.2 events: the v0.2 UI handles them.
+                _ => {}
             }
         }
     }
@@ -610,7 +621,8 @@ impl App {
                     }
                 }
                 if let Some(d) = &self.data_dir {
-                    ui.label(egui::RichText::new(d.display().to_string()).small()).on_hover_text("Data folder");
+                    let mode = self.data_mode.map(|m| format!(" ({})", m.label())).unwrap_or_default();
+                    ui.label(egui::RichText::new(format!("{}{mode}", d.display())).small()).on_hover_text(format!("Data folder{mode}"));
                 }
             });
         });
