@@ -1,0 +1,36 @@
+[package]
+name = "canopen-tester"
+version = "0.1.0"
+edition = "2021"
+description = "Portable CANopen bench tester: EDS browser, SDO client, NMT, bus trace"
+license = "MIT"
+repository = "https://github.com/MechAkh/CANopenTester"
+publish = false
+
+[lib]
+name = "canopen_tester"
+path = "src/lib.rs"
+
+[[bin]]
+name = "CANopenTester"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
+egui_extras = { version = "0.31", default-features = false }
+rfd = { version = "0.15", default-features = false }
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+encoding_rs = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[dev-dependencies]
+# Headless UI tests (accessibility tree only; no wgpu, no snapshots).
+egui_kittest = { version = "=0.31.1", features = ["eframe"] }

@@ -1,0 +1,4 @@
+# Static CRT: the exe needs no Visual C++ runtime on the target PC.
+# The host target is x86_64-pc-windows-msvc, so the exe lands in target\release.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

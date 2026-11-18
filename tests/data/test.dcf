@@ -1,0 +1,123 @@
+[FileInfo]
+FileName=test.dcf
+FileVersion=1
+EDSVersion=4.0
+Description=Configured test device
+
+[DeviceInfo]
+VendorName=Test vendor
+ProductName=Test IO configured
+
+[DeviceComissioning]
+NodeID=10
+Baudrate=500
+NodeName=Left IO
+
+[MandatoryObjects]
+SupportedObjects=2
+1=0x1000
+2=0x1001
+
+[OptionalObjects]
+SupportedObjects=3
+1=0x1800
+2=0x1A00
+3=0x1016
+
+[ManufacturerObjects]
+SupportedObjects=1
+1=0x2001
+
+[1000]
+ParameterName=Device type
+ObjectType=0x7
+DataType=0x0007
+AccessType=ro
+DefaultValue=0x00030191
+ParameterValue=0x00030191
+PDOMapping=0
+
+[1001]
+ParameterName=Error register
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=0
+PDOMapping=0
+
+[1016]
+ParameterName=Consumer heartbeat time
+ObjectType=0x8
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+PDOMapping=0
+CompactSubObj=2
+
+[1016Value]
+NrOfEntries=1
+1=0x000501F4
+
+[1800]
+ParameterName=TPDO1 communication parameter
+ObjectType=0x9
+SubNumber=3
+
+[1800sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+DataType=0x0005
+AccessType=ro
+DefaultValue=2
+PDOMapping=0
+
+[1800sub1]
+ParameterName=COB-ID used by TPDO
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=$NODEID+0x180
+ParameterValue=0x000001C0
+PDOMapping=0
+
+[1800sub2]
+ParameterName=Transmission type
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=255
+ParameterValue=254
+PDOMapping=0
+
+[1A00]
+ParameterName=TPDO1 mapping parameter
+ObjectType=0x9
+SubNumber=2
+
+[1A00sub0]
+ParameterName=Number of mapped objects
+ObjectType=0x7
+DataType=0x0005
+AccessType=rw
+DefaultValue=0
+ParameterValue=1
+PDOMapping=0
+
+[1A00sub1]
+ParameterName=Mapped object 1
+ObjectType=0x7
+DataType=0x0007
+AccessType=rw
+DefaultValue=0
+ParameterValue=0x20010010
+PDOMapping=0
+
+[2001]
+ParameterName=Counter
+ObjectType=0x7
+DataType=0x0006
+AccessType=ro
+DefaultValue=0
+ParameterValue=7
+PDOMapping=1
+Denotation=Left counter
