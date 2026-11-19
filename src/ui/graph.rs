@@ -47,6 +47,9 @@ pub(crate) struct AddDraft {
     pub raw_kind: RawKind,
     pub big_endian: bool,
     pub error: Option<String>,
+    /// The name was filled from the "Mapped object" choice (a new choice
+    /// may replace it; a name typed by the user stays).
+    pub auto_name: bool,
 }
 
 impl Default for AddDraft {
@@ -68,6 +71,7 @@ impl Default for AddDraft {
             raw_kind: RawKind::Unsigned,
             big_endian: false,
             error: None,
+            auto_name: false,
         }
     }
 }
@@ -119,7 +123,7 @@ impl AddDraft {
     }
 }
 
-fn default_name(s: &SignalSource) -> String {
+pub(crate) fn default_name(s: &SignalSource) -> String {
     match s {
         SignalSource::Pdo { node, index, sub } => format!("N{node} {index:04X}:{sub:02X}"),
         SignalSource::SdoPoll { node, index, sub, .. } => format!("N{node} {index:04X}:{sub:02X} (SDO)"),
@@ -406,18 +410,25 @@ impl App {
         let Some(mut d) = self.graph.add.take() else { return };
         let mut keep = true;
         let mut add = false;
-        // Mapped objects of the node's PDOs (read configuration, else EDS).
-        let mapped: Vec<(u16, u8, String)> = if d.kind == SourceKind::Pdo {
+        // Mapped objects of the node's PDOs (read or library configuration,
+        // else the EDS defaults): the TPDOs that the node sends, then the
+        // RPDOs that it receives (sent by another node or the transmit list).
+        // The text names the PDO as the trace does ("RPDO1 6200:01 ...").
+        let mapped: Vec<(u16, u8, bool, String)> = if d.kind == SourceKind::Pdo {
+            use crate::canopen::pdo::PdoKind;
             let od = self.od_of_node(d.node);
             let cfgs = match self.decode_ctx.node_pdos(d.node) {
                 Some(c) => c.to_vec(),
                 None => od.as_ref().map(|o| configs_from_od(o, d.node)).unwrap_or_default(),
             };
             let mut v = Vec::new();
-            for c in cfgs.iter().filter(|c| c.kind == crate::canopen::pdo::PdoKind::Tpdo) {
-                for m in c.mapping.iter().filter(|m| !m.is_dummy()) {
-                    let name = od.as_ref().and_then(|o| o.name_of(m.index, m.sub)).unwrap_or_default();
-                    v.push((m.index, m.sub, format!("{} {:04X}:{:02X} {name}", c.label(), m.index, m.sub)));
+            for kind in [PdoKind::Tpdo, PdoKind::Rpdo] {
+                for c in cfgs.iter().filter(|c| c.kind == kind) {
+                    for m in c.mapping.iter().filter(|m| !m.is_dummy()) {
+                        let name = od.as_ref().and_then(|o| o.name_of(m.index, m.sub)).unwrap_or_default();
+                        let t = format!("{} {:04X}:{:02X} {name}", c.label(), m.index, m.sub);
+                        v.push((m.index, m.sub, kind == PdoKind::Rpdo, t.trim_end().to_string()));
+                    }
                 }
             }
             v
@@ -425,8 +436,27 @@ impl App {
             Vec::new()
         };
         let err_c = if self.is_dark() { theme::DARK.error } else { theme::LIGHT.error };
-        egui::Modal::new(egui::Id::new("add_signal")).show(ctx, |ui| {
-            ui.heading("Add signal");
+        // A movable window (spec: the Add signal dialog moves by its title
+        // bar and stays inside the app window) over a scrim that blocks the
+        // views behind it, as the modal did.
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("add_signal_scrim")).order(egui::Order::Middle).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
+            let (r, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click_and_drag());
+            ui.painter().rect_filled(r, 0.0, egui::Color32::from_black_alpha(90));
+        });
+        let mut open = true;
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !ctx.memory(|m| m.any_popup_open());
+        egui::Window::new("Add signal")
+            .id(egui::Id::new("add_signal"))
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .movable(true)
+            .constrain(true)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(screen.center())
+            .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 for k in [SourceKind::Pdo, SourceKind::SdoPoll, SourceKind::Raw] {
                     ui.selectable_value(&mut d.kind, k, k.label());
@@ -441,16 +471,27 @@ impl App {
                         ui.end_row();
                         if d.kind == SourceKind::Pdo && !mapped.is_empty() {
                             ui.label("Mapped object");
-                            let cur = u16::from_str_radix(d.index_text.trim(), 16).ok().and_then(|i| mapped.iter().find(|m| m.0 == i && m.1 == d.sub)).map(|m| m.2.clone()).unwrap_or_else(|| "(choose)".to_string());
+                            let cur = u16::from_str_radix(d.index_text.trim(), 16).ok().and_then(|i| mapped.iter().find(|m| m.0 == i && m.1 == d.sub));
+                            let cur_rpdo = cur.is_some_and(|m| m.2);
+                            let cur = cur.map(|m| m.3.clone()).unwrap_or_else(|| "(choose)".to_string());
                             egui::ComboBox::from_id_salt("sig_mapped").selected_text(cur).width(260.0).show_ui(ui, |ui| {
-                                for (i, s, t) in &mapped {
+                                for (i, s, _, t) in &mapped {
                                     if ui.selectable_label(false, t).clicked() {
                                         d.index_text = format!("{i:04X}");
                                         d.sub = *s;
+                                        if d.name.trim().is_empty() || d.auto_name {
+                                            d.name = format!("N{} {t}", d.node);
+                                            d.auto_name = true;
+                                        }
                                     }
                                 }
                             });
                             ui.end_row();
+                            if cur_rpdo {
+                                ui.label("");
+                                ui.label(egui::RichText::new("RPDO: decoded from the frames that another node or the transmit list sends to this node.").small());
+                                ui.end_row();
+                            }
                         }
                         ui.label("Index 0x");
                         ui.add(egui::TextEdit::singleline(&mut d.index_text).desired_width(60.0));
@@ -490,7 +531,9 @@ impl App {
                     }
                 }
                 ui.label("Name");
-                ui.add(egui::TextEdit::singleline(&mut d.name).hint_text("automatic"));
+                if ui.add(egui::TextEdit::singleline(&mut d.name).hint_text("automatic")).changed() {
+                    d.auto_name = false;
+                }
                 ui.end_row();
                 ui.label("Unit");
                 ui.add(egui::TextEdit::singleline(&mut d.unit).desired_width(60.0));
@@ -517,6 +560,9 @@ impl App {
                 }
             });
         });
+        if !open || escape {
+            keep = false;
+        }
         if add {
             match d.build() {
                 Ok(def) => {

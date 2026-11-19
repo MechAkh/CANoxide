@@ -239,8 +239,33 @@ impl App {
             });
     }
 
+    /// The progress of a running node scan (done, total).
+    pub(crate) fn scan_progress(&self) -> Option<(usize, usize)> {
+        self.bus.shared.lock().map(|s| s.scan).unwrap_or(None)
+    }
+
+    /// A node scan runs (started here, or the worker reports progress).
+    pub(crate) fn scan_running(&self) -> bool {
+        self.net.scanning || self.scan_progress().is_some()
+    }
+
+    /// Start the node scan with the settings (the one scan of the app: the
+    /// Network view and the connection bar both call this). The caller
+    /// enables it only when sending is allowed (`send_button`).
+    pub(crate) fn start_scan(&mut self) {
+        let (a, b) = (self.settings.scan_first, self.settings.scan_last);
+        self.net.scan_results.clear();
+        self.net.scanning = true;
+        self.bus.send(BusCommand::Scan { from: a, to: b, timeout_ms: self.settings.scan_timeout_ms });
+        self.set_status(format!("Scanning nodes {a}..{b}"), false);
+    }
+
+    pub(crate) fn cancel_scan(&mut self) {
+        self.bus.send(BusCommand::CancelScan);
+    }
+
     fn scan_section(&mut self, ui: &mut egui::Ui) {
-        let progress = self.bus.shared.lock().map(|s| s.scan).unwrap_or(None);
+        let progress = self.scan_progress();
         ui.horizontal_wrapped(|ui| {
             let (a, b) = (self.settings.scan_first, self.settings.scan_last);
             ui.label(format!("SDO read of 0x1000 on nodes {a}..{b}, one at a time, timeout"));
@@ -249,13 +274,10 @@ impl App {
             }
             if self.net.scanning || progress.is_some() {
                 if ui.button("Cancel").clicked() {
-                    self.bus.send(BusCommand::CancelScan);
+                    self.cancel_scan();
                 }
             } else if self.send_button(ui, true, "Scan nodes").clicked() {
-                self.net.scan_results.clear();
-                self.net.scanning = true;
-                self.bus.send(BusCommand::Scan { from: a, to: b, timeout_ms: self.settings.scan_timeout_ms });
-                self.set_status(format!("Scanning nodes {a}..{b}"), false);
+                self.start_scan();
             }
         });
         if let Some((done, total)) = progress {

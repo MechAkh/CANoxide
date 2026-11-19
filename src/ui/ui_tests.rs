@@ -1068,7 +1068,7 @@ fn s12_layouts_a_and_b() {
     let h = build_sized(&tmp.data(), 1280.0, 800.0);
     let a = leaves(&h);
     assert_eq!(a.len(), 4, "layout A: {a:?}");
-    for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Network, Tab::Pdo], vec![Tab::Trace(1), Tab::TxList], vec![Tab::Graph]] {
+    for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Network, Tab::Pdo], vec![Tab::Trace(1), Tab::Messages, Tab::TxList], vec![Tab::Graph]] {
         assert!(a.contains(&want), "layout A lacks {want:?}: {a:?}");
     }
     // The front tab of each leaf is drawn: Devices narrow on the left,
@@ -1084,7 +1084,7 @@ fn s12_layouts_a_and_b() {
     let h = build_sized(&tmp.data(), 1920.0, 1080.0);
     let b = leaves(&h);
     assert_eq!(b.len(), 5, "layout B: {b:?}");
-    for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Pdo], vec![Tab::Trace(1), Tab::TxList], vec![Tab::Network], vec![Tab::Graph]] {
+    for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Pdo], vec![Tab::Trace(1), Tab::Messages, Tab::TxList], vec![Tab::Network], vec![Tab::Graph]] {
         assert!(b.contains(&want), "layout B lacks {want:?}: {b:?}");
     }
     let x = |h: &H, l: &str| rect_of(&node(h, top_by_label(h, l, None))).x0;
@@ -1448,6 +1448,359 @@ fn s21_confirm_before_write() {
     assert!(cob_count(&h, 0x601) > 0);
 }
 
+// ------------------------------------------------- v0.3: trace scrolling
+
+/// Push `count` frames with COB-ID `id` straight into the trace store; frame
+/// `i` has the time stamp `i` ms (shown as `0.00i000`).
+fn push_frames(h: &mut H, id: u32, from: u64, count: u64) {
+    let ctx = crate::canopen::decode::DecodeContext::default();
+    let app = h.state_mut();
+    for i in from..from + count {
+        let mut f = crate::can::CanFrame::new(id, &[(i & 0xFF) as u8, (i >> 8) as u8]);
+        f.timestamp_us = i * 1000;
+        let d = crate::canopen::decode::decode(&f, &ctx);
+        app.trace.push(f, d);
+    }
+}
+
+/// The Time cells of the drawn trace rows, top to bottom.
+fn visible_times(h: &H) -> Vec<String> {
+    let mut v: Vec<(f64, String)> = h
+        .query_all_by_role(Role::Label)
+        .map(|n| (rect_of(&n).y0, text_of(&n)))
+        .filter(|(_, t)| t.len() > 7 && t.as_bytes()[t.len() - 7] == b'.' && t.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    v.into_iter().map(|x| x.1).collect()
+}
+
+fn time_of(ms: u64) -> String {
+    format!("{:.6}", ms as f64 / 1000.0)
+}
+
+/// Move the pointer over the trace table (over the newest drawn row).
+fn pointer_over_table(h: &mut H) {
+    let id = h.query_all_by_role(Role::Label).filter(|n| visible_times_one(&text_of(n))).map(|n| n.id()).next_back().expect("a trace row");
+    let r = rect_id(h, id);
+    let pos = egui::pos2(((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0 - 40.0) as f32);
+    h.input_mut().events.push(egui::Event::PointerMoved(pos));
+    h.step();
+}
+
+fn visible_times_one(t: &str) -> bool {
+    t.len() > 7 && t.as_bytes()[t.len() - 7] == b'.' && t.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+fn press(h: &mut H, key: egui::Key) {
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE });
+    }
+    step2(h);
+}
+
+/// Auto-scroll: stays at the newest row; scrolling up switches it off and
+/// keeps the rows in place (also while the full buffer drops old rows); on
+/// again jumps to the newest row; keys; pause; filter and Clear.
+#[test]
+fn s23_trace_autoscroll() {
+    let tmp = TempDir::new("s23");
+    let mut h = build_sized(&tmp.data(), 1200.0, 700.0);
+    only(&mut h, vec![Tab::Trace(1)]);
+    h.state_mut().trace.set_capacity(1000);
+    h.state_mut().settings.timestamp_us = true;
+    let auto = |h: &H| toggled(h, top_by_label(h, "Auto-scroll", Some(Role::CheckBox)));
+    let last = |h: &H| visible_times(h).last().cloned().unwrap_or_default();
+    push_frames(&mut h, 0x100, 0, 500);
+    step2(&mut h);
+    assert!(auto(&h) && h.state().trace_autoscroll(1), "auto-scroll on by default");
+    assert_eq!(last(&h), time_of(499), "\nUI:\n{}", dump(&h));
+    push_frames(&mut h, 0x100, 500, 20);
+    step2(&mut h);
+    assert_eq!(last(&h), time_of(519), "follows new rows");
+
+    // The wheel up: auto-scroll off, the button shows it.
+    pointer_over_table(&mut h);
+    h.input_mut().events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, 600.0), modifiers: egui::Modifiers::NONE });
+    run_for(&mut h, Duration::from_millis(400));
+    assert!(!auto(&h), "auto-scroll still on after the wheel\nUI:\n{}", dump(&h));
+    assert_ne!(last(&h), time_of(519));
+    let top = visible_times(&h)[0].clone();
+    // New rows: no drift.
+    push_frames(&mut h, 0x100, 520, 280);
+    step2(&mut h);
+    assert_eq!(visible_times(&h)[0], top, "rows moved while auto-scroll is off");
+    // The full buffer drops old rows: the rows stay.
+    push_frames(&mut h, 0x100, 800, 600);
+    step2(&mut h);
+    assert_eq!(h.state().trace.len(), 1000);
+    assert_eq!(visible_times(&h)[0], top, "rows moved while the buffer dropped old rows");
+    assert!(!auto(&h));
+
+    // On again: the newest row.
+    click_role(&mut h, Role::CheckBox, "Auto-scroll");
+    assert!(auto(&h));
+    assert_eq!(last(&h), time_of(1399));
+
+    // Keys over the table: Page Up off, End on.
+    pointer_over_table(&mut h);
+    press(&mut h, egui::Key::PageUp);
+    assert!(!auto(&h), "Page Up did not switch auto-scroll off");
+    assert_ne!(last(&h), time_of(1399));
+    press(&mut h, egui::Key::End);
+    assert!(auto(&h), "End did not switch auto-scroll on");
+    assert_eq!(last(&h), time_of(1399));
+
+    // Pause freezes the rows; resume follows the toggle (on).
+    click_role(&mut h, Role::CheckBox, "Pause");
+    push_frames(&mut h, 0x100, 1400, 10);
+    step2(&mut h);
+    assert_eq!(last(&h), time_of(1399), "rows added while paused");
+    click_role(&mut h, Role::CheckBox, "Pause");
+    step2(&mut h);
+    assert_eq!(last(&h), time_of(1409), "resume did not go to the newest row");
+
+    // A filter (COB-ID 0x100 only): still the newest matching row.
+    open_filters(&mut h);
+    let lo = right_of(&h, "COB-ID 0x", Role::TextInput);
+    let hi = right_of(&h, "..", Role::TextInput);
+    set_text(&mut h, lo, "100");
+    set_text(&mut h, hi, "100");
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    for i in 1410..1460 {
+        push_frames(&mut h, if i % 2 == 0 { 0x100 } else { 0x200 }, i, 1);
+    }
+    step2(&mut h);
+    assert_eq!(last(&h), time_of(1458), "filtered view not at the newest row\nUI:\n{}", dump(&h));
+    // Clear, then new rows: at the newest again.
+    click(&mut h, "Clear");
+    push_frames(&mut h, 0x100, 2000, 300);
+    step2(&mut h);
+    assert!(auto(&h));
+    assert_eq!(last(&h), time_of(2299));
+}
+
+// ------------------------------------------- v0.3: scan, RPDO, Messages
+
+/// A real pointer click at the centre of a node (for a table row, which
+/// takes the click of the label on it).
+fn pointer_click(h: &mut H, id: NodeId) {
+    let r = rect_id(h, id);
+    let pos = egui::pos2(((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32);
+    h.input_mut().events.push(egui::Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    step2(h);
+}
+
+/// The connection bar's Scan nodes: disabled when not connected and in
+/// listen-only mode; it runs the Network scan, shows the progress and a
+/// cancel, and brings the Network tab to the front.
+#[test]
+fn s24_scan_button_in_the_connection_bar() {
+    let tmp = TempDir::new("s24");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Graph]);
+    all_disabled(&h, "Scan nodes");
+    click_role(&mut h, Role::CheckBox, "Listen only");
+    connect(&mut h);
+    all_disabled(&h, "Scan nodes");
+    click(&mut h, "Disconnect");
+    wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect"));
+    click_role(&mut h, Role::CheckBox, "Listen only");
+    connect(&mut h);
+    assert!(!disabled(&h, top_by_label(&h, "Scan nodes", Some(Role::Button))));
+    assert!(!leaves(&h).iter().flatten().any(|t| *t == Tab::Network));
+    click_role(&mut h, Role::Button, "Scan nodes");
+    assert!(leaves(&h).iter().flatten().any(|t| *t == Tab::Network), "Network tab not opened");
+    assert!(has(&h, "SDO read of 0x1000 on nodes"), "Network tab not in front\nUI:\n{}", dump(&h));
+    wait_for(&mut h, "progress", |h| has_exact(h, "Cancel scan") && h.state().scan_progress().is_some());
+    // The Network view shows its own cancel for the same scan.
+    assert!(has_exact(&h, "Cancel"));
+    wait_for(&mut h, "node 1 answered", |h| has_exact(h, "Node 1") && has(h, "device type 0x"));
+    click(&mut h, "Cancel scan");
+    wait_for(&mut h, "cancelled", |h| has(h, "Scan cancelled"));
+    assert!(has_exact(&h, "Scan nodes"));
+}
+
+/// An RPDO object of the node is offered in Add signal (named as in the
+/// trace) and decoded from the frames that the transmit list sends.
+#[test]
+fn s25_graph_rpdo_signal() {
+    let tmp = TempDir::new("s25");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Rx");
+    connect(&mut h);
+    only(&mut h, vec![Tab::Graph]);
+    click_containing(&mut h, "Add signal...");
+    let combo = right_of(&h, "Mapped object", Role::ComboBox);
+    let before: Vec<NodeId> = h.query_all_by_role(Role::Button).map(|n| n.id()).collect();
+    click_id(&mut h, combo);
+    let opt = h.query_all_by_label_contains("RPDO1 6200:01").find(|n| !before.contains(&n.id()) && n.role() != Role::Label).map(|n| n.id()).unwrap_or_else(|| panic!("no RPDO option\nUI:\n{}", dump(&h)));
+    click_id(&mut h, opt);
+    let name = right_of(&h, "Name", Role::TextInput);
+    let auto = node(&h, name).value().unwrap_or_default();
+    assert!(auto.starts_with("N1 RPDO1 6200:01"), "automatic name {auto:?}");
+    assert!(has(&h, "RPDO: decoded from the frames"), "RPDO note\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Add");
+    assert!(!has_exact(&h, "Add signal"), "dialog still open\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "PDO, node 1, 6200:01"));
+    // The transmit list sends RPDO1 (0x201) to the node.
+    only(&mut h, vec![Tab::TxList]);
+    let id = right_of(&h, "ID 0x", Role::TextInput);
+    set_text(&mut h, id, "201");
+    let data = right_of(&h, "Data", Role::TextInput);
+    set_text(&mut h, data, "5A 00");
+    click(&mut h, "Manual");
+    click(&mut h, "Add to list");
+    let row = top_by_label(&h, "201", None);
+    let send = button_on_row(&h, row, "Send");
+    click_id(&mut h, send);
+    // The trace names the RPDO and its signals the same way.
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_for(&mut h, "Tx row 201", |h| last_row(h, "201").is_some());
+    let r = last_row(&h, "201").unwrap();
+    assert_eq!(cell_text(&h, r, "Type"), "RPDO1");
+    only(&mut h, vec![Tab::Graph]);
+    let row = |h: &H| h.query_all_by_label_contains("N1 RPDO1 6200:01").find(|n| n.role() == Role::Label).map(|n| n.id()).expect("legend row");
+    wait_for(&mut h, "a point", |h| cell_text(h, row(h), "Points").parse::<u64>().unwrap_or(0) >= 1);
+    assert_eq!(cell_text(&h, row(&h), "Last"), "90");
+}
+
+/// The Add signal window moves by its title bar.
+#[test]
+fn s26_add_signal_window_moves() {
+    let tmp = TempDir::new("s26");
+    let mut h = build_sized(&tmp.data(), 1200.0, 800.0);
+    only(&mut h, vec![Tab::Graph]);
+    click_containing(&mut h, "Add signal...");
+    let win = |h: &H| rect_id(h, top_by_label(h, "Add signal", Some(Role::Window)));
+    let r0 = win(&h);
+    // A point on the title bar.
+    let from = egui::pos2((r0.x0 + 80.0) as f32, (r0.y0 + 12.0) as f32);
+    let to = from + egui::vec2(-200.0, -150.0);
+    h.input_mut().events.push(egui::Event::PointerMoved(from));
+    h.step();
+    h.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    for i in 1..=10 {
+        h.input_mut().events.push(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 10.0)));
+        h.step();
+    }
+    h.input_mut().events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    let r1 = win(&h);
+    assert!(r1.x0 < r0.x0 - 150.0 && r1.y0 < r0.y0 - 100.0, "window did not move: {r0:?} -> {r1:?}");
+    // Dragged far out: it stays inside the app window.
+    let from = egui::pos2((r1.x0 + 80.0) as f32, (r1.y0 + 12.0) as f32);
+    h.input_mut().events.push(egui::Event::PointerMoved(from));
+    h.step();
+    h.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    let far = egui::pos2(-900.0, -900.0);
+    h.input_mut().events.push(egui::Event::PointerMoved(far));
+    h.step();
+    h.input_mut().events.push(egui::Event::PointerButton { pos: far, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    let r2 = win(&h);
+    assert!(r2.x0 >= 0.0 && r2.y0 >= 0.0, "window left the app window: {r2:?}");
+    // Escape closes it.
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    assert!(!has_exact(&h, "Add signal"), "Escape did not close\nUI:\n{}", dump(&h));
+}
+
+/// Push a frame straight into the Messages statistics (as the bus would).
+fn msg_frame(h: &mut H, id: u32, data: &[u8], t_us: u64) {
+    let mut f = crate::can::CanFrame::new(id, data);
+    f.timestamp_us = t_us;
+    let app = h.state_mut();
+    let d = crate::canopen::decode::decode(&f, &app.decode_ctx);
+    app.msgs.on_frame(&f, &d);
+    let l = app.msgs.latest_us();
+    app.msgv.on_frames(l);
+}
+
+/// Messages: opens from the View menu beside Trace 1; one row per COB-ID
+/// from the simulator; filter; selection with the detail pane; the change
+/// marks (reduced colour) up and down, which fade and which "Mute noisy
+/// bytes" hides for a counter; Add to Graph; reset.
+#[test]
+fn s27_messages_view() {
+    let tmp = TempDir::new("s27");
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Trace(1)]);
+    view_menu(&mut h, "Messages");
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    assert_eq!(leaves(&h), vec![vec![Tab::Trace(1), Tab::Messages]], "Messages beside Trace 1");
+    assert!(has_exact(&h, "No frames yet. Connect to see one row per COB-ID."), "\nUI:\n{}", dump(&h));
+    connect(&mut h);
+    wait_for(&mut h, "heartbeat row", |h| has_exact(h, "701"));
+    let row = top_by_label(&h, "701", None);
+    wait_for(&mut h, "count", |h| cell_text(h, top_by_label(h, "701", None), "Count").parse::<u64>().unwrap_or(0) >= 1);
+    assert_eq!(cell_text(&h, row, "DLC"), "1");
+    click(&mut h, "Disconnect");
+    wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect"));
+
+    // Own frames: byte 0 up, byte 1 down.
+    h.state_mut().settings.reduce_colour = true;
+    let t = h.state().msgs.latest_us() + 1000;
+    msg_frame(&mut h, 0x3A0, &[0x10, 0x20, 0x55], t);
+    msg_frame(&mut h, 0x3A0, &[0x11, 0x1F, 0x55], t + 1000);
+    step2(&mut h);
+    assert!(has_exact(&h, "3A0"));
+    assert!(has_exact(&h, icon::CARET_UP) && has_exact(&h, icon::CARET_DOWN), "change marks\nUI:\n{}", dump(&h));
+    let r = top_by_label(&h, "3A0", None);
+    assert_eq!(cell_text(&h, r, "B0"), "11");
+    assert_eq!(cell_text(&h, r, "B2"), "55");
+    // Filter.
+    let f = h.query_all_by_role(Role::TextInput).next().map(|n| n.id()).expect("filter field");
+    set_text(&mut h, f, "3a0");
+    assert!(has_exact(&h, "3A0") && !has_exact(&h, "701"), "filter\nUI:\n{}", dump(&h));
+    set_text(&mut h, f, "");
+    assert!(has_exact(&h, "701"));
+    // The marks fade.
+    h.state_mut().settings.msg_fade_s = 0.2;
+    run_for(&mut h, Duration::from_millis(400));
+    assert!(!has_exact(&h, icon::CARET_UP) && !has_exact(&h, icon::CARET_DOWN), "marks did not fade");
+    // A counter byte: marked, unless muted.
+    // (5 s later on the frame clock: the older changes have faded.)
+    h.state_mut().settings.msg_fade_s = 2.0;
+    for i in 0..12u64 {
+        msg_frame(&mut h, 0x3A0, &[i as u8, 0x1F, 0x55], t + 5_000_000 + i * 1000);
+    }
+    step2(&mut h);
+    assert!(has_exact(&h, icon::CARET_UP) || has_exact(&h, icon::CARET_DOWN), "counter not marked");
+    click_role(&mut h, Role::CheckBox, "Mute noisy bytes");
+    assert!(h.state().settings.msg_mute_noisy);
+    assert!(!has_exact(&h, icon::CARET_UP) && !has_exact(&h, icon::CARET_DOWN), "noisy byte still marked\nUI:\n{}", dump(&h));
+
+    // Select the row: the detail pane with the bit grid.
+    let r = top_by_label(&h, "3A0", None);
+    pointer_click(&mut h, r);
+    assert!(has_exact(&h, "Reset statistics"), "detail pane\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "Byte 0") && has_exact(&h, "Byte 2") && !has_exact(&h, "Byte 3"));
+    assert!(disabled(&h, top_by_label(&h, "Add to Graph", Some(Role::Button))));
+    click(&mut h, "Byte 1");
+    assert!(has_exact(&h, "Selected: bit 8, 8 bit"), "selection\nUI:\n{}", dump(&h));
+    click(&mut h, "Add to Graph");
+    assert!(has(&h, "Signal 3A0 bits 8+8 added to the Graph"), "\nUI:\n{}", dump(&h));
+    let sigs: Vec<crate::signals::SignalSource> = h.state().bus.signals.lock().unwrap().list().iter().map(|s| s.def.source.clone()).collect();
+    assert!(sigs.iter().any(|s| matches!(s, crate::signals::SignalSource::Raw { cob_id: 0x3A0, start_bit: 8, bits: 8, extended: false, .. })), "{sigs:?}");
+    // Reset the row, then all.
+    let key = crate::msgstats::MsgKey { id: 0x3A0, extended: false };
+    assert!(h.state().msgs.get(key).unwrap().count > 1);
+    click(&mut h, "Reset statistics");
+    assert_eq!(h.state().msgs.get(key).unwrap().count, 0);
+    click(&mut h, "Reset all statistics");
+    assert!(h.state().msgs.is_empty());
+    assert!(has_exact(&h, "No frames yet. Connect to see one row per COB-ID."));
+}
+
 // ------------------------------------------------------------ screenshots
 
 /// Render PNG screenshots with wgpu (offscreen) to `target\screens\`.
@@ -1506,9 +1859,53 @@ fn screenshots() {
         shot(&mut h, "dcf_dark");
         let _ = std::fs::remove_file(&path);
     }
+    // Messages (0.3): the simulator running, a TPDO row selected with a
+    // byte selected in the bit grid, tints visible.
+    let messages = |h: &mut H, name: &str| {
+        only(h, vec![Tab::Trace(1), Tab::Messages]);
+        h.state_mut().open_tab(Tab::Messages);
+        step2(h);
+        wait_for(h, "TPDO1 row", |h| has_exact(h, "181"));
+        let r = top_by_label(h, "181", None);
+        pointer_click(h, r);
+        click(h, "Byte 0");
+        // Shoot while a change tint is still visible.
+        let t0 = Instant::now();
+        loop {
+            step2(h);
+            let now = h.state().msgv_now_us();
+            let key = crate::msgstats::MsgKey { id: 0x181, extended: false };
+            let fresh = h.state().msgs.get(key).is_some_and(|e| e.bytes.iter().any(|b| b.last_change_us.is_some_and(|c| now.saturating_sub(c) < 600_000)));
+            if fresh || t0.elapsed() > WAIT {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        shot(h, name);
+    };
+    {
+        let (_t, mut h) = scene(1280.0, 800.0, Theme::Dark, "shot_msg_dark");
+        messages(&mut h, "messages_dark");
+    }
     {
         let (_t, mut h) = scene(1280.0, 800.0, Theme::Light, "shot_a_light");
         shot(&mut h, "layout_a_1280x800_light");
+        messages(&mut h, "messages_light");
+    }
+    // The connection bar with Scan nodes, then with a running scan.
+    {
+        let tmp = TempDir::new("shot_bar");
+        preset(&tmp.data(), Settings { theme: Theme::Dark, ..Settings::default() });
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(1280.0, 120.0)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        only(&mut h, vec![Tab::Network]);
+        connect(&mut h);
+        shot(&mut h, "connection_bar_dark");
+        click_role(&mut h, Role::Button, "Scan nodes");
+        wait_for(&mut h, "progress", |h| h.state().scan_progress().is_some_and(|(d, _)| d >= 3));
+        shot(&mut h, "connection_bar_scan_dark");
+        click(&mut h, "Cancel scan");
     }
     {
         let (_t, mut h) = scene(1920.0, 1080.0, Theme::Dark, "shot_b_dark");

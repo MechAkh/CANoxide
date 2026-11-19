@@ -189,6 +189,31 @@ pub(crate) fn series_colour(p: &Palette, i: usize) -> Color32 {
     c(if p.dark { D[i % 8] } else { L[i % 8] })
 }
 
+/// Messages view: the full change tint of a data byte (blue: the value went
+/// up, red: down). The tint fades towards the row background; primary text
+/// keeps the AA contrast on every mix (tested).
+pub(crate) fn change_tint(p: &Palette, up: bool) -> Color32 {
+    match (p.dark, up) {
+        (true, true) => c(0x1F4E8C),
+        (true, false) => c(0x7A2430),
+        (false, true) => c(0xBFD8F8),
+        (false, false) => c(0xF6C4C4),
+    }
+}
+
+/// Messages view: the heat colour of a bit cell by its toggle rate (0..1).
+pub(crate) fn bit_heat(p: &Palette, rate: f32) -> Color32 {
+    let hot = if p.dark { c(0x7A4A10) } else { c(0xF5C98A) };
+    mix(p.bg_button, hot, rate)
+}
+
+/// `a` mixed with `b` by `t` (0: `a`, 1: `b`), opaque.
+pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()))
+}
+
 /// A rounded label with a tint fill (pill / chip). With `outlined` (the
 /// "reduce colour" setting) the fill is replaced by a 1 px border.
 pub(crate) fn pill(ui: &mut egui::Ui, text: impl Into<String>, fg: Color32, fill: Color32, outlined: bool) -> egui::Response {
@@ -485,6 +510,28 @@ mod tests {
     fn contrast_formula_known_values() {
         assert!((contrast(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 1e-9);
         assert!((contrast(Color32::WHITE, Color32::WHITE) - 1.0).abs() < 1e-9);
+    }
+
+    /// The change tints and the bit heat keep AA text contrast (4.5) with
+    /// primary text at each fade step, on the plain, striped and selected
+    /// row.
+    #[test]
+    fn message_tints_are_readable() {
+        for p in [&DARK, &LIGHT] {
+            for bg in [p.bg_panel, p.bg_row_alt, p.bg_selection] {
+                for up in [true, false] {
+                    for i in 0..=10 {
+                        let t = mix(bg, change_tint(p, up), i as f32 / 10.0);
+                        let r = contrast(p.text_primary, t);
+                        assert!(r >= 4.5, "tint up {up} step {i} dark {}: {r:.2}", p.dark);
+                    }
+                }
+            }
+            for i in 0..=10 {
+                let r = contrast(p.text_primary, bit_heat(p, i as f32 / 10.0));
+                assert!(r >= 4.5, "heat step {i} dark {}: {r:.2}", p.dark);
+            }
+        }
     }
 
     #[test]

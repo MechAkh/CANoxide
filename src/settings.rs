@@ -138,6 +138,13 @@ pub struct Settings {
     pub confirm_lss: bool,
     /// Ask before a DCF restore (not before a dry run).
     pub confirm_dcf_restore: bool,
+    // ---- v0.3 ----
+    /// Messages view: seconds over which the change tint of a data byte
+    /// fades, 0.2..10.
+    pub msg_fade_s: f32,
+    /// Messages view: no tint on a byte that changes in nearly every frame
+    /// (for example a counter).
+    pub msg_mute_noisy: bool,
 }
 
 /// Table row height.
@@ -223,6 +230,8 @@ impl Default for Settings {
             confirm_pdo_apply: true,
             confirm_lss: true,
             confirm_dcf_restore: true,
+            msg_fade_s: 2.0,
+            msg_mute_noisy: false,
         }
     }
 }
@@ -274,6 +283,9 @@ impl Settings {
         }
         if !(0.5..=5.0).contains(&self.graph_line_width) {
             self.graph_line_width = 1.5;
+        }
+        if !(0.2..=10.0).contains(&self.msg_fade_s) {
+            self.msg_fade_s = 2.0;
         }
     }
 }

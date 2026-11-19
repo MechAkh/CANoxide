@@ -26,11 +26,13 @@ pub(crate) enum Tab {
     TxList,
     Lss,
     Dcf,
+    /// One row per COB-ID with the data-change display (0.3).
+    Messages,
 }
 
 impl Tab {
     /// The tabs of the View menu, in menu order (trace tabs separately).
-    pub(crate) const VIEWS: [Tab; 9] = [Tab::Devices, Tab::Eds, Tab::Od, Tab::Network, Tab::Graph, Tab::Pdo, Tab::TxList, Tab::Lss, Tab::Dcf];
+    pub(crate) const VIEWS: [Tab; 10] = [Tab::Devices, Tab::Eds, Tab::Od, Tab::Network, Tab::Messages, Tab::Graph, Tab::Pdo, Tab::TxList, Tab::Lss, Tab::Dcf];
 
     pub(crate) fn name(self) -> String {
         match self {
@@ -44,6 +46,7 @@ impl Tab {
             Tab::TxList => "Transmit list".into(),
             Tab::Lss => "LSS".into(),
             Tab::Dcf => "DCF save / restore".into(),
+            Tab::Messages => "Messages".into(),
         }
     }
 
@@ -59,6 +62,7 @@ impl Tab {
             Tab::TxList => icon::PAPER_PLANE_TILT,
             Tab::Lss => icon::IDENTIFICATION_CARD,
             Tab::Dcf => icon::FILE_CODE,
+            Tab::Messages => icon::TABLE,
         }
     }
 }
@@ -77,7 +81,7 @@ pub(crate) fn layout_a() -> DockState<Tab> {
     let s = dock.main_surface_mut();
     // egui_dock 0.16 gives `fraction` to the left (new) node here.
     let [main, _devices] = s.split_left(NodeIndex::root(), 0.21, vec![Tab::Devices, Tab::Eds]);
-    let [_od, bottom] = s.split_below(main, 0.56, vec![Tab::Trace(1), Tab::TxList]);
+    let [_od, bottom] = s.split_below(main, 0.56, vec![Tab::Trace(1), Tab::Messages, Tab::TxList]);
     let [_trace, _graph] = s.split_right(bottom, 0.58, vec![Tab::Graph]);
     dock
 }
@@ -87,7 +91,7 @@ pub(crate) fn layout_b() -> DockState<Tab> {
     let s = dock.main_surface_mut();
     let [mid, _dev] = s.split_left(NodeIndex::root(), 0.15, vec![Tab::Devices, Tab::Eds]);
     let [mid, right] = s.split_right(mid, 0.60, vec![Tab::Network]);
-    let [_od, _trace] = s.split_below(mid, 0.55, vec![Tab::Trace(1), Tab::TxList]);
+    let [_od, _trace] = s.split_below(mid, 0.55, vec![Tab::Trace(1), Tab::Messages, Tab::TxList]);
     let [_net, _graph] = s.split_below(right, 0.40, vec![Tab::Graph]);
     dock
 }
@@ -159,7 +163,8 @@ fn largest_leaf(d: &DockState<Tab>) -> Option<NodeIndex> {
 }
 
 /// Open a tab (or bring it to the front when it is open). LSS opens beside
-/// Network and DCF beside the object dictionary (spec 7), else the largest
+/// Network, DCF beside the object dictionary (spec 7) and Messages beside a
+/// trace tab, else the largest
 /// leaf takes it.
 pub(crate) fn open_tab(d: &mut DockState<Tab>, tab: Tab) {
     if let Some(loc) = d.find_tab(&tab) {
@@ -169,7 +174,7 @@ pub(crate) fn open_tab(d: &mut DockState<Tab>, tab: Tab) {
     let near = match tab {
         Tab::Lss => leaf_of(d, Tab::Network),
         Tab::Dcf => leaf_of(d, Tab::Od),
-        Tab::Trace(_) => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
+        Tab::Trace(_) | Tab::Messages => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
         _ => None,
     };
     match near.or_else(|| largest_leaf(d)) {
@@ -241,6 +246,7 @@ impl TabViewer for Viewer<'_> {
             Tab::TxList => self.app.txlist_tab(ui),
             Tab::Lss => self.app.lss_tab(ui),
             Tab::Dcf => self.app.dcf_tab(ui),
+            Tab::Messages => self.app.messages_tab(ui),
         });
     }
 
@@ -272,12 +278,12 @@ mod tests {
     fn layout_a_and_b_hold_the_spec_tabs() {
         let a = tabs_by_leaf(&layout_a());
         assert_eq!(a.len(), 4);
-        for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Network, Tab::Pdo], vec![Tab::Trace(1), Tab::TxList], vec![Tab::Graph]] {
+        for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Network, Tab::Pdo], vec![Tab::Trace(1), Tab::Messages, Tab::TxList], vec![Tab::Graph]] {
             assert!(a.contains(&want), "layout A lacks {want:?}: {a:?}");
         }
         let b = tabs_by_leaf(&layout_b());
         assert_eq!(b.len(), 5);
-        for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Pdo], vec![Tab::Trace(1), Tab::TxList], vec![Tab::Network], vec![Tab::Graph]] {
+        for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Pdo], vec![Tab::Trace(1), Tab::Messages, Tab::TxList], vec![Tab::Network], vec![Tab::Graph]] {
             assert!(b.contains(&want), "layout B lacks {want:?}: {b:?}");
         }
         for d in [layout_a(), layout_b()] {
@@ -300,6 +306,26 @@ mod tests {
             open_tab(&mut d, Tab::Lss);
             assert!(is_open(&d, Tab::Lss));
         }
+    }
+
+    /// A layout file of 0.2 (no Messages tab) still loads; Messages then
+    /// opens beside the trace tab.
+    #[test]
+    fn old_layout_loads_and_messages_opens_beside_trace() {
+        let dir = std::env::temp_dir().join(format!("canoxide_layout_old_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut old = layout_a();
+        close_tab(&mut old, Tab::Messages);
+        save_layout(&dir, &old).unwrap();
+        let t = std::fs::read_to_string(dir.join(LAYOUT_FILE)).unwrap();
+        assert!(!t.contains("Messages"));
+        let (back, note) = load_layout(&dir);
+        assert!(note.is_none(), "{note:?}");
+        let mut d = back.unwrap();
+        assert!(!is_open(&d, Tab::Messages));
+        open_tab(&mut d, Tab::Messages);
+        assert_eq!(leaf_of(&d, Tab::Messages), leaf_of(&d, Tab::Trace(1)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -167,3 +167,22 @@ fn v02_settings_defaults_round_trip_and_sanitize() {
     let s = Settings::load(&t.0).0;
     assert_eq!((s.ui_scale, s.sdo_block_size, s.scan_first, s.scan_last, s.pdo_scan_stop), (1.0, 1, 50, 50, 1));
 }
+
+#[test]
+fn v03_messages_settings_default_load_and_sanitize() {
+    let t = TempDir::new("set03");
+    let s = Settings::default();
+    assert_eq!((s.msg_fade_s, s.msg_mute_noisy), (2.0, false));
+    // A 0.2 file without the new keys loads with the defaults.
+    fs::write(t.0.join(SETTINGS_FILE), br#"{"sdo_timeout_ms": 500, "zebra": false}"#).unwrap();
+    let (old, warn) = Settings::load(&t.0);
+    assert!(warn.is_none());
+    assert_eq!((old.sdo_timeout_ms, old.zebra, old.msg_fade_s, old.msg_mute_noisy), (500, false, 2.0, false));
+    let mut c = s.clone();
+    c.msg_fade_s = 5.0;
+    c.msg_mute_noisy = true;
+    c.save(&t.0).unwrap();
+    assert_eq!(Settings::load(&t.0).0, c);
+    fs::write(t.0.join(SETTINGS_FILE), br#"{"msg_fade_s": 50.0}"#).unwrap();
+    assert_eq!(Settings::load(&t.0).0.msg_fade_s, 2.0, "out of range");
+}

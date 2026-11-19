@@ -353,6 +353,16 @@ impl App {
                     }) {
                         d.trace_autoscroll = def.trace_autoscroll;
                     }
+                    if row(ui, &search, "Messages: change fade time", "Seconds over which the tint of a changed data byte fades.", d.msg_fade_s != def.msg_fade_s, |ui| {
+                        ui.add(egui::DragValue::new(&mut d.msg_fade_s).range(0.2..=10.0).speed(0.1).suffix(" s"));
+                    }) {
+                        d.msg_fade_s = def.msg_fade_s;
+                    }
+                    if row(ui, &search, "Messages: mute noisy bytes", "No tint on a byte that changes in nearly every frame (for example a counter).", d.msg_mute_noisy != def.msg_mute_noisy, |ui| {
+                        ui.checkbox(&mut d.msg_mute_noisy, "");
+                    }) {
+                        d.msg_mute_noisy = def.msg_mute_noisy;
+                    }
                     // ---- Graph
                     sec(ui, 6);
                     if row(ui, &search, "Buffer size", "Points kept per signal.", d.signal_capacity != def.signal_capacity, |ui| {

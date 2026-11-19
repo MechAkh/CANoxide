@@ -10,6 +10,7 @@ mod dock;
 mod graph;
 mod library_view;
 mod lss_view;
+mod messages_view;
 mod network;
 mod od;
 mod pdo_view;
@@ -160,6 +161,9 @@ pub(crate) struct App {
     decode_ctx: DecodeContext,
     trace: TraceStore,
     traces: BTreeMap<u8, trace_view::TraceView>,
+    /// Per-COB-ID statistics of the Messages view (fed with the trace).
+    msgs: crate::msgstats::MsgStats,
+    msgv: messages_view::MessagesView,
     od: od::OdView,
     net: network::NetView,
     graph: graph::GraphView,
@@ -198,6 +202,8 @@ impl App {
             data_error: boot.data_error,
             trace: TraceStore::new(boot.settings.trace_capacity),
             traces: BTreeMap::new(),
+            msgs: crate::msgstats::MsgStats::new(),
+            msgv: messages_view::MessagesView::default(),
             settings: boot.settings,
             settings_dirty: false,
             settings_saved: Instant::now(),
@@ -558,6 +564,8 @@ impl App {
                     self.connect_text = text;
                     self.rebuild_decode();
                     self.graph.on_connected(&self.bus);
+                    self.msgs.reset();
+                    self.msgv.on_reset();
                 }
                 BusEvent::Disconnected => {
                     self.connected = false;
@@ -571,8 +579,10 @@ impl App {
                 BusEvent::Frames(v) => {
                     for f in v {
                         let d = decode(&f, &self.decode_ctx);
+                        self.msgs.on_frame(&f, &d);
                         self.trace.push(f, d);
                     }
+                    self.msgv.on_frames(self.msgs.latest_us());
                 }
                 BusEvent::SdoDone { tag, outcome } => self.on_sdo_done(tag, outcome),
                 BusEvent::ScanFound { node, result } => {
@@ -839,6 +849,26 @@ impl App {
                 let b = egui::Button::new(egui::RichText::new("Connect").color(p.on_accent)).fill(p.accent_fill).min_size(egui::vec2(110.0, 0.0));
                 if ui.add(b).on_hover_text("Opens the channel only; nothing is sent").clicked() {
                     self.connect();
+                }
+            }
+
+            // The node scan of the Network view (one implementation): the
+            // Network tab comes to the front to show the result.
+            if self.scan_running() {
+                if let Some((done, total)) = self.scan_progress() {
+                    let frac = if total == 0 { 0.0 } else { done as f32 / total as f32 };
+                    ui.add(egui::ProgressBar::new(frac).desired_width(90.0).text(format!("{done} / {total}")));
+                }
+                if ui.button("Cancel scan").clicked() {
+                    self.cancel_scan();
+                }
+            } else {
+                let (a, b) = (self.settings.scan_first, self.settings.scan_last);
+                let r = self.send_button(ui, true, "Scan nodes");
+                let r = if self.can_send() { r.on_hover_text(format!("SDO read of 0x1000 on nodes {a}..{b}, one at a time")) } else { r };
+                if r.clicked() {
+                    self.start_scan();
+                    self.open_tab(Tab::Network);
                 }
             }
 
