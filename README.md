@@ -42,13 +42,42 @@ cargo build --release
 The exe is `target\release\CANopenTester.exe`: one file, static CRT, no
 installer, no console window. Copy it anywhere.
 
+## Command line
+
+`canopen-cli.exe` (built next to the GUI exe) is a command-line CANopen
+master for scripts and AI agents, on the same library: scan, node info,
+SDO read/write (block transfer included), OD dump, NMT, SYNC, raw frames,
+a bounded bus monitor, PDO read/enable/set/map, heartbeat, value watch,
+LSS, DCF save/restore/compare, and a `shell` that keeps one session open.
+Output is JSON (JSON Lines for `monitor`, `watch` and `shell`); `--text`
+gives tables. The simulator is the default adapter, and `--listen-only`
+refuses every command that transmits.
+
+```
+canopen-cli help --json
+canopen-cli scan
+canopen-cli sdo read 0x1018:1
+canopen-cli --adapter pcan --listen-only monitor --duration 10
+```
+
+Exit codes: 0 ok, 1 device/protocol error, 2 usage error, 3 adapter error.
+See [docs/CLI.md](docs/CLI.md) for the safety model and worked examples.
+
 ## Data folder
 
-All state lives in `CANopenTester_data\` next to the exe:
-`settings.json`, `devices.json` and `eds\` (copies of the added EDS/DCF
-files). If that folder is not writable, the app shows the error in the left
-panel and saves nothing. A broken `devices.json` is kept as
-`devices.json.bad`.
+All state of the GUI lives in one data folder: `settings.json`,
+`devices.json`, `eds\` (copies of the added EDS/DCF files) and the saved
+PDO configurations.
+
+- **Portable (default):** `CANoxide_data\` next to the exe. An old
+  `CANopenTester_data\` folder there is renamed to it on the first start.
+- **Installed:** when a file `CANoxide.installed` is next to the exe, the
+  folder is `%APPDATA%\CANoxide`.
+
+If the folder is not writable, the app
+shows the error and saves nothing. A broken `devices.json` is kept as
+`devices.json.bad`. The command-line tool uses a data folder only when it
+gets `--data-dir`.
 
 ## PEAK driver
 
@@ -65,14 +94,10 @@ send control. The node scan sends one SDO request at a time.
 
 ## Limits (not built)
 
-- LSS services (the two LSS COB-IDs are only labelled).
-- SDO block transfer.
-- Firmware download.
+- Firmware download (CiA 302-3).
 - CAN FD.
 - Adapters other than PEAK and the simulator (the `CanAdapter` trait allows
   a CANfox backend later).
-- Reading the PDO configuration from the device: PDOs decode from the
-  EDS/DCF defaults.
 - No installer.
 
 ## Licence
