@@ -358,6 +358,11 @@ impl App {
                     }) {
                         d.msg_fade_s = def.msg_fade_s;
                     }
+                    if row(ui, &search, "Messages: sparkline time", "Seconds shown by the sparkline beside each signal value.", d.sparkline_s != def.sparkline_s, |ui| {
+                        ui.add(egui::DragValue::new(&mut d.sparkline_s).range(1.0..=120.0).speed(0.5).suffix(" s"));
+                    }) {
+                        d.sparkline_s = def.sparkline_s;
+                    }
                     if row(ui, &search, "Messages: mute noisy bytes", "No tint on a byte that changes in nearly every frame (for example a counter).", d.msg_mute_noisy != def.msg_mute_noisy, |ui| {
                         ui.checkbox(&mut d.msg_mute_noisy, "");
                     }) {

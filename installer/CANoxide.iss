@@ -49,7 +49,9 @@ Compression=lzma2
 SolidCompression=yes
 OutputDir=..\target\installer
 OutputBaseFilename={#AppName}-{#AppVersion}-setup
-UninstallDisplayIcon={app}\{#AppExe}
+SetupIconFile=..\assets\icon\canoxide.ico
+; The app icon: icon group 1 of CANoxide.exe (build.rs).
+UninstallDisplayIcon={app}\{#AppExe},0
 UninstallDisplayName={#AppName} {#AppVersion}
 ; Close a running CANoxide before its files are replaced; do not restart it.
 CloseApplications=yes

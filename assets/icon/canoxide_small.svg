@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Simplified mark for 16 to 24 px. Grid: 16 units = 1 px at 16 px. -->
+  <!-- Tile: the 16-unit edge fills exactly the outer pixel ring at 16 px -->
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="#16202B" stroke="#2E3B4A" stroke-width="16"/>
+  <!-- "O": green ring, about 2 px stroke at 16 px -->
+  <circle cx="74" cy="128" r="42" fill="none" stroke="#3DAE49" stroke-width="30"/>
+  <!-- "x": no cut; mid-grey wire under, light-grey wire over -->
+  <path d="M158 82 L222 174" stroke="#8C96A3" stroke-width="28" stroke-linecap="butt" fill="none"/>
+  <path d="M158 174 L222 82" stroke="#E6E9ED" stroke-width="28" stroke-linecap="butt" fill="none"/>
+</svg>

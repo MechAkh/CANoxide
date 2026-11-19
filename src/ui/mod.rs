@@ -41,18 +41,29 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// The app icon (assets/icon), embedded for the window and the About dialog.
+/// The exe icon in Explorer and the taskbar comes from the icon resource of
+/// build.rs.
+pub const ICON_PNG: &[u8] = include_bytes!("../../assets/icon/canoxide_64.png");
+
+/// The decoded app icon.
+pub fn app_icon() -> Result<egui::IconData, String> {
+    eframe::icon_data::from_png_bytes(ICON_PNG).map_err(|e| e.to_string())
+}
+
 /// Start the GUI. Blocks until the window closes.
 pub fn run() -> eframe::Result {
     let boot = Boot::load();
     let size = [boot.settings.window_width.max(1024.0), boot.settings.window_height.max(640.0)];
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(format!("CANoxide {}", crate::VERSION))
-            .with_inner_size(size)
-            .with_min_inner_size([1024.0, 640.0])
-            .with_drag_and_drop(true),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(format!("CANoxide {}", crate::VERSION))
+        .with_inner_size(size)
+        .with_min_inner_size([1024.0, 640.0])
+        .with_drag_and_drop(true);
+    if let Ok(icon) = app_icon() {
+        viewport = viewport.with_icon(Arc::new(icon));
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("CANoxide", options, Box::new(move |cc| Ok(Box::new(App::new(cc, boot)))))
 }
 
@@ -188,6 +199,8 @@ pub(crate) struct App {
     deferred: Vec<Option<Tab>>,
     settings_dlg: Option<settings_dlg::SettingsDlg>,
     about: bool,
+    /// The app icon of the About dialog (made on the first open).
+    about_icon: Option<egui::TextureHandle>,
     confirm: Option<Confirm>,
     tasks: HashMap<u64, TaskOwner>,
     /// The OS theme (from the window), for Theme::System.
@@ -244,6 +257,7 @@ impl App {
             deferred: Vec::new(),
             settings_dlg: None,
             about: false,
+            about_icon: None,
             confirm: None,
             tasks: HashMap::new(),
             os_dark: None,
@@ -1052,9 +1066,18 @@ impl App {
             }
         }
         if self.about {
+            if self.about_icon.is_none() {
+                self.about_icon = app_icon().ok().map(|i| ctx.load_texture("about_icon", egui::ColorImage::from_rgba_unmultiplied([i.width as usize, i.height as usize], &i.rgba), egui::TextureOptions::LINEAR));
+            }
+            let icon = self.about_icon.clone();
             egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
                 ui.set_width(420.0);
-                ui.label(egui::RichText::new("CANoxide").text_style(egui::TextStyle::Name("title".into())));
+                ui.horizontal(|ui| {
+                    if let Some(t) = &icon {
+                        ui.add(egui::Image::new((t.id(), egui::vec2(48.0, 48.0))).alt_text("CANoxide icon"));
+                    }
+                    ui.label(egui::RichText::new("CANoxide").text_style(egui::TextStyle::Name("title".into())));
+                });
                 ui.monospace(format!("Version {}", crate::VERSION));
                 ui.label("A portable CANopen bench tool. Copyright (c) 2026 MechAkh. Licence: MIT.");
                 ui.label("Fonts: Inter and JetBrains Mono (SIL Open Font License 1.1, see licenses\\). Icons: Phosphor (MIT).");

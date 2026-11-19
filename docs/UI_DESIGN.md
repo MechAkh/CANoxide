@@ -1,7 +1,7 @@
-# CANoxide v0.2 — UI design specification
+# CANoxide v0.3 — UI design specification
 
-For: the coder who builds the v0.2 UI in Rust with `egui` 0.31, `egui_dock`
-and `egui_plot`. This file is complete on its own; the design canvas only
+For: the coder who builds the v0.3 UI in Rust with `egui` 0.31, `egui_dock`
+and `egui_plot` (the v0.2 design plus the v0.3 sections marked as such). This file is complete on its own; the design canvas only
 illustrates it. All sizes are egui logical points at UI scale 100 %
 (1 pt = 1 px at 100 % Windows scaling). Hex colours are sRGB, opaque unless
 an alpha is given.
@@ -27,6 +27,10 @@ where it carries meaning (message type, node state, result). Flat fills,
   Punctuation + Arrows + Box Drawing with `pyftsubset` (about 90 KB each).
   Keep egui's default emoji fallback out of the build if it is not needed.
 - Licence texts go into `licenses/` and the About dialog.
+- App icon (v0.3): `assets/icon/` (see its README). Both exes carry
+  `canoxide.ico` as icon group 1 (build.rs, winresource); the window icon
+  and the About dialog use the embedded `canoxide_64.png`. The installer
+  uses the same `.ico` as its setup icon.
 
 ## 2. Typography (at UI scale 100 %)
 
@@ -372,7 +376,7 @@ Every icon-only button has a tooltip with the action and its shortcut.
 
 Top to bottom (window 1280 × 800):
 
-1. **Native window title bar** (OS). Title `CANoxide 0.2`.
+1. **Native window title bar** (OS). Title `CANoxide 0.3.0` (the version), the app icon.
 2. **Menu bar** — height 28, fill bg.frame, bottom 1 px border.subtle.
    Items `File  View  Settings  Help`, `body`, padding 10, hover fill
    bg.button.hover radius 4. Right side: theme quick switch (icon button
@@ -380,7 +384,7 @@ Top to bottom (window 1280 × 800):
    - File: Open EDS…, Recent EDS ▸, Save trace as…, Export object dictionary (CSV)…, Open data folder, Exit.
    - View: list of panels with check marks (Devices, EDS library, Object dictionary, Network, Trace 1…4, Graph, PDO configuration, Transmit list, LSS, DCF save / restore); separator; New trace tab (disabled at 4); separator; Reset layout; Full screen F11.
    - Settings: opens the Settings dialog (Ctrl+,) — it is a direct menu item, not a submenu.
-   - Help: User guide, Keyboard shortcuts, Open log folder, About CANoxide (modal 420 wide: app name `CANoxide` in `title`, version `0.2.x` mono, licence, font and icon licences, project link).
+   - Help: User guide, Keyboard shortcuts, Open log folder, About CANoxide (modal 420 wide: the app icon 48 × 48 and app name `CANoxide` in `title`, version `0.3.x` mono, licence, font and icon licences, project link).
 3. **Connection bar** — height 38, fill bg.frame, bottom 1 px border.strong.
    Left to right, gap 8, separators 1 px border.subtle × 20 between groups:
    - `Adapter` label (small, secondary) + ComboBox 150 (`Simulator`, `PCAN-USB 1`, …).
@@ -623,6 +627,63 @@ unless noted.
   index:sub, name and the decoded value.
 - Empty: "No frames yet. Connect to see one row per COB-ID."
 
+0.3 additions to the detail pane (default height 460, resizable):
+
+- Selection: a drag over the cells selects bits, also across byte rows.
+  Segmented `LE | BE` after the selection text sets how the selection
+  runs: LE in bit order (start = the lowest bit), BE in grid reading order
+  (start = the first cell, the MSB; text `Selected: bit s (MSB), l bit,
+  big endian`). Buttons after it: `Add to Graph`, `Define signal...`,
+  `Find similar bits` (one bit only).
+- User signals: an inner 1.5 pt outline in the signal colour (shrunk 3.5,
+  inside the PDO outline, so both show), the names in small text in their
+  colour after the Hex cell of each byte they touch.
+- Value list right of the grid: `User signals` (small secondary) with a
+  10 pt colour square, `name = value unit`, an 84 × 16 sparkline, small
+  buttons `Edit`, `Delete` and, for a 1-bit signal, `Similar bits`; then
+  the mapped list, each line also with a sparkline. A sparkline is a
+  1.5 pt line of the last `sparkline_s` seconds (Settings, default 10 s),
+  auto-scaled, from a fixed ring of 128 points per signal.
+- History under the grid: `History` (strong), checkbox `Filter`, signal
+  combo, operator combo (`= != > <`), value field, `Export CSV...`; a
+  virtualised table (newest first): `Time (s)`, `Δt (ms)`, `Data` (mono),
+  one column per signal (PDO-mapped first, then user signals). It fills
+  the pane down to its bottom edge.
+- `Define signal` / `Edit signal` window (movable, like Add signal): grid
+  Name, COB-ID 0x + `Ext`, Start bit, Length, Byte order (`Little endian |
+  Big endian`), Type (`Unsigned | Signed | Float32`), Factor, Offset, Unit,
+  Colour (8 swatches, the chosen one outlined); a small note on the start
+  bit; error text in `error`; `Save`, `Cancel`. Escape closes it.
+- `Similar bits` window: progress and `Cancel` while it runs, then a table
+  `COB-ID | Bit | Match | Inverted | Toggles` (best first); a click on a
+  row selects that message and bit in the Messages view.
+
+### 8.4b Log replay (v0.3)
+
+- Adapter combo entry `Log file (replay)`; the channel field becomes the
+  file name with a `Choose...` button.
+- Transport bar under the connection bar, only during a replay: play /
+  pause, step back / forward, `Replay speed` combo (0.25x to 16x, `As
+  fast as possible`), `Loop`, a scrubber slider over the log time, the
+  clock `t / total s` (mono) and `frame n / N`; the note `Replay: nothing
+  is sent` in secondary. A log with bad lines asks first (`Load the good
+  frames` or cancel), naming the first bad lines.
+
+### 8.4c Find signal (v0.3)
+
+- Dock tab `Find signal` (`magnifying-glass` icon), View menu, opened
+  beside a trace tab.
+- Settings row: `Sizes` checkboxes (1, 8, 16, 32 bit), `Byte aligned`,
+  `Little endian | Big endian`, `Signed`; `COB-IDs` field (hint `all (or
+  hex: 181, 281)`) and `Start` (later `Reset`).
+- Step row: `Step` combo (= != > < between increased decreased changed
+  unchanged), one or two DragValues for the value steps, `Apply step`,
+  `Undo step` (8 levels).
+- `n candidates` (strong) and `after s1, then s2` (secondary); a warning
+  line when the start set was cut at 200 000. At 50 candidates or fewer, a
+  table `COB-ID | Start bit | Bits | Value` with `Define signal...` per
+  row (opens the Define signal window filled in).
+
 ### 8.5 Graph
 
 - Toolbar: toggle `Pause`, `Add signal` (secondary, `plus`), window combo
@@ -653,6 +714,12 @@ unless noted.
     `Add` (primary).
 - Empty: icon `chart-line`, "No signals", "Add a PDO signal, an SDO poll
   or raw bits.", button `Add signal`.
+- v0.3: the Add signal dialog has a fourth source `User signal` (a combo
+  of the user signals of the Messages view). Toolbar icon button `Export
+  range...` (`export`) opens a small window: `From` / `To` (s), `Visible
+  range`, a note on the layout, `Save...`, `Cancel`. The CSV has
+  `time_s` and one `name [unit]` column per shown signal, one row per
+  distinct sample time, an empty cell where a signal has no sample.
 
 ### 8.6 PDO configuration
 

@@ -2182,6 +2182,24 @@ fn s32_find_signal_steps() {
     assert!(has_exact(&h, "6 candidates"), "reset\nUI:\n{}", dump(&h));
 }
 
+/// The embedded window icon decodes; the About dialog shows it.
+#[test]
+fn s33_app_icon() {
+    let icon = super::app_icon().expect("window icon decodes");
+    assert_eq!((icon.width, icon.height), (64, 64));
+    assert_eq!(icon.rgba.len(), 64 * 64 * 4);
+    // Transparent outside the tile, opaque in the middle.
+    assert_eq!(icon.rgba[3], 0, "corner pixel");
+    assert_eq!(icon.rgba[(32 * 64 + 32) * 4 + 3], 255, "centre pixel");
+    let tmp = TempDir::new("s33");
+    let mut h = build(&tmp.data());
+    click_role(&mut h, Role::Button, "Help");
+    click(&mut h, "About CANoxide");
+    assert!(has_exact(&h, "CANoxide icon"), "About icon\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, &format!("Version {}", crate::VERSION)));
+    assert_eq!(crate::VERSION, "0.3.0");
+}
+
 // ------------------------------------------------------------ 0.3 replay
 
 /// A made-up candump log: `n` frames 10 ms apart (a heartbeat of node 5

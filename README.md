@@ -55,12 +55,12 @@ first start ("More info" then "Run anyway").
 ## Comparison with CANopen Magic Professional
 
 CANopen Magic is the established commercial tool in this field. The table
-compares the features of CANoxide 0.2 with those of CANopen Magic
+compares the features of CANoxide 0.3 with those of CANopen Magic
 Professional, taken from the vendor's public product pages in November
 2026. Check the vendor's pages for the current and complete list.
 CANoxide is younger and has had far less use on real networks.
 
-| Feature | CANopen Magic Pro | CANoxide 0.2 |
+| Feature | CANopen Magic Pro | CANoxide 0.3 |
 |---|---|---|
 | Price and licence | Commercial licence | Free, MIT, open source |
 | EDS / DCF import, object dictionary browser | Yes | Yes |
@@ -70,7 +70,7 @@ CANoxide is younger and has had far less use on real networks.
 | Trace with CANopen decoding and filters | Yes | Yes |
 | Several trace windows | Yes | Yes (up to 4 tabs) |
 | Continuous logging to a file | Yes | Yes (CSV) |
-| Log playback | Yes | No |
+| Log playback | Yes | Yes (CANoxide files and candump logs) |
 | PDO decoding from the device's real configuration | Yes | Yes |
 | PDO configuration window (read, edit, write) | Yes | Yes |
 | Graphical display of process data over time | Yes | Yes |
@@ -118,7 +118,7 @@ menu:
   hides the tint of bytes that change on almost every frame. Select a row
   to see its bits (how often each bit toggles), the mapped PDO signals and
   their values; select bits and click **Add to Graph** to plot them as raw
-  bits. Statistics reset for one row or for all.
+  bits. Statistics reset for one row or for all. Signal analysis, see below.
 - **Graph**: plot PDO signals (TPDOs and RPDOs of the device), SDO-polled
   values or raw frame bits; export as CSV. SDO polling runs only while you
   start it. The **Add signal** window can be moved, so that the plot stays
@@ -131,6 +131,46 @@ menu:
   timing.
 - **DCF save / restore**: save a node to a DCF, compare a DCF with a node,
   dry run and restore.
+
+**Log replay.** Choose **Log file (replay)** as the adapter and pick a
+CANoxide trace CSV or a candump log (`(1700000000.123456) can0 181#0102`).
+Connect loads the log (a log with bad lines asks first) and shows the
+transport bar: play / pause, step, speed (0.25x to 16x or as fast as
+possible), loop and a time scrubber. Every view works on the replayed
+frames as on a live bus; nothing is sent. `canoxide-cli --adapter replay
+--file <log>` does the same for scripts (see docs/CLI.md).
+
+**Signal analysis** (Messages view, Graph, **Find signal** tab):
+
+- **Define signal.** Drag over bits in the bit grid (also across byte
+  borders; **LE** or **BE** sets the byte order of the selection) and click
+  **Define signal...**: name, start bit, length, byte order, unsigned /
+  signed / float32, factor, offset, unit and colour. User signals are kept
+  per COB-ID in `user_signals.json`; they show as outlines and names in the
+  grid, in the value list beside it (edit, delete), in the decoded text of
+  the trace and as the **User signal** source of the Graph. They may overlap
+  the PDO-mapped signals.
+- **Find similar bits.** Select one bit (or use a 1-bit user signal) and
+  rank every bit of the trace buffer, or of the loaded log up to the replay
+  cursor, by how often it equals the reference (match) or its inverse
+  (inverted match). Bits that never toggled are left out; click a row to
+  select that bit. The search runs in the background and can be cancelled.
+- **Find signal** (View menu): start with every bit field of the chosen
+  sizes (default: single bits and byte-aligned 8, 16 and 32 bit fields,
+  optionally only some COB-IDs), then keep the fields whose newest value
+  (live or at the replay cursor) passes each step: = != > < between, or
+  increased / decreased / changed / unchanged since the last step. **Undo
+  step**, **Reset**, and **Define signal...** for a candidate. The start
+  set is capped at 200 000 fields (a note says so).
+- **Sparklines** of the last 10 s (Settings: Messages: sparkline time)
+  beside each user signal and each mapped PDO signal in the Messages
+  detail.
+- **History** of the selected COB-ID under the bit grid: newest frame
+  first, time, Δt, data and one column per signal, with a filter (signal,
+  = != > <, value) and **Export CSV...** of the filtered rows.
+- **Graph > Export range**: a CSV of a time range (from / to, default the
+  visible range) with a `time_s` column and one column per signal; a cell
+  is empty when that signal has no sample at that time.
 
 **Docking.** Drag a tab to move or split it, so that several views are
 visible at once. The first start picks layout A (window narrower than
@@ -189,7 +229,8 @@ mode on a bench bus before you rely on the tool on a live system.
 All state of the GUI lives in one data folder: `settings.json`,
 `devices.json`, `eds\` (copies of the added EDS/DCF files), the saved
 PDO configurations, `layout.json` (the dock layout), `signals.json` (the
-graph signals) and `txlist.json` (the transmit list).
+graph signals), `user_signals.json` (the user signals of the Messages
+view) and `txlist.json` (the transmit list).
 
 - **Portable:** `CANoxide_data\` next to the exe. A data folder of the old
   name (version 0.1) there is renamed to it on the first start.
@@ -218,9 +259,11 @@ cargo build --release
 ```
 
 The exes are `target\release\CANoxide.exe` and
-`target\release\canoxide-cli.exe`: single files with a static CRT. The
-installer is built with Inno Setup 6, see
-[installer/README.md](installer/README.md).
+`target\release\canoxide-cli.exe`: single files with a static CRT. Both
+carry the app icon (`assets\icon\canoxide.ico`, compiled by `build.rs`
+with the `winresource` crate and the `rc.exe` of the Windows SDK);
+`py -3 tools\check_exe_icon.py` checks the built exes. The installer is
+built with Inno Setup 6, see [installer/README.md](installer/README.md).
 
 A Rust exe contains the source paths of its dependencies, and so the name
 of your user folder. For a build that you publish, replace it (PowerShell):
@@ -235,8 +278,7 @@ cargo build --release
 - CAN FD.
 - Firmware download (CiA 302-3) as a guided function (a block download of
   a file to an object is possible).
-- Log playback, gauges, error frame display, application profiles such as
-  CiA 447.
+- Gauges, error frame display, application profiles such as CiA 447.
 - Adapters other than PEAK and the simulator (the `CanAdapter` trait
   allows more backends later).
 

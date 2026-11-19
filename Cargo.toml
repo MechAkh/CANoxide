@@ -1,6 +1,6 @@
 [package]
 name = "canoxide"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Portable CANopen bench tester: EDS browser, SDO client, NMT, bus trace"
 license = "MIT"
@@ -31,6 +31,11 @@ libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 encoding_rs = "0.8"
+
+[target.'cfg(windows)'.build-dependencies]
+# App icon and version resource of both exes (build.rs); uses rc.exe of the
+# Windows SDK that MSVC builds already need.
+winresource = "0.1"
 
 [profile.release]
 opt-level = "s"

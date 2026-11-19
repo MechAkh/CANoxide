@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Tile -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#16202B" stroke="#2E3B4A" stroke-width="6"/>
+  <!-- "O": green ring -->
+  <circle cx="82" cy="132" r="46" fill="none" stroke="#3DAE49" stroke-width="30"/>
+  <!-- "x", under-wire: cut where the over-wire crosses it -->
+  <g fill="#8C96A3">
+    <path d="M152 74 L174.2 110.7 M199.8 153.3 L222 190" stroke="#8C96A3" stroke-width="28" fill="none"/>
+    <circle cx="152" cy="74" r="14"/>
+    <circle cx="222" cy="190" r="14"/>
+  </g>
+  <!-- "x", over-wire -->
+  <path d="M152 190 L222 74" stroke="#E6E9ED" stroke-width="28" stroke-linecap="round" fill="none"/>
+</svg>
