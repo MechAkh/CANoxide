@@ -35,6 +35,9 @@ pub(crate) struct SettingsDlg {
     /// Section to scroll to (clicked in the navigation).
     pub goto: Option<usize>,
     pub current: usize,
+    /// The clicked section stays highlighted until the user scrolls (the
+    /// last sections cannot reach the top of the list).
+    pub pinned: Option<usize>,
 }
 
 /// A navigation item (spec section 9): full width, icon then label,
@@ -96,7 +99,7 @@ fn section_title(ui: &mut egui::Ui, title: &str, ic: &str) -> egui::Response {
 impl App {
     pub(crate) fn open_settings(&mut self) {
         if self.settings_dlg.is_none() {
-            self.settings_dlg = Some(SettingsDlg { draft: self.settings.clone(), search: String::new(), goto: None, current: 0 });
+            self.settings_dlg = Some(SettingsDlg { draft: self.settings.clone(), search: String::new(), goto: None, current: 0, pinned: None });
         }
     }
 
@@ -167,6 +170,7 @@ impl App {
                             if r.clicked() {
                                 dlg.goto = Some(i);
                                 dlg.current = i;
+                                dlg.pinned = Some(i);
                             }
                         }
                     });
@@ -445,7 +449,10 @@ impl App {
                     });
                     // The nav follows the scroll position.
                     let clip_top = ui.clip_rect().top();
-                    if goto.is_none() {
+                    if ui.input(|i| i.smooth_scroll_delta.y != 0.0 || (i.pointer.is_decidedly_dragging() && i.pointer.primary_down())) {
+                        dlg.pinned = None;
+                    }
+                    if goto.is_none() && dlg.pinned.is_none() {
                         let mut cur = 0;
                         for (i, t) in tops.iter().enumerate() {
                             if *t <= clip_top + 40.0 {
@@ -460,9 +467,9 @@ impl App {
             // Footer.
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new("Restore all defaults").frame(false)).clicked() {
-                    let keep = (dlg.draft.window_width, dlg.draft.window_height, dlg.draft.active_device.clone(), dlg.draft.saved_frames.clone());
+                    let keep = (dlg.draft.window_width, dlg.draft.window_height, dlg.draft.window_maximized, dlg.draft.window_pos, dlg.draft.active_device.clone(), dlg.draft.saved_frames.clone());
                     dlg.draft = Settings::default();
-                    (dlg.draft.window_width, dlg.draft.window_height, dlg.draft.active_device, dlg.draft.saved_frames) = keep;
+                    (dlg.draft.window_width, dlg.draft.window_height, dlg.draft.window_maximized, dlg.draft.window_pos, dlg.draft.active_device, dlg.draft.saved_frames) = keep;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(egui::Button::new(egui::RichText::new("Save").color(p.on_accent)).fill(p.accent_fill)).clicked() {
