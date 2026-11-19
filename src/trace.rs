@@ -156,6 +156,11 @@ impl TraceStore {
         self.next_seq
     }
 
+    /// The frames in the buffer, oldest first.
+    pub fn frames(&self) -> impl DoubleEndedIterator<Item = &CanFrame> + ExactSizeIterator {
+        self.ring.iter().map(|e| &e.frame)
+    }
+
     pub fn clear(&mut self) {
         self.ring.clear();
         self.fixed.clear();

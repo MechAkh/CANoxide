@@ -107,6 +107,8 @@ pub struct DecodeContext {
     pub nodes: HashMap<u8, Arc<ObjectDictionary>>,
     overrides: HashMap<u8, Vec<PdoConfig>>,
     pdos: HashMap<u32, (u8, PdoConfig)>,
+    /// User signals (0.3): their values follow the decoded text.
+    user: Arc<Vec<crate::usersig::UserSignal>>,
 }
 
 fn put_pdo(pdos: &mut HashMap<u32, (u8, PdoConfig)>, node: u8, c: PdoConfig) {
@@ -123,7 +125,7 @@ fn put_pdo(pdos: &mut HashMap<u32, (u8, PdoConfig)>, node: u8, c: PdoConfig) {
 
 impl DecodeContext {
     pub fn new(nodes: HashMap<u8, Arc<ObjectDictionary>>) -> Self {
-        let mut c = DecodeContext { nodes, overrides: HashMap::new(), pdos: HashMap::new() };
+        let mut c = DecodeContext { nodes, overrides: HashMap::new(), pdos: HashMap::new(), user: Arc::default() };
         c.rebuild();
         c
     }
@@ -169,6 +171,15 @@ impl DecodeContext {
         }
     }
 
+    /// The user signals whose values the decoded text shows.
+    pub fn set_user_signals(&mut self, v: Arc<Vec<crate::usersig::UserSignal>>) {
+        self.user = v;
+    }
+
+    pub fn user_signals(&self) -> &Arc<Vec<crate::usersig::UserSignal>> {
+        &self.user
+    }
+
     /// The read PDO configuration set for `node`.
     pub fn node_pdos(&self, node: u8) -> Option<&[PdoConfig]> {
         self.overrides.get(&node).map(|v| v.as_slice())
@@ -200,6 +211,21 @@ impl DecodeContext {
 }
 
 pub fn decode(f: &CanFrame, ctx: &DecodeContext) -> Decoded {
+    let mut d = decode_frame(f, ctx);
+    if !f.rtr && !ctx.user.is_empty() {
+        for s in ctx.user.iter().filter(|s| s.matches(f.id, f.extended)) {
+            if let Some(t) = s.text(f.payload()) {
+                if !d.text.is_empty() {
+                    d.text.push_str(if d.text.ends_with(';') { " " } else { "; " });
+                }
+                d.text.push_str(&t);
+            }
+        }
+    }
+    d
+}
+
+fn decode_frame(f: &CanFrame, ctx: &DecodeContext) -> Decoded {
     if !f.extended {
         if let Some((node, cfg)) = ctx.pdo(f.id) {
             let class = if cfg.kind == PdoKind::Tpdo { MsgClass::Tpdo } else { MsgClass::Rpdo };

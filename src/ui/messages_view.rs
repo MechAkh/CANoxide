@@ -5,7 +5,9 @@
 //! or bit range goes to the Graph as a raw-frame-bits signal. The
 //! statistics live in `crate::msgstats`; this module only draws.
 
-use super::{graph, theme, App};
+use super::{analysis_view, graph, theme, App};
+use crate::analysis::BitRef;
+use crate::usersig::{fmt_value, UserSignal};
 use crate::canopen::pdo::MapEntry;
 use crate::msgstats::{tint_strength, Change, MsgKey};
 use crate::signals::{RawKind, SignalDef, SignalSource};
@@ -64,6 +66,10 @@ pub(crate) struct MessagesView {
     /// The selected bits of the detail pane (anchor, end; bit k = byte
     /// k / 8, bit k % 8).
     bit_sel: Option<(u32, u32)>,
+    /// The selection is a big-endian field (grid reading order).
+    pub sel_be: bool,
+    /// A drag over the bit grid is running.
+    bit_drag: bool,
     /// The PDO mapping that `mapped` was built from.
     pdo_cache: Option<(MsgKey, Option<NodeMapping>)>,
     mapped: Vec<MappedSig>,
@@ -96,10 +102,35 @@ impl MessagesView {
         self.clock.map_or(0, |(t, at)| t + at.elapsed().as_micros() as u64)
     }
 
-    /// The selected bit range (start bit, length).
+    /// The selected field (start bit, length). Little endian: the bits
+    /// a..b in bit order (start = the lowest). Big endian: the cells a..b
+    /// in grid reading order (bytes down, bits 7..0 across; start = the
+    /// first cell, the MSB).
     fn selection(&self) -> Option<(u32, u32)> {
-        self.bit_sel.map(|(a, b)| (a.min(b), a.max(b) - a.min(b) + 1))
+        let (a, b) = self.bit_sel?;
+        if self.sel_be {
+            let (ga, gb) = (grid_pos(a), grid_pos(b));
+            Some((if ga <= gb { a } else { b }, ga.max(gb) - ga.min(gb) + 1))
+        } else {
+            Some((a.min(b), a.max(b) - a.min(b) + 1))
+        }
     }
+
+    /// Bit k is in the selection.
+    fn in_selection(&self, k: u32) -> bool {
+        let Some((a, b)) = self.bit_sel else { return false };
+        if self.sel_be {
+            let (ga, gb, g) = (grid_pos(a), grid_pos(b), grid_pos(k));
+            g >= ga.min(gb) && g <= ga.max(gb)
+        } else {
+            k >= a.min(b) && k <= a.max(b)
+        }
+    }
+}
+
+/// The reading-order position of bit k in the grid (byte rows, bit 7 left).
+fn grid_pos(k: u32) -> u32 {
+    (k / 8) * 8 + 7 - k % 8
 }
 
 /// "00".."FF" without an allocation per cell.
@@ -152,6 +183,10 @@ fn age_text(age_us: u64) -> String {
 enum DetailAction {
     ResetRow,
     AddToGraph(u32, u32),
+    Define(u32, u32),
+    Similar(u32),
+    EditUser(usize),
+    DeleteUser(usize),
 }
 
 impl App {
@@ -227,8 +262,9 @@ impl App {
         let fade_us = (self.settings.msg_fade_s.max(0.0) * 1e6) as u64;
         let mut fading = false;
         // Detail pane of the selected row.
+        self.an.sparks.tick();
         if let Some(key) = self.msgv.selected {
-            egui::TopBottomPanel::bottom("msg_detail").resizable(true).default_height(240.0).min_height(120.0).show_inside(ui, |ui| {
+            egui::TopBottomPanel::bottom("msg_detail").resizable(true).default_height(460.0).min_height(120.0).show_inside(ui, |ui| {
                 fading |= self.message_detail(ui, key, now, fade_us);
             });
         }
@@ -387,14 +423,31 @@ impl App {
         self.msgv.pdo_cache = Some((key, owned));
     }
 
-    /// The detail pane: bit grid with toggle heat, mapped signals, reset and
-    /// Add to Graph. Returns true while a tint fades.
+    /// Select a message and one bit of it (from Find similar bits).
+    pub(crate) fn select_message_bit(&mut self, key: MsgKey, bit: u32) {
+        if self.msgs.get(key).is_none() {
+            self.set_status(format!("{} is not in the Messages view", key_text(key)), true);
+            return;
+        }
+        self.msgv.selected = Some(key);
+        self.msgv.bit_sel = Some((bit, bit));
+        self.open_tab(super::dock::Tab::Messages);
+    }
+
+    /// The detail pane: bit grid with toggle heat (a drag selects bits),
+    /// the user signals and the mapped PDO signals with sparklines, the
+    /// history. Returns true while a tint fades.
     fn message_detail(&mut self, ui: &mut egui::Ui, key: MsgKey, now: u64, fade_us: u64) -> bool {
         self.refresh_mapped(key);
         let p = theme::pal(ui);
         let Some(e) = self.msgs.get(key) else { return false };
         let mut action: Option<DetailAction> = None;
         let sel = self.msgv.selection();
+        let n = if e.rtr { 0 } else { e.dlc.min(8) as usize };
+        let window_s = self.settings.sparkline_s as f64;
+        let now_s = now as f64 / 1e6;
+        // The user signals of this COB-ID: (index, bits, colour).
+        let usr: Vec<(usize, Vec<u32>, egui::Color32)> = self.an.usigs.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended)).map(|(i, s)| (i, s.bit_list(), analysis_view::colour32(s.colour))).collect();
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let node = e.node.map(|n| format!(" node {n}")).unwrap_or_default();
@@ -405,23 +458,40 @@ impl App {
             }
             ui.separator();
             let txt = match sel {
+                Some((s, l)) if self.msgv.sel_be => format!("Selected: bit {s} (MSB), {l} bit, big endian"),
                 Some((s, l)) => format!("Selected: bit {s}, {l} bit"),
-                None => "Click a byte or a bit (Shift: extend) to select".to_string(),
+                None => "Drag over bits or click a byte or a bit (Shift: extend) to select".to_string(),
             };
             ui.label(egui::RichText::new(txt).color(p.text_secondary));
-            if ui.add_enabled(sel.is_some(), egui::Button::new("Add to Graph")).on_hover_text("Add the selected bits as a raw-frame-bits signal (unsigned, little endian)").clicked() {
+            ui.selectable_value(&mut self.msgv.sel_be, false, "LE").on_hover_text("Little endian: the selection runs in bit order (start = the lowest bit)");
+            ui.selectable_value(&mut self.msgv.sel_be, true, "BE").on_hover_text("Big endian: the selection runs in grid reading order (start = the first cell, the MSB)");
+            if ui.add_enabled(sel.is_some(), egui::Button::new("Add to Graph")).on_hover_text("Add the selected bits as a raw-frame-bits signal (unsigned)").clicked() {
                 if let Some((s, l)) = sel {
                     action = Some(DetailAction::AddToGraph(s, l));
+                }
+            }
+            if ui.add_enabled(sel.is_some(), egui::Button::new("Define signal...")).on_hover_text("Name the selected bits as a signal of this COB-ID").clicked() {
+                if let Some((s, l)) = sel {
+                    action = Some(DetailAction::Define(s, l));
+                }
+            }
+            let one = sel.filter(|(_, l)| *l == 1).map(|(s, _)| s);
+            if ui.add_enabled(one.is_some(), egui::Button::new("Find similar bits")).on_hover_text("Rank the bits of all messages by how well they follow the selected bit").on_disabled_hover_text("Select one bit").clicked() {
+                if let Some(s) = one {
+                    action = Some(DetailAction::Similar(s));
                 }
             }
         });
         ui.separator();
         let mut new_sel = self.msgv.bit_sel;
-        let n = if e.rtr { 0 } else { e.dlc.min(8) as usize };
+        let mut drag = self.msgv.bit_drag;
         let mapped = &self.msgv.mapped;
         let sig_of = |k: u32| mapped.iter().position(|s| k >= s.offset && k < s.offset + s.bits);
-        let in_sel = |k: u32| sel.is_some_and(|(s, l)| k >= s && k < s + l);
+        let msgv = &self.msgv;
         let shift = ui.input(|i| i.modifiers.shift);
+        let (ptr, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
+        let sparks = &mut self.an.sparks;
+        let usigs = &self.an.usigs;
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 if n == 0 {
@@ -440,11 +510,11 @@ impl App {
                     ui.horizontal(|ui| {
                         let r = ui.add_sized(egui::vec2(56.0, cell.y), egui::Button::new(BYTE_NAME[b]).frame(false)).on_hover_text("Select the whole byte");
                         if r.clicked() {
-                            new_sel = Some((b as u32 * 8, b as u32 * 8 + 7));
+                            new_sel = Some(if msgv.sel_be { (b as u32 * 8 + 7, b as u32 * 8) } else { (b as u32 * 8, b as u32 * 8 + 7) });
                         }
                         for bit in (0..8u32).rev() {
                             let k = b as u32 * 8 + bit;
-                            let (r, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
+                            let (r, resp) = ui.allocate_exact_size(cell, egui::Sense::click_and_drag());
                             let rate = e.toggle_rate(k as usize);
                             ui.painter().rect_filled(r.shrink(1.0), 2.0, theme::bit_heat(p, rate));
                             let v = e.bit(k as usize);
@@ -452,7 +522,13 @@ impl App {
                             if let Some(si) = sig_of(k) {
                                 ui.painter().rect_stroke(r.shrink(1.5), 2.0, egui::Stroke::new(1.5_f32, theme::series_colour(p, si)), egui::StrokeKind::Inside);
                             }
-                            if in_sel(k) {
+                            // User signals: an inner outline in their colour
+                            // (a PDO-mapped outline stays visible outside it).
+                            for (_, bits, c) in usr.iter().filter(|(_, bits, _)| bits.contains(&k)) {
+                                let _ = bits;
+                                ui.painter().rect_stroke(r.shrink(3.5), 1.0, egui::Stroke::new(1.5_f32, *c), egui::StrokeKind::Inside);
+                            }
+                            if msgv.in_selection(k) || (drag && new_sel.is_some_and(|(a, z)| sel_contains(msgv.sel_be, a, z, k))) {
                                 ui.painter().rect_stroke(r.shrink(0.5), 2.0, egui::Stroke::new(2.0_f32, p.text_accent), egui::StrokeKind::Inside);
                             }
                             let resp = resp.on_hover_ui(|ui| {
@@ -462,7 +538,18 @@ impl App {
                                 if let Some(si) = sig_of(k) {
                                     ui.label(format!("Mapped: {}", mapped[si].text));
                                 }
+                                for (i, _, _) in usr.iter().filter(|(_, bits, _)| bits.contains(&k)) {
+                                    ui.label(format!("Signal: {}", usigs[*i].name));
+                                }
                             });
+                            if resp.drag_started() {
+                                new_sel = Some((k, k));
+                                drag = true;
+                            } else if drag && down && ptr.is_some_and(|q| r.contains(q)) {
+                                if let Some((a, _)) = new_sel {
+                                    new_sel = Some((a, k));
+                                }
+                            }
                             if resp.clicked() {
                                 new_sel = match (shift, new_sel) {
                                     (true, Some((a, _))) => Some((a, k)),
@@ -480,41 +567,108 @@ impl App {
                             ui.painter().rect_filled(r.shrink(1.0), 2.0, theme::mix(p.bg_panel, theme::change_tint(p, s.dir == Some(Change::Up)), kt));
                         }
                         ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, hex2(e.data[b]), egui::FontId::monospace(12.0), p.text_primary);
+                        // The names of the user signals in this byte.
+                        for (i, _, c) in usr.iter().filter(|(_, bits, _)| bits.iter().any(|k| *k / 8 == b as u32)) {
+                            ui.label(egui::RichText::new(&usigs[*i].name).small().color(*c));
+                        }
                     });
                 }
             });
-            ui.separator();
+            // A space, not a separator: a vertical separator takes the full
+            // pane height, and the history below would grow the pane.
+            ui.add_space(16.0);
             ui.vertical(|ui| {
+                let data = &e.data[..n];
+                if !usr.is_empty() {
+                    ui.label(egui::RichText::new("User signals").small().color(p.text_secondary));
+                    for (i, _, c) in &usr {
+                        let s = &usigs[*i];
+                        ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().rect_filled(r, 2.0, *c);
+                            let vt = s.value(data).map(fmt_value).unwrap_or_else(|| "-".to_string());
+                            let unit = if s.unit.is_empty() { String::new() } else { format!(" {}", s.unit) };
+                            let kind = match s.kind {
+                                RawKind::Unsigned => "unsigned",
+                                RawKind::Signed => "signed",
+                                RawKind::Float => "float32",
+                            };
+                            ui.label(format!("{} = {vt}{unit}", s.name)).on_hover_text(format!("bit {}, {} bit, {}, {kind}, factor {}, offset {}", s.start_bit, s.bits, if s.big_endian { "big endian" } else { "little endian" }, fmt_value(s.factor), fmt_value(s.offset)));
+                            analysis_view::sparkline(ui, sparks.ensure(key, s, window_s), now_s, *c);
+                            if ui.small_button("Edit").clicked() {
+                                action = Some(DetailAction::EditUser(*i));
+                            }
+                            if ui.small_button("Delete").clicked() {
+                                action = Some(DetailAction::DeleteUser(*i));
+                            }
+                            if s.bits == 1 && ui.small_button("Similar bits").on_hover_text("Find the bits that follow this 1-bit signal").clicked() {
+                                action = Some(DetailAction::Similar(s.start_bit));
+                            }
+                        });
+                    }
+                    ui.add_space(4.0);
+                }
                 if mapped.is_empty() {
                     ui.label(egui::RichText::new("No known PDO mapping for this COB-ID.").color(p.text_secondary));
                 } else {
                     ui.label(egui::RichText::new(format!("{} mapping", e.label)).small().color(p.text_secondary));
-                    let data = &e.data[..n];
                     for (si, s) in mapped.iter().enumerate() {
                         ui.horizontal(|ui| {
+                            let c = theme::series_colour(p, si);
                             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                            ui.painter().rect_stroke(r, 2.0, egui::Stroke::new(2.0_f32, theme::series_colour(p, si)), egui::StrokeKind::Inside);
+                            ui.painter().rect_stroke(r, 2.0, egui::Stroke::new(2.0_f32, c), egui::StrokeKind::Inside);
                             let v = crate::canopen::pdo::extract_bits(data, s.offset, s.bits);
                             let vt = v.map_or("-".to_string(), |v| format!("{v} (0x{v:X})"));
                             ui.label(format!("{} = {vt}", s.text)).on_hover_text(format!("bit {}, {} bit", s.offset, s.bits));
+                            if s.bits <= 64 {
+                                let us = UserSignal::new(s.text.clone(), key.id, key.extended, s.offset, s.bits);
+                                analysis_view::sparkline(ui, sparks.ensure(key, &us, window_s), now_s, c);
+                            }
                         });
                     }
                 }
             });
         });
+        if !down {
+            drag = false;
+        }
         let fading = (0..n).any(|b| tint_strength(e.bytes[b].last_change_us, now, fade_us) > 0.0);
+        // The history columns: the mapped PDO signals, then the user signals.
+        let mut cols: Vec<UserSignal> = self.msgv.mapped.iter().filter(|s| s.bits <= 64).map(|s| UserSignal::new(s.text.clone(), key.id, key.extended, s.offset, s.bits)).collect();
+        cols.extend(usr.iter().map(|(i, _, _)| self.an.usigs[*i].clone()));
         self.msgv.bit_sel = new_sel;
+        self.msgv.bit_drag = drag;
+        if drag {
+            ui.ctx().request_repaint();
+        }
+        ui.separator();
+        self.history_section(ui, key, cols);
+        let be = self.msgv.sel_be;
         match action {
             Some(DetailAction::ResetRow) => self.msgs.reset_id(key),
             Some(DetailAction::AddToGraph(start_bit, bits)) => {
-                let source = SignalSource::Raw { cob_id: key.id, extended: key.extended, start_bit, bits, raw_kind: RawKind::Unsigned, big_endian: false };
+                let source = SignalSource::Raw { cob_id: key.id, extended: key.extended, start_bit, bits, raw_kind: RawKind::Unsigned, big_endian: be };
                 let name = graph::default_name(&source);
                 if self.add_signal(SignalDef::new(name.clone(), source)).is_some() {
                     self.set_status(format!("Signal {name} added to the Graph"), false);
                 }
             }
+            Some(DetailAction::Define(start_bit, bits)) => self.define_signal(key, start_bit, bits, be, false),
+            Some(DetailAction::Similar(bit)) => self.start_similar(BitRef { key, bit }),
+            Some(DetailAction::EditUser(i)) => self.edit_user_signal(i),
+            Some(DetailAction::DeleteUser(i)) => self.delete_user_signal(i),
             None => {}
         }
         fading
+    }
+}
+
+/// Bit k lies in the selection (a, z) (`be`: in grid reading order).
+fn sel_contains(be: bool, a: u32, z: u32, k: u32) -> bool {
+    if be {
+        let (ga, gz, g) = (grid_pos(a), grid_pos(z), grid_pos(k));
+        g >= ga.min(gz) && g <= ga.max(gz)
+    } else {
+        k >= a.min(z) && k <= a.max(z)
     }
 }

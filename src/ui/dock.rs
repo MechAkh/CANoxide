@@ -28,11 +28,13 @@ pub(crate) enum Tab {
     Dcf,
     /// One row per COB-ID with the data-change display (0.3).
     Messages,
+    /// Narrow down an unknown signal by steps (0.3).
+    FindSignal,
 }
 
 impl Tab {
     /// The tabs of the View menu, in menu order (trace tabs separately).
-    pub(crate) const VIEWS: [Tab; 10] = [Tab::Devices, Tab::Eds, Tab::Od, Tab::Network, Tab::Messages, Tab::Graph, Tab::Pdo, Tab::TxList, Tab::Lss, Tab::Dcf];
+    pub(crate) const VIEWS: [Tab; 11] = [Tab::Devices, Tab::Eds, Tab::Od, Tab::Network, Tab::Messages, Tab::FindSignal, Tab::Graph, Tab::Pdo, Tab::TxList, Tab::Lss, Tab::Dcf];
 
     pub(crate) fn name(self) -> String {
         match self {
@@ -47,6 +49,7 @@ impl Tab {
             Tab::Lss => "LSS".into(),
             Tab::Dcf => "DCF save / restore".into(),
             Tab::Messages => "Messages".into(),
+            Tab::FindSignal => "Find signal".into(),
         }
     }
 
@@ -63,6 +66,7 @@ impl Tab {
             Tab::Lss => icon::IDENTIFICATION_CARD,
             Tab::Dcf => icon::FILE_CODE,
             Tab::Messages => icon::TABLE,
+            Tab::FindSignal => icon::MAGNIFYING_GLASS,
         }
     }
 }
@@ -174,7 +178,7 @@ pub(crate) fn open_tab(d: &mut DockState<Tab>, tab: Tab) {
     let near = match tab {
         Tab::Lss => leaf_of(d, Tab::Network),
         Tab::Dcf => leaf_of(d, Tab::Od),
-        Tab::Trace(_) | Tab::Messages => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
+        Tab::Trace(_) | Tab::Messages | Tab::FindSignal => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
         _ => None,
     };
     match near.or_else(|| largest_leaf(d)) {
@@ -247,6 +251,7 @@ impl TabViewer for Viewer<'_> {
             Tab::Lss => self.app.lss_tab(ui),
             Tab::Dcf => self.app.dcf_tab(ui),
             Tab::Messages => self.app.messages_tab(ui),
+            Tab::FindSignal => self.app.findsig_tab(ui),
         });
     }
 

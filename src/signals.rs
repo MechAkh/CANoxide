@@ -147,6 +147,44 @@ pub fn raw_bits(data: &[u8], start_bit: u32, bits: u32, big_endian: bool) -> Opt
     Some(v)
 }
 
+/// The number of a raw bit field: unsigned, signed (two's complement of
+/// `bits`) or float (32 or 64 bits; other sizes give `None`).
+pub fn raw_number(raw: u64, bits: u32, kind: RawKind) -> Option<f64> {
+    match kind {
+        RawKind::Unsigned => Some(raw as f64),
+        RawKind::Signed => Some(interpret(Some(DataType::Integer64), raw, bits)),
+        RawKind::Float if bits == 32 => Some(f32::from_bits(raw as u32) as f64),
+        RawKind::Float if bits == 64 => Some(f64::from_bits(raw)),
+        RawKind::Float => None,
+    }
+}
+
+/// The bit indices (k = byte * 8 + bit) of a field, from the start bit
+/// on: little endian upwards, big endian (Motorola) as `raw_bits` walks.
+/// `None` when the field does not fit in 8 bytes.
+pub fn field_bits(start_bit: u32, bits: u32, big_endian: bool) -> Option<Vec<u32>> {
+    if bits == 0 || bits > 64 {
+        return None;
+    }
+    if !big_endian {
+        return (start_bit + bits <= 64).then(|| (start_bit..start_bit + bits).collect());
+    }
+    let mut v = Vec::with_capacity(bits as usize);
+    let mut pos = start_bit as i64;
+    for _ in 0..bits {
+        if !(0..64).contains(&pos) {
+            return None;
+        }
+        v.push(pos as u32);
+        if pos % 8 == 0 {
+            pos += 15;
+        } else {
+            pos -= 1;
+        }
+    }
+    Some(v)
+}
+
 impl SignalStore {
     pub fn new(capacity: usize) -> SignalStore {
         SignalStore { signals: Vec::new(), capacity: capacity.max(2), next_id: 1 }
@@ -254,13 +292,7 @@ impl SignalStore {
                         continue;
                     }
                     let Some(raw) = raw_bits(data, *start_bit, *bits, *big_endian) else { continue };
-                    let v = match raw_kind {
-                        RawKind::Unsigned => raw as f64,
-                        RawKind::Signed => interpret(Some(DataType::Integer64), raw, *bits),
-                        RawKind::Float if *bits == 32 => f32::from_bits(raw as u32) as f64,
-                        RawKind::Float if *bits == 64 => f64::from_bits(raw),
-                        RawKind::Float => continue,
-                    };
+                    let Some(v) = raw_number(raw, *bits, *raw_kind) else { continue };
                     updates.push((s.id, v));
                 }
                 SignalSource::SdoPoll { .. } => {}
@@ -336,6 +368,48 @@ impl SignalStore {
         Ok(())
     }
 
+    /// The points of the signals `ids` in [t0, t1] as one table: a header
+    /// `time_s,<name> [<unit>],...`, then one row per distinct time (sorted),
+    /// with an empty cell where a signal has no sample at that time (the
+    /// last sample wins when a signal has two at the same time). Returns the
+    /// number of rows.
+    pub fn write_range_csv(&self, w: &mut impl Write, ids: &[u64], t0: f64, t1: f64) -> std::io::Result<usize> {
+        let sigs: Vec<&Signal> = ids.iter().filter_map(|id| self.get(*id)).collect();
+        let mut head = String::from("time_s");
+        for s in &sigs {
+            let n = if s.def.unit.is_empty() { s.def.name.clone() } else { format!("{} [{}]", s.def.name, s.def.unit) };
+            head.push(',');
+            head.push_str(&crate::trace::csv_field(&n));
+        }
+        writeln!(w, "{head}")?;
+        let mut pts: Vec<(f64, usize, f64)> = Vec::new();
+        for (i, s) in sigs.iter().enumerate() {
+            pts.extend(s.points.iter().filter(|(t, _)| *t >= t0 && *t <= t1).map(|(t, v)| (*t, i, *v)));
+        }
+        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut rows = 0;
+        let mut cells: Vec<Option<f64>> = vec![None; sigs.len()];
+        let mut i = 0;
+        while i < pts.len() {
+            let t = pts[i].0;
+            cells.iter_mut().for_each(|c| *c = None);
+            while i < pts.len() && pts[i].0 == t {
+                cells[pts[i].1] = Some(pts[i].2);
+                i += 1;
+            }
+            let mut line = format!("{t:.6}");
+            for c in &cells {
+                line.push(',');
+                if let Some(v) = c {
+                    line.push_str(&v.to_string());
+                }
+            }
+            writeln!(w, "{line}")?;
+            rows += 1;
+        }
+        Ok(rows)
+    }
+
     pub fn defs(&self) -> Vec<SignalDef> {
         self.signals.iter().map(|s| s.def.clone()).collect()
     }
@@ -359,5 +433,43 @@ impl SignalStore {
             self.add(d);
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_csv_layout_with_empty_cells() {
+        let mut s = SignalStore::new(100);
+        let a = s.add(SignalDef { unit: "V".to_string(), ..SignalDef::new("a", SignalSource::Pdo { node: 1, index: 0x6000, sub: 1 }) });
+        let b = s.add(SignalDef::new("b,c", SignalSource::Pdo { node: 1, index: 0x6000, sub: 2 }));
+        for (t, v) in [(0.5, 1.0), (1.0, 2.0), (2.0, 3.0), (3.5, 9.0)] {
+            s.push_raw(a, t, v);
+        }
+        for (t, v) in [(1.0, 10.0), (1.5, 11.0), (4.0, 12.0)] {
+            s.push_raw(b, t, v);
+        }
+        let mut out = Vec::new();
+        let n = s.write_range_csv(&mut out, &[a, b], 1.0, 3.5).unwrap();
+        let t = String::from_utf8(out).unwrap();
+        assert_eq!(t, "time_s,a [V],\"b,c\"\n1.000000,2,10\n1.500000,,11\n2.000000,3,\n3.500000,9,\n");
+        assert_eq!(n, 4);
+        // Unknown ids are skipped; an empty range gives the header only.
+        let mut out = Vec::new();
+        assert_eq!(s.write_range_csv(&mut out, &[99, a], 10.0, 20.0).unwrap(), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), "time_s,a [V]\n");
+    }
+
+    #[test]
+    fn raw_number_and_field_bits() {
+        assert_eq!(raw_number(0xFF, 8, RawKind::Signed), Some(-1.0));
+        assert_eq!(raw_number(0xFF, 8, RawKind::Unsigned), Some(255.0));
+        assert_eq!(raw_number(1.5f32.to_bits() as u64, 32, RawKind::Float), Some(1.5));
+        assert_eq!(raw_number(0, 16, RawKind::Float), None);
+        assert_eq!(field_bits(6, 4, false), Some(vec![6, 7, 8, 9]));
+        assert_eq!(field_bits(1, 4, true), Some(vec![1, 0, 15, 14]));
+        assert_eq!(field_bits(62, 4, false), None);
     }
 }

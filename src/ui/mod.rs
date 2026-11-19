@@ -5,6 +5,7 @@
 //! `BusEvent`s each frame. Every bus send comes from a button; opening the
 //! app, a view or a tab sends nothing.
 
+mod analysis_view;
 mod dcf_view;
 mod dock;
 mod graph;
@@ -178,6 +179,8 @@ pub(crate) struct App {
     txv: tx_view::TxView,
     lssv: lss_view::LssView,
     dcfv: dcf_view::DcfView,
+    /// User signals, Find similar bits, Find signal, history, sparklines.
+    an: analysis_view::AnalysisState,
     dock: Option<DockState<Tab>>,
     /// No layout was saved: choose A or B by the window width.
     first_layout: bool,
@@ -235,6 +238,7 @@ impl App {
             txv: tx_view::TxView::default(),
             lssv: lss_view::LssView::default(),
             dcfv: dcf_view::DcfView::default(),
+            an: analysis_view::AnalysisState::default(),
             dock: Some(boot.layout.unwrap_or_else(|| dock::default_layout(1280.0))),
             first_layout,
             deferred: Vec::new(),
@@ -263,6 +267,7 @@ impl App {
         if let Some(n) = app.graph.load(app.lib.as_ref(), &app.bus) {
             app.set_status(n, true);
         }
+        app.load_user_signals();
         app.bus.send(BusCommand::ListChannels(app.settings.adapter));
         app.rebuild_decode();
         if app.settings.connect_on_start {
@@ -408,6 +413,7 @@ impl App {
         }
         let pdos: Vec<(u8, Vec<crate::canopen::pdo::PdoConfig>)> = self.pdo.read_configs();
         self.decode_ctx = DecodeContext::new(map.clone());
+        self.decode_ctx.set_user_signals(Arc::new(self.an.usigs.clone()));
         for (n, p) in pdos {
             self.decode_ctx.set_node_pdos(n, p);
         }
@@ -608,6 +614,7 @@ impl App {
                     for f in v {
                         let d = decode(&f, &self.decode_ctx);
                         self.msgs.on_frame(&f, &d);
+                        self.an.sparks.on_frame(&f);
                         self.trace.push(f, d);
                     }
                     self.msgv.on_frames(self.msgs.latest_us());
@@ -643,7 +650,9 @@ impl App {
                 }
                 BusEvent::ReplaySnapshot { msgs, tail } => {
                     self.trace.clear();
+                    self.an.sparks.clear();
                     for (f, d) in tail {
+                        self.an.sparks.on_frame(&f);
                         self.trace.push(f, d);
                     }
                     self.msgs = *msgs;
@@ -1058,6 +1067,8 @@ impl App {
         self.settings_dialog(ctx);
         self.replay_dialogs(ctx);
         self.graph_dialogs(ctx);
+        self.define_signal_dialog(ctx);
+        self.similar_window(ctx);
         self.pdo_dialogs(ctx);
         self.library_dialogs(ctx);
     }

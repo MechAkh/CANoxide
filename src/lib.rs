@@ -6,8 +6,9 @@
 //! restore), `netinfo` (network overview), `signals` (graph data),
 //! `busload`, `txlist` (transmit list), `trace` (store, views, logging),
 //! `msgstats` (per-COB-ID statistics of the Messages view), `replay` (log
-//! parsers, replay clock, seek rebuild),
-//! `session` (blocking driver for the CLI and tests), `library`,
+//! parsers, replay clock, seek rebuild), `usersig` (signals defined over
+//! frame bits), `analysis` (find similar bits, find signal, history,
+//! sparklines), `session` (blocking driver for the CLI and tests), `library`,
 //! `settings`, `bus` (worker thread).
 
 #![deny(unsafe_code)]
@@ -16,6 +17,7 @@
 pub const PRODUCT_NAME: &str = "CANoxide";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod analysis;
 pub mod bus;
 pub mod busload;
 pub mod can;
@@ -32,3 +34,4 @@ pub mod signals;
 pub mod trace;
 pub mod txlist;
 pub mod ui;
+pub mod usersig;

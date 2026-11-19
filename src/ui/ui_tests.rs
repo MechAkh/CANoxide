@@ -1960,6 +1960,226 @@ fn shots_v03(out: &Path) {
         run_for(&mut h, Duration::from_millis(200));
         shot(&mut h, "replay_dark");
     }
+    // Messages detail with two user signals and the Define signal dialog.
+    let user_sigs = |h: &mut H| {
+        let mut a = crate::usersig::UserSignal::new("level", 0x3A0, false, 8, 16);
+        a.unit = "mm".into();
+        a.factor = 0.1;
+        let mut b = crate::usersig::UserSignal::new("pump on", 0x3A0, false, 24, 1);
+        b.colour = crate::usersig::COLOURS[3];
+        h.state_mut().set_user_signals(vec![a, b]);
+    };
+    {
+        let (_t, mut h) = dark("shot_define", 1500.0, 950.0);
+        set_dock(&mut h, DockState::new(vec![Tab::Messages]));
+        user_sigs(&mut h);
+        analysis_frames(&mut h, 100);
+        step2(&mut h);
+        let r = top_by_label(&h, "3A0", None);
+        pointer_click(&mut h, r);
+        analysis_frames(&mut h, 500);
+        step2(&mut h);
+        click(&mut h, "Byte 0");
+        click(&mut h, "Define signal...");
+        h.state_mut().an.draft.as_mut().unwrap().sig.name = "flags".into();
+        run_for(&mut h, Duration::from_millis(100));
+        shot(&mut h, "signal_define_dark");
+    }
+    // History with a filter on a user signal.
+    {
+        let (_t, mut h) = dark("shot_history", 1500.0, 950.0);
+        set_dock(&mut h, DockState::new(vec![Tab::Messages]));
+        user_sigs(&mut h);
+        analysis_frames(&mut h, 100);
+        step2(&mut h);
+        let r = top_by_label(&h, "3A0", None);
+        pointer_click(&mut h, r);
+        analysis_frames(&mut h, 500);
+        step2(&mut h);
+        {
+            let hv = &mut h.state_mut().an.hist;
+            hv.filter_on = true;
+            hv.col = 1;
+            hv.op = Some(crate::analysis::CmpOp::Eq);
+            hv.value_text = "1".into();
+        }
+        run_for(&mut h, Duration::from_millis(400));
+        shot(&mut h, "history_dark");
+    }
+    // Find signal after two steps, beside the Messages view.
+    {
+        let (_t, mut h) = dark("shot_find", 1500.0, 900.0);
+        let mut d = DockState::new(vec![Tab::Messages]);
+        d.main_surface_mut().split_right(NodeIndex::root(), 0.45, vec![Tab::FindSignal]);
+        set_dock(&mut h, d);
+        analysis_frames(&mut h, 50);
+        msg_frame(&mut h, 0x2B0, &[9, 9, 0, 0, 4, 0, 0, 0], 2_000_000);
+        h.state_mut().an.find.fs.settings.sizes = vec![8, 16];
+        step2(&mut h);
+        click(&mut h, "Start");
+        analysis_frames(&mut h, 60);
+        pick(&mut h, "Step", "increased");
+        close_popup(&mut h);
+        click(&mut h, "Apply step");
+        run_for(&mut h, Duration::from_millis(100));
+        shot(&mut h, "find_signal_dark");
+    }
+}
+
+// ------------------------------------------------------- 0.3 analysis
+
+/// Push a frame into the Messages statistics and the trace buffer.
+fn hist_frame(h: &mut H, id: u32, data: &[u8], t_us: u64) {
+    msg_frame(h, id, data, t_us);
+    let mut f = crate::can::CanFrame::new(id, data);
+    f.timestamp_us = t_us;
+    let app = h.state_mut();
+    let d = crate::canopen::decode::decode(&f, &app.decode_ctx);
+    app.an.sparks.on_frame(&f);
+    app.trace.push(f, d);
+}
+
+/// Made-up frames of COB-ID 3A0: byte 0 a counter, bytes 1-2 a LE value
+/// that rises, byte 3 bit 0 follows counter bit 2. A second call goes on
+/// from the frames already in the trace.
+fn analysis_frames(h: &mut H, n: u64) {
+    let i0 = h.state().trace.frames().filter(|f| f.id == 0x3A0).count() as u64;
+    for i in i0..i0 + n {
+        let v = 1000 + i * 7;
+        let b3 = ((i >> 2) & 1) as u8;
+        hist_frame(h, 0x3A0, &[i as u8, v as u8, (v >> 8) as u8, b3], 1_000_000 + i * 20_000);
+    }
+}
+
+/// Centre of the bit cell `bit` (7 = left) in the row of `byte`.
+fn bit_cell(h: &H, byte: usize, bit: u32) -> egui::Pos2 {
+    let r = rect_id(h, top_by_label(h, &format!("Byte {byte}"), Some(Role::Button)));
+    let x = r.x1 as f32 + h.ctx.style().spacing.item_spacing.x + 12.0 + (7 - bit) as f32 * (24.0 + h.ctx.style().spacing.item_spacing.x);
+    egui::pos2(x, ((r.y0 + r.y1) / 2.0) as f32)
+}
+
+/// Define a signal: a drag over bits across a byte border selects them;
+/// Byte 1 + Define signal opens the dialog filled in; Save stores it in
+/// user_signals.json; it shows in the detail list, the trace decoded text,
+/// the history columns and the Graph "User signal" source.
+#[test]
+fn s31_define_signal() {
+    let tmp = TempDir::new("s31");
+    let mut h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    only(&mut h, vec![Tab::Messages]);
+    analysis_frames(&mut h, 40);
+    step2(&mut h);
+    let r = top_by_label(&h, "3A0", None);
+    pointer_click(&mut h, r);
+    assert!(has_exact(&h, "Define signal..."), "detail\nUI:\n{}", dump(&h));
+    // Drag from byte 0 bit 4 to byte 1 bit 2 (LE: bits 4..=10).
+    // (The header text changes with the selection, so the cells are
+    // measured again on each move.)
+    let a = bit_cell(&h, 0, 4);
+    h.input_mut().events.push(egui::Event::PointerMoved(a));
+    h.step();
+    h.input_mut().events.push(egui::Event::PointerButton { pos: a, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    let mut z = a;
+    for i in 1..=6 {
+        let (a, end) = (bit_cell(&h, 0, 4), bit_cell(&h, 1, 2));
+        z = a + (end - a) * (i as f32 / 6.0);
+        h.input_mut().events.push(egui::Event::PointerMoved(z));
+        h.step();
+    }
+    h.input_mut().events.push(egui::Event::PointerButton { pos: z, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    assert!(has_exact(&h, "Selected: bit 4, 7 bit"), "drag selection\nUI:\n{}", dump(&h));
+    // Byte 1 + Define signal: the dialog is filled in from the selection.
+    click(&mut h, "Byte 1");
+    assert!(has_exact(&h, "Selected: bit 8, 8 bit"));
+    click(&mut h, "Define signal...");
+    assert!(has_exact(&h, "Define signal"), "dialog\nUI:\n{}", dump(&h));
+    {
+        let d = h.state().an.draft.as_ref().expect("draft");
+        assert_eq!((d.sig.cob_id, d.sig.start_bit, d.sig.bits, d.sig.big_endian), (0x3A0, 8, 8, false));
+    }
+    // A default name is offered; Save without a name is refused.
+    assert_eq!(h.state().an.draft.as_ref().unwrap().sig.name, "3A0 sig1");
+    h.state_mut().an.draft.as_mut().unwrap().sig.name.clear();
+    click_role(&mut h, Role::Button, "Save");
+    assert!(h.state().an.draft.as_ref().is_some_and(|d| d.error.is_some()), "empty name accepted");
+    h.state_mut().an.draft.as_mut().unwrap().sig.name = "level".into();
+    h.state_mut().an.draft.as_mut().unwrap().sig.unit = "mm".into();
+    click_role(&mut h, Role::Button, "Save");
+    assert!(h.state().an.draft.is_none(), "dialog still open\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().an.usigs.len(), 1);
+    let file = std::fs::read_to_string(tmp.data().join(crate::usersig::USER_SIGNALS_FILE)).expect("user_signals.json");
+    assert!(file.contains("\"level\"") && file.contains("\"version\""), "{file}");
+    // In the detail list (newest byte 1 = (1000 + 39 * 7) & 0xFF = 249).
+    assert!(has_exact(&h, "level = 249 mm"), "value list\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "level"), "history column\nUI:\n{}", dump(&h));
+    // The trace decoded text.
+    let mut f = crate::can::CanFrame::new(0x3A0, &[0, 42, 0, 0]);
+    f.timestamp_us = 3_000_000;
+    let d = crate::canopen::decode::decode(&f, &h.state().decode_ctx);
+    assert!(d.text.contains("level=42 mm"), "decoded {:?}", d.text);
+    // The Graph source.
+    only(&mut h, vec![Tab::Graph]);
+    click_containing(&mut h, "Add signal...");
+    click(&mut h, "User signal");
+    // The combo of the dialog (it has no label) lists the user signal.
+    let win = rect_id(&h, top_by_label(&h, "Add signal", Some(Role::Window)));
+    let combo = h.query_all_by_role(Role::ComboBox).map(|n| (n.id(), rect_of(&n))).find(|(_, r)| r.y0 > win.y0 && r.y1 < win.y1 && r.x0 > win.x0).map(|(id, _)| id).expect("user signal combo");
+    click_id(&mut h, combo);
+    assert!(has_exact(&h, "level (3A0, bit 8, 8 bit)"), "graph source\nUI:\n{}", dump(&h));
+    click(&mut h, "level (3A0, bit 8, 8 bit)");
+    click_role(&mut h, Role::Button, "Add");
+    assert!(has_exact(&h, "level [mm]") && has_exact(&h, "raw 3A0, bit 8, 8 bit unsigned"), "legend row\nUI:\n{}", dump(&h));
+}
+
+/// An access-kit click on a combo option does not close the popup (a real
+/// click does): Escape closes it.
+fn close_popup(h: &mut H) {
+    if h.ctx.memory(|m| m.any_popup_open()) {
+        h.input_mut().events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+        step2(h);
+    }
+}
+
+/// Find signal: Start takes every field; "increased" keeps the rising
+/// ones; "unchanged" after no new frame keeps all; Undo step goes back.
+#[test]
+fn s32_find_signal_steps() {
+    let tmp = TempDir::new("s32");
+    let mut h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    only(&mut h, vec![Tab::Trace(1)]);
+    view_menu(&mut h, "Find signal");
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    assert!(disabled(&h, top_by_label(&h, "Start", Some(Role::Button))), "Start without frames");
+    // Only 8-bit fields: one COB-ID with 4 bytes = 4 candidates.
+    msg_frame(&mut h, 0x3A0, &[1, 10, 0x55, 7], 1_000_000);
+    msg_frame(&mut h, 0x2B0, &[9, 9], 1_000_000);
+    h.state_mut().an.find.fs.settings.sizes = vec![8];
+    step2(&mut h);
+    click(&mut h, "Start");
+    assert!(has_exact(&h, "6 candidates"), "start\nUI:\n{}", dump(&h));
+    // Byte 1 of 3A0 rises, byte 0 of 2B0 falls.
+    msg_frame(&mut h, 0x3A0, &[1, 11, 0x55, 7], 1_020_000);
+    msg_frame(&mut h, 0x2B0, &[8, 9], 1_020_000);
+    pick(&mut h, "Step", "increased");
+    close_popup(&mut h);
+    click(&mut h, "Apply step");
+    assert!(has_exact(&h, "1 candidates"), "increased\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "Define signal..."), "small set listed\nUI:\n{}", dump(&h));
+    click(&mut h, "Undo step");
+    assert!(has_exact(&h, "6 candidates"), "undo\nUI:\n{}", dump(&h));
+    pick(&mut h, "Step", "changed");
+    close_popup(&mut h);
+    click(&mut h, "Apply step");
+    assert!(has_exact(&h, "2 candidates"), "changed\nUI:\n{}", dump(&h));
+    // Define signal from a candidate opens the dialog filled in.
+    click(&mut h, "Define signal...");
+    assert!(h.state().an.draft.as_ref().is_some_and(|d| d.sig.bits == 8), "dialog from a candidate");
+    click_role(&mut h, Role::Button, "Cancel");
+    click(&mut h, "Reset");
+    assert!(has_exact(&h, "6 candidates"), "reset\nUI:\n{}", dump(&h));
 }
 
 // ------------------------------------------------------------ 0.3 replay

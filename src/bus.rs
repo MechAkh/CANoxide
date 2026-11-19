@@ -91,6 +91,8 @@ pub enum BusCommand {
     SetNodePdos(NodePdoConfig),
     /// Back to the EDS defaults for this node.
     ClearNodePdos(u8),
+    /// The user signals for the worker decoder (trace log).
+    SetUserSignals(Arc<Vec<crate::usersig::UserSignal>>),
     /// Allow (true) or stop SDO signal polling. Off after `Connect`.
     SetSignalPolling(bool),
     /// One LSS service. Ends with `LssDone`.
@@ -208,6 +210,9 @@ pub struct Shared {
     pub replay: Option<ReplayInfo>,
     /// (file, bytes read, file size) while a log loads.
     pub replay_loading: Option<(PathBuf, usize, usize)>,
+    /// The frames of the replayed log (the analysis uses them up to the
+    /// replay cursor).
+    pub replay_frames: Option<Arc<Vec<CanFrame>>>,
 }
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -584,6 +589,7 @@ impl Worker {
                 self.queue_task(tag, Box::new(StepsTask::new(format!("set heartbeat {ms} ms"), steps, false)));
             }
             BusCommand::SetDecodeNodes(nodes) => self.decode.set_nodes(nodes),
+            BusCommand::SetUserSignals(v) => self.decode.set_user_signals(v),
             BusCommand::SetNodePdos(cfg) => self.use_pdo_config(cfg),
             BusCommand::ClearNodePdos(node) => {
                 self.decode.clear_node_pdos(node);
@@ -819,6 +825,7 @@ impl Worker {
             s.signal_polling = false;
             s.now_us = 0;
             s.replay = Some(Self::replay_info(&run));
+            s.replay_frames = Some(run.frames.clone());
         }
         self.replay = Some(run);
         self.emit(BusEvent::Connected { text, listen_only: true, replay: true });
@@ -1007,7 +1014,9 @@ impl Worker {
         }
         self.pending_log = None;
         if self.replay.take().is_some() {
-            lock(&self.shared).replay = None;
+            let mut s = lock(&self.shared);
+            s.replay = None;
+            s.replay_frames = None;
         }
         if let Some(mut a) = self.adapter.take() {
             a.close();

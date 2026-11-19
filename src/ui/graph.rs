@@ -17,6 +17,8 @@ pub(crate) enum SourceKind {
     Pdo,
     SdoPoll,
     Raw,
+    /// A user signal (0.3).
+    User,
 }
 
 impl SourceKind {
@@ -25,6 +27,7 @@ impl SourceKind {
             SourceKind::Pdo => "PDO object",
             SourceKind::SdoPoll => "SDO poll",
             SourceKind::Raw => "Raw frame bits",
+            SourceKind::User => "User signal",
         }
     }
 }
@@ -50,6 +53,8 @@ pub(crate) struct AddDraft {
     /// The name was filled from the "Mapped object" choice (a new choice
     /// may replace it; a name typed by the user stays).
     pub auto_name: bool,
+    /// The chosen user signal (index).
+    pub user: usize,
 }
 
 impl Default for AddDraft {
@@ -72,6 +77,7 @@ impl Default for AddDraft {
             big_endian: false,
             error: None,
             auto_name: false,
+            user: 0,
         }
     }
 }
@@ -99,6 +105,7 @@ impl AddDraft {
                     SignalSource::SdoPoll { node: self.node, index: index as u16, sub: self.sub, period_ms: self.period_ms.max(MIN_POLL_MS), data_type: None }
                 }
             }
+            SourceKind::User => return Err("choose a user signal".to_string()),
             SourceKind::Raw => {
                 let cob_id = hex(&self.cob_text, "COB-ID")?;
                 let max = if self.extended { 0x1FFF_FFFF } else { 0x7FF };
@@ -163,6 +170,10 @@ pub(crate) struct GraphView {
     pub hidden: HashSet<u64>,
     pub add: Option<AddDraft>,
     started: bool,
+    /// The time range of the plot as last drawn (s).
+    pub visible: (f64, f64),
+    /// The Export range dialog: (from, to) in seconds.
+    pub range: Option<(f64, f64)>,
 }
 
 impl GraphView {
@@ -265,6 +276,9 @@ impl App {
                     }
                 }
             }
+            if theme::icon_button(ui, true, icon::EXPORT, "Export range...", "Export a time range as a table: one time column, one column per shown signal").clicked() {
+                self.graph.range = Some(self.graph.visible);
+            }
             if polling_on {
                 theme::pill(ui, "polling", p.info, p.info_tint, self.settings.reduce_colour);
             }
@@ -343,7 +357,7 @@ impl App {
         if !readout {
             plot = plot.show_x(false).show_y(false);
         }
-        plot.show(ui, |pui| {
+        let shown = plot.show(ui, |pui| {
             if follow {
                 pui.set_plot_bounds(PlotBounds::from_min_max([t0, ymin - pad], [t_end, ymax + pad]));
             }
@@ -354,6 +368,8 @@ impl App {
                 pui.line(Line::new(PlotPoints::from(s.pts.clone())).name(&s.name).color(theme::series_colour(p, i)).width(width));
             }
         });
+        let b = shown.transform.bounds();
+        self.graph.visible = (b.min()[0], b.max()[0]);
 
         // Legend table.
         let mut remove = None;
@@ -406,7 +422,71 @@ impl App {
         }
     }
 
+    /// Write the shown signals in [t0, t1] as one table
+    /// (`SignalStore::write_range_csv`).
+    pub(crate) fn write_range_csv(&self, path: &Path, t0: f64, t1: f64) -> std::io::Result<usize> {
+        let s = self.bus.signals.lock().map_err(|_| std::io::Error::other("signal store lock"))?;
+        let ids: Vec<u64> = s.list().iter().map(|x| x.id).filter(|id| !self.graph.hidden.contains(id)).collect();
+        let file = std::fs::File::create(path)?;
+        let mut w = std::io::BufWriter::new(file);
+        let n = s.write_range_csv(&mut w, &ids, t0, t1)?;
+        std::io::Write::flush(&mut w)?;
+        Ok(n)
+    }
+
+    fn graph_range_dialog(&mut self, ctx: &egui::Context) {
+        let Some((mut t0, mut t1)) = self.graph.range.take() else { return };
+        let mut open = true;
+        let mut keep = true;
+        let mut save = false;
+        let visible = self.graph.visible;
+        egui::Window::new("Export range")
+            .id(egui::Id::new("graph_range"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .constrain(true)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ctx.screen_rect().center())
+            .show(ctx, |ui| {
+                egui::Grid::new("range_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("From");
+                    ui.add(egui::DragValue::new(&mut t0).speed(0.1).suffix(" s").max_decimals(3));
+                    ui.end_row();
+                    ui.label("To");
+                    ui.add(egui::DragValue::new(&mut t1).speed(0.1).suffix(" s").max_decimals(3));
+                    ui.end_row();
+                });
+                if ui.small_button("Visible range").on_hover_text("The time range of the plot now").clicked() {
+                    (t0, t1) = visible;
+                }
+                ui.label(egui::RichText::new("CSV: time_s, then one column per shown signal; one row per time stamp, an empty cell where a signal has no sample.").small());
+                ui.horizontal(|ui| {
+                    if ui.button("Save...").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        keep = false;
+                    }
+                });
+            });
+        if save {
+            let (a, b) = (t0.min(t1), t0.max(t1));
+            if let Some(path) = rfd::FileDialog::new().set_file_name("signals_range.csv").add_filter("CSV", &["csv"]).save_file() {
+                match self.write_range_csv(&path, a, b) {
+                    Ok(n) => self.set_status(format!("Saved {n} rows ({a:.3} s to {b:.3} s) to {}", path.display()), false),
+                    Err(e) => self.set_status(format!("CSV not saved: {e}"), true),
+                }
+                keep = false;
+            }
+        }
+        if open && keep {
+            self.graph.range = Some((t0, t1));
+        }
+    }
+
     pub(crate) fn graph_dialogs(&mut self, ctx: &egui::Context) {
+        self.graph_range_dialog(ctx);
         let Some(mut d) = self.graph.add.take() else { return };
         let mut keep = true;
         let mut add = false;
@@ -435,6 +515,7 @@ impl App {
         } else {
             Vec::new()
         };
+        let users: Vec<String> = self.an.usigs.iter().map(|s| format!("{} ({}{:X}, bit {}, {} bit)", s.name, if s.extended { "x" } else { "" }, s.cob_id, s.start_bit, s.bits)).collect();
         let err_c = if self.is_dark() { theme::DARK.error } else { theme::LIGHT.error };
         // A movable window (spec: the Add signal dialog moves by its title
         // bar and stays inside the app window) over a scrim that blocks the
@@ -458,7 +539,7 @@ impl App {
             .default_pos(screen.center())
             .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                for k in [SourceKind::Pdo, SourceKind::SdoPoll, SourceKind::Raw] {
+                for k in [SourceKind::Pdo, SourceKind::SdoPoll, SourceKind::Raw, SourceKind::User] {
                     ui.selectable_value(&mut d.kind, k, k.label());
                 }
             });
@@ -529,6 +610,21 @@ impl App {
                         ui.checkbox(&mut d.big_endian, "Big endian");
                         ui.end_row();
                     }
+                    SourceKind::User => {
+                        ui.label("User signal");
+                        if users.is_empty() {
+                            ui.label(egui::RichText::new("None yet: define one in the Messages view (select bits, Define signal).").small());
+                        } else {
+                            d.user = d.user.min(users.len() - 1);
+                            egui::ComboBox::from_id_salt("sig_user").selected_text(users[d.user].clone()).width(260.0).show_ui(ui, |ui| {
+                                for (i, t) in users.iter().enumerate() {
+                                    ui.selectable_value(&mut d.user, i, t);
+                                }
+                            });
+                        }
+                        ui.end_row();
+                        return;
+                    }
                 }
                 ui.label("Name");
                 if ui.add(egui::TextEdit::singleline(&mut d.name).hint_text("automatic")).changed() {
@@ -564,7 +660,8 @@ impl App {
             keep = false;
         }
         if add {
-            match d.build() {
+            let built = if d.kind == SourceKind::User { self.an.usigs.get(d.user).map(|s| s.to_def()).ok_or_else(|| "no user signal yet".to_string()) } else { d.build() };
+            match built {
                 Ok(def) => {
                     self.add_signal(def);
                     keep = false;
