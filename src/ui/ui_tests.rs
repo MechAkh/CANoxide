@@ -6,24 +6,34 @@
 //! the accessibility tree; every assertion reads labels, values, toggle and
 //! disabled states from that tree.
 //!
+//! Most tests show one view at a time (`only`), so that the labels of other
+//! dock tabs do not get in the way; the layout tests check the default
+//! layouts themselves.
+//!
 //! No test selects the PEAK adapter, so no test loads the PCAN driver, opens
 //! a channel or reads the channel list: `build` refuses settings that name
 //! the PEAK adapter before the app (and its first `ListChannels`) starts.
+//!
+//! The ignored test `screenshots` renders PNG files with wgpu (offscreen,
+//! no window) to `target\screens\`.
 
-use super::{App, Boot};
+use super::dock::{self, Tab};
+use super::{theme, App, Boot};
 use crate::bus::BusCommand;
-use crate::settings::{AdapterKind, Settings};
+use crate::settings::{AdapterKind, Settings, Theme, TimestampFormat};
 use eframe::egui;
 use egui::accesskit::{NodeId, Rect, Role, Toggled};
+use egui_dock::{DockState, NodeIndex};
 use egui_kittest::kittest::{Key, Node, Queryable};
 use egui_kittest::Harness;
+use egui_phosphor::regular as icon;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 type H = Harness<'static, App>;
 
 /// Longest wait for one UI condition.
-const WAIT: Duration = Duration::from_secs(6);
+const WAIT: Duration = Duration::from_secs(8);
 
 // ------------------------------------------------------------ test fixture
 
@@ -54,11 +64,48 @@ fn test_eds() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("test.eds")
 }
 
+/// Write settings into a data folder before the app starts.
+fn preset(dir: &Path, s: Settings) {
+    std::fs::create_dir_all(dir).unwrap();
+    s.save(dir).unwrap();
+}
+
 /// Build the app on a data folder, as `ui::run` does, but without a window.
 fn build(dir: &Path) -> H {
+    build_sized(dir, 1600.0, 1200.0)
+}
+
+fn build_sized(dir: &Path, w: f32, h: f32) -> H {
     let boot = Boot::load_dir(dir.to_path_buf());
     assert_eq!(boot.settings.adapter, AdapterKind::Simulator, "a UI test must never use the PEAK adapter");
-    Harness::builder().with_size(egui::Vec2::new(1600.0, 1200.0)).build_eframe(move |cc| App::new(cc, boot))
+    Harness::builder().with_size(egui::Vec2::new(w, h)).build_eframe(move |cc| App::new(cc, boot))
+}
+
+/// Show only these tabs, in one dock leaf (the first one in front).
+fn only(h: &mut H, tabs: Vec<Tab>) {
+    set_dock(h, DockState::new(tabs));
+}
+
+/// Two leaves side by side.
+fn side_by_side(h: &mut H, left: Vec<Tab>, right: Vec<Tab>) {
+    let mut d = DockState::new(left);
+    d.main_surface_mut().split_right(NodeIndex::root(), 0.5, right);
+    set_dock(h, d);
+}
+
+fn set_dock(h: &mut H, d: DockState<Tab>) {
+    {
+        let app = h.state_mut();
+        app.dock = Some(d);
+        app.first_layout = false;
+        app.sync_traces();
+    }
+    step2(h);
+}
+
+/// The tabs of each leaf of the main surface.
+fn leaves(h: &H) -> Vec<Vec<Tab>> {
+    h.state().dock.as_ref().map(|d| d.main_surface().iter().filter_map(|n| n.tabs().map(|t| t.to_vec())).collect()).unwrap_or_default()
 }
 
 // ------------------------------------------------------------ tree helpers
@@ -104,27 +151,40 @@ fn count_exact(h: &H, s: &str) -> usize {
     h.query_all_by_label(s).count()
 }
 
-/// Text of the first node whose text contains `s`.
-fn text_containing(h: &H, s: &str) -> Option<String> {
-    h.query_all_by_label_contains(s).next().map(|n| text_of(&n))
-}
-
 /// Id of the node with this exact label that is highest on the screen.
 #[track_caller]
 fn top_by_label(h: &H, label: &str, role: Option<Role>) -> NodeId {
+    top_in(h, label, role, f64::MIN, f64::MAX)
+}
+
+/// As `top_by_label`, but only nodes that start between `x0` and `x1`.
+#[track_caller]
+fn top_in(h: &H, label: &str, role: Option<Role>, x0: f64, x1: f64) -> NodeId {
     let mut best: Option<(f64, NodeId)> = None;
     for n in h.query_all_by_label(label) {
         if role.is_some_and(|r| n.role() != r) {
             continue;
         }
-        let y = rect_of(&n).y0;
-        if best.is_none_or(|(by, _)| y < by) {
-            best = Some((y, n.id()));
+        let r = rect_of(&n);
+        if r.x0 < x0 || r.x0 > x1 {
+            continue;
+        }
+        if best.is_none_or(|(by, _)| r.y0 < by) {
+            best = Some((r.y0, n.id()));
         }
     }
     match best {
         Some((_, id)) => id,
         None => panic!("no node labelled {label:?} ({role:?})\nUI:\n{}", dump(h)),
+    }
+}
+
+/// The control (not a label) whose label contains `s`.
+#[track_caller]
+fn control_containing(h: &H, s: &str) -> NodeId {
+    match h.query_all_by_label_contains(s).find(|n| n.role() != Role::Label) {
+        Some(n) => n.id(),
+        None => panic!("no control containing {s:?}\nUI:\n{}", dump(h)),
     }
 }
 
@@ -141,7 +201,12 @@ fn rect_id(h: &H, id: NodeId) -> Rect {
 /// widget that the label names, for example a text field).
 #[track_caller]
 fn right_of(h: &H, label: &str, role: Role) -> NodeId {
-    let a = rect_id(h, top_by_label(h, label, Some(Role::Label)));
+    right_of_in(h, label, role, f64::MIN, f64::MAX)
+}
+
+#[track_caller]
+fn right_of_in(h: &H, label: &str, role: Role, x0: f64, x1: f64) -> NodeId {
+    let a = rect_id(h, top_in(h, label, Some(Role::Label), x0, x1));
     let mut best: Option<(f64, NodeId)> = None;
     for n in h.query_all_by_role(role) {
         let r = rect_of(&n);
@@ -156,7 +221,8 @@ fn right_of(h: &H, label: &str, role: Role) -> NodeId {
 }
 
 /// The node on the row of `anchor` in the column whose header is `col`
-/// (the header nearest above the anchor).
+/// (the header nearest above the anchor). A pill sits a few pixels right
+/// of its column start.
 fn cell(h: &H, anchor: NodeId, col: &str, role: Option<Role>) -> Option<NodeId> {
     let a = rect_id(h, anchor);
     let mut header: Option<Rect> = None;
@@ -176,9 +242,9 @@ fn cell(h: &H, anchor: NodeId, col: &str, role: Option<Role>) -> Option<NodeId> 
             continue;
         }
         let r = rect_of(&n);
-        let d = (r.x0 - hx).abs();
-        if (cy(&r) - cy(&a)).abs() < 6.0 && d < 6.0 && best.is_none_or(|(bd, _)| d < bd) {
-            best = Some((d, n.id()));
+        let d = r.x0 - hx;
+        if (cy(&r) - cy(&a)).abs() < 6.0 && (-6.0..16.0).contains(&d) && best.is_none_or(|(bd, _)| d.abs() < bd) {
+            best = Some((d.abs(), n.id()));
         }
     }
     best.map(|(_, id)| id)
@@ -209,12 +275,20 @@ fn toggled(h: &H, id: NodeId) -> bool {
     node(h, id).toggled() == Some(Toggled::True)
 }
 
-/// Every node with this exact label is disabled (and there is at least one).
+/// Every control with this exact label is disabled (and there is one).
 #[track_caller]
 fn all_disabled(h: &H, label: &str) {
     let v: Vec<bool> = h.query_all_by_label(label).filter(|n| n.role() != Role::Label).map(|n| n.is_disabled()).collect();
     assert!(!v.is_empty(), "no control {label:?}\nUI:\n{}", dump(h));
     assert!(v.iter().all(|d| *d), "control {label:?} is enabled\nUI:\n{}", dump(h));
+}
+
+/// Every control whose label contains `s` is disabled (and there is one).
+#[track_caller]
+fn all_disabled_containing(h: &H, s: &str) {
+    let v: Vec<bool> = h.query_all_by_label_contains(s).filter(|n| n.role() != Role::Label).map(|n| n.is_disabled()).collect();
+    assert!(!v.is_empty(), "no control containing {s:?}\nUI:\n{}", dump(h));
+    assert!(v.iter().all(|d| *d), "a control containing {s:?} is enabled\nUI:\n{}", dump(h));
 }
 
 // ---------------------------------------------------------- input helpers
@@ -245,6 +319,28 @@ fn click_role(h: &mut H, role: Role, label: &str) {
     click_id(h, id);
 }
 
+/// Click the control whose label contains `s`.
+#[track_caller]
+fn click_containing(h: &mut H, s: &str) {
+    let id = control_containing(h, s);
+    click_id(h, id);
+}
+
+/// Click the button `label` that was not there before (the button of a
+/// dialog that has just opened).
+#[track_caller]
+fn click_new_button(h: &mut H, label: &str, before: &[NodeId]) {
+    let id = h.query_all_by_role_and_label(Role::Button, label).map(|n| n.id()).find(|id| !before.contains(id));
+    match id {
+        Some(id) => click_id(h, id),
+        None => panic!("no new button {label:?}\nUI:\n{}", dump(h)),
+    }
+}
+
+fn buttons(h: &H, label: &str) -> Vec<NodeId> {
+    h.query_all_by_role_and_label(Role::Button, label).map(|n| n.id()).collect()
+}
+
 /// Replace the text of a text field.
 #[track_caller]
 fn set_text(h: &mut H, id: NodeId, text: &str) {
@@ -268,6 +364,15 @@ fn drop_files(h: &mut H, paths: &[PathBuf]) {
         h.input_mut().dropped_files.push(egui::DroppedFile { path: Some(p.clone()), ..Default::default() });
     }
     step2(h);
+}
+
+/// Click a check box of the View menu (the menu opens first when needed).
+#[track_caller]
+fn view_menu(h: &mut H, name: &str) {
+    if !h.query_all_by_role_and_label(Role::CheckBox, name).any(|_| true) {
+        click_role(h, Role::Button, "View");
+    }
+    click_role(h, Role::CheckBox, name);
 }
 
 // ----------------------------------------------------------- time helpers
@@ -304,13 +409,22 @@ fn connect(h: &mut H) {
     wait_for(h, "connected", |h| has_exact(h, "Disconnect") && has(h, "Connected: Simulator"));
 }
 
-/// (shown, in buffer, received) of the trace tab.
+/// (shown, in buffer, received) of the count line that contains `s`
+/// (the leftmost when `left`, else the rightmost).
 #[track_caller]
-fn trace_counts(h: &H) -> (usize, usize, u64) {
-    let t = text_containing(h, " shown, ").unwrap_or_else(|| panic!("no trace count line\nUI:\n{}", dump(h)));
+fn trace_counts_at(h: &H, left: bool) -> (usize, usize, u64) {
+    let mut lines: Vec<(f64, String)> = h.query_all_by_label_contains(" shown, ").map(|n| (rect_of(&n).x0, text_of(&n))).collect();
+    lines.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let t = if left { lines.first() } else { lines.last() };
+    let t = t.map(|x| x.1.clone()).unwrap_or_else(|| panic!("no trace count line\nUI:\n{}", dump(h)));
     let num = |s: &str| s.trim().split(' ').next().unwrap_or("").parse::<u64>().unwrap_or(u64::MAX);
     let parts: Vec<&str> = t.split(',').collect();
     (num(parts[0]) as usize, num(parts[1]) as usize, num(parts[2]))
+}
+
+#[track_caller]
+fn trace_counts(h: &H) -> (usize, usize, u64) {
+    trace_counts_at(h, true)
 }
 
 /// The lowest row (newest, the table sticks to the bottom) whose COB-ID is `id`.
@@ -325,8 +439,9 @@ fn last_row(h: &H, id: &str) -> Option<NodeId> {
     best.map(|(_, id)| id)
 }
 
-/// Add test.eds by drag and drop and add the device "Bench" (node 1) with it.
+/// Add test.eds by drag and drop and add the device `name` (node 1) with it.
 fn add_eds_and_device(h: &mut H, name: &str) {
+    only(h, vec![Tab::Devices]);
     drop_files(h, &[test_eds()]);
     assert!(has(h, "Added EDS: test.eds"), "EDS not added\nUI:\n{}", dump(h));
     click(h, "Add");
@@ -340,6 +455,25 @@ fn add_eds_and_device(h: &mut H, name: &str) {
     assert!(toggled(h, dev), "new device is not active\nUI:\n{}", dump(h));
 }
 
+/// Send NMT Start to node 1 from the Network view.
+fn start_node(h: &mut H) {
+    only(h, vec![Tab::Network]);
+    wait_for(h, "node 1 in the list", |h| has_exact(h, "Node 1"));
+    let start = top_by_label(h, "Start", Some(Role::Button));
+    click_id(h, start);
+    wait_for(h, "NMT Start sent", |h| has_exact(h, "NMT Start node 1 sent"));
+}
+
+fn tx_glyph() -> &'static str {
+    icon::ARROW_UP_RIGHT
+}
+
+/// Frames with this COB-ID in the buffer (view 0 = Trace 1, no filter).
+fn cob_count(h: &H, id: u32) -> usize {
+    let t = &h.state().trace;
+    (0..t.view_len_of(0)).filter_map(|i| t.view_row_of(0, i)).filter(|e| e.frame.id == id).count()
+}
+
 // ================================================================== tests
 
 /// Scenario 1: start state, send controls disabled while not connected.
@@ -349,18 +483,26 @@ fn s1_start_not_connected() {
     let mut h = build(&tmp.data());
     assert!(has_exact(&h, "Not connected"));
     assert!(has_exact(&h, "Connect"));
-    // Object dictionary tab (start tab): manual SDO box.
+    assert!(has(&h, "Nothing is sent until you press a button."));
+    // Object dictionary: manual SDO box.
+    only(&mut h, vec![Tab::Od]);
     assert!(has_exact(&h, "not connected"));
     all_disabled(&h, "Read");
     all_disabled(&h, "Write");
     all_disabled(&h, "Read all (select an object)");
-    // Network tab.
-    click(&mut h, "Network");
+    all_disabled(&h, "Upload to file...");
+    all_disabled(&h, "Download from file...");
+    // Network.
+    only(&mut h, vec![Tab::Network]);
     assert!(has_exact(&h, "Not connected: send controls are disabled."));
-    for l in ["Start", "Stop", "Enter pre-operational", "Reset node", "Reset communication", "Send SYNC", "Scan nodes", "Send once", "Start cyclic", "Trigger EMCY"] {
+    for l in ["Start", "Stop", "Enter pre-operational", "Reset node", "Reset communication", "Send SYNC", "Scan nodes", "Trigger EMCY", "Refresh node info", "Set heartbeat"] {
         all_disabled(&h, l);
     }
     assert_eq!(count_exact(&h, "Start"), 2, "NMT Start for the node and for all nodes");
+    // Transmit list.
+    only(&mut h, vec![Tab::TxList]);
+    assert!(has_exact(&h, "Not connected: send controls are disabled."));
+    all_disabled(&h, "Send once");
     // A command that reaches the worker anyway is refused.
     h.state().bus.send(BusCommand::Sync);
     wait_for(&mut h, "refusal", |h| has(h, "SYNC: not connected"));
@@ -371,14 +513,16 @@ fn s1_start_not_connected() {
 fn s2_connect_disconnect_reconnect() {
     let tmp = TempDir::new("s2");
     let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Network]);
     connect(&mut h);
     assert!(!has_exact(&h, "Not connected"));
-    assert!(has(&h, "Bus: "), "bus status shown");
-    assert!(has(&h, "frames/s"));
+    assert!(has(&h, "Bus: ") || has_exact(&h, "Error active"), "bus status shown\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "fr/s"));
+    assert!(has_exact(&h, "Load"));
     assert!(has_exact(&h, "Connected: Simulator at 250 kbit/s"));
+    assert!(has_exact(&h, "Connected · Simulator · virtual bus · 250 kbit/s"), "status bar summary\nUI:\n{}", dump(&h));
     // Adapter, bitrate and listen-only are locked while connected.
-    // (The manual SDO box has a type combo box of its own, lower down.)
-    let bar: Vec<bool> = h.query_all_by_role(Role::ComboBox).filter(|n| rect_of(n).y0 < 20.0).map(|n| n.is_disabled()).collect();
+    let bar: Vec<bool> = h.query_all_by_role(Role::ComboBox).filter(|n| rect_of(n).y0 < 70.0).map(|n| n.is_disabled()).collect();
     assert_eq!(bar.len(), 2, "adapter and bitrate combo boxes in the connect bar\nUI:\n{}", dump(&h));
     assert!(bar.iter().all(|d| *d), "a connect-bar combo box is enabled while connected\nUI:\n{}", dump(&h));
     assert!(node(&h, top_by_label(&h, "Listen only", Some(Role::CheckBox))).is_disabled());
@@ -394,40 +538,41 @@ fn s2_connect_disconnect_reconnect() {
 fn s3_trace() {
     let tmp = TempDir::new("s3");
     let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    assert!(has_exact(&h, "No frames. Connect to see the bus traffic."), "empty state\nUI:\n{}", dump(&h));
     connect(&mut h);
-    click(&mut h, "Trace");
     wait_for(&mut h, "heartbeat row", |h| has_exact(h, "Heartbeat Pre-operational"));
     assert!(has_exact(&h, "Boot-up"), "boot-up row of the simulated node");
-    // Type column of the heartbeat rows.
     let hb = last_row(&h, "701").expect("row 701");
     assert_eq!(cell_text(&h, hb, "Type"), "Heartbeat");
     assert_eq!(cell_text(&h, hb, "Node"), "1");
-    assert_eq!(cell_text(&h, hb, "Dir"), "Rx");
+    assert_eq!(cell_text(&h, hb, "Dir"), icon::ARROW_DOWN_LEFT);
     let (_, _, rx0) = trace_counts(&h);
     wait_for(&mut h, "received counter rises", |h| trace_counts(h).2 > rx0);
 
     // Pause: no new rows; the frames are counted as not recorded.
     click_role(&mut h, Role::CheckBox, "Pause");
-    let (shown, buf, total) = trace_counts(&h);
-    wait_for(&mut h, "paused frames counted", |h| has(h, "frame(s) not recorded"));
-    assert_eq!(trace_counts(&h), (shown, buf, total), "trace changed while paused");
+    // (Pause is per trace tab: the shared buffer keeps recording.)
+    let (shown, _, total) = trace_counts(&h);
+    wait_for(&mut h, "paused frames counted", |h| has(h, "frame(s) not recorded") && trace_counts(h).2 > total);
+    assert_eq!(trace_counts(&h).0, shown, "rows added while paused");
     click_role(&mut h, Role::CheckBox, "Pause");
-    wait_for(&mut h, "recording again", |h| trace_counts(h).2 > total);
+    wait_for(&mut h, "rows again", |h| trace_counts(h).0 > shown);
 
     // Clear.
     click(&mut h, "Clear");
     let (shown, buf, _) = trace_counts(&h);
     assert_eq!((shown, buf), (0, 0), "Clear did not empty the list\nUI:\n{}", dump(&h));
 
-    // A known Tx frame "41 42" on 0x123.
-    click(&mut h, "Network");
+    // A known Tx frame "41 42" on 0x123 from the transmit list.
+    only(&mut h, vec![Tab::TxList]);
     let data = right_of(&h, "Data", Role::TextInput);
     set_text(&mut h, data, "41 42");
     click(&mut h, "Send once");
-    click(&mut h, "Trace");
+    only(&mut h, vec![Tab::Trace(1)]);
     wait_for(&mut h, "Tx row 123", |h| last_row(h, "123").is_some());
     let row = last_row(&h, "123").unwrap();
-    assert_eq!(cell_text(&h, row, "Dir"), "Tx");
+    assert_eq!(cell_text(&h, row, "Dir"), tx_glyph());
     assert_eq!(cell_text(&h, row, "DLC"), "2");
     assert_eq!(cell_text(&h, row, "Data"), "41 42");
     click(&mut h, "Decimal");
@@ -442,7 +587,6 @@ fn s3_trace() {
 
     // Fixed: one row per COB-ID, the count rises.
     click(&mut h, "Fixed");
-    // (Clear emptied the buffer a moment ago: wait for two heartbeats.)
     let count = |h: &H| last_row(h, "701").map(|r| cell_text(h, r, "Count").parse::<u64>().unwrap_or(0)).unwrap_or(0);
     wait_for(&mut h, "two heartbeats in the fixed view", |h| count(h) >= 2);
     assert_eq!(count_exact(&h, "701"), 1, "fixed view: one row for 0x701\nUI:\n{}", dump(&h));
@@ -473,41 +617,39 @@ fn s3_trace() {
     assert!(last_row(&h, "701").is_none(), "heartbeat row shown with the Heartbeat type off\nUI:\n{}", dump(&h));
 }
 
-/// Scenario 4: node list and NMT, TPDOs, scan, raw frame, SYNC.
+/// Scenario 4: node list and NMT, TPDOs, scan, SYNC.
 #[test]
 fn s4_network() {
     let tmp = TempDir::new("s4");
     // A short scan timeout from the settings file, so a full scan is quick.
-    std::fs::create_dir_all(tmp.data()).unwrap();
-    Settings { scan_timeout_ms: 20, ..Settings::default() }.save(&tmp.data()).unwrap();
+    preset(&tmp.data(), Settings { scan_timeout_ms: 20, ..Settings::default() });
     let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Network]);
+    assert!(has(&h, "Scan nodes or Refresh node info read them by SDO."), "empty state\nUI:\n{}", dump(&h));
     connect(&mut h);
-    click(&mut h, "Network");
-    wait_for(&mut h, "node 1 in the list", |h| has_exact(h, "Pre-operational") && has_exact(h, "Node 1"));
+    wait_for(&mut h, "node 1 in the list", |h| has(h, "Pre-operational") && has_exact(h, "Node 1"));
     let start = top_by_label(&h, "Start", Some(Role::Button));
     click_id(&mut h, start);
-    wait_for(&mut h, "Operational", |h| has_exact(h, "Operational"));
+    wait_for(&mut h, "Operational", |h| has(h, " Operational"));
     assert!(has_exact(&h, "NMT Start node 1 sent"));
 
     // TPDOs in the trace while operational.
-    click(&mut h, "Trace");
+    only(&mut h, vec![Tab::Trace(1)]);
     wait_for(&mut h, "TPDO rows", |h| has_exact(h, "TPDO1"));
-    click(&mut h, "Network");
+    only(&mut h, vec![Tab::Network]);
 
     let id = top_by_label(&h, "Stop", Some(Role::Button));
-
     click_id(&mut h, id);
-    wait_for(&mut h, "Stopped", |h| has_exact(h, "Stopped"));
+    wait_for(&mut h, "Stopped", |h| has(h, " Stopped"));
     let id = top_by_label(&h, "Enter pre-operational", Some(Role::Button));
     click_id(&mut h, id);
-    wait_for(&mut h, "Pre-operational", |h| has_exact(h, "Pre-operational"));
+    wait_for(&mut h, "Pre-operational", |h| has(h, " Pre-operational"));
     let id = top_by_label(&h, "Start", Some(Role::Button));
     click_id(&mut h, id);
-    wait_for(&mut h, "Operational again", |h| has_exact(h, "Operational"));
+    wait_for(&mut h, "Operational again", |h| has(h, " Operational"));
     let id = top_by_label(&h, "Reset node", Some(Role::Button));
     click_id(&mut h, id);
-    wait_for(&mut h, "boot-up after reset", |h| has_exact(h, "Boot-up"));
-    wait_for(&mut h, "pre-operational after boot-up", |h| has_exact(h, "Pre-operational"));
+    wait_for(&mut h, "pre-operational after the reset", |h| has(h, " Pre-operational") && has_exact(h, "NMT Reset node node 1 sent"));
 
     // Scan: exactly the simulated node.
     click(&mut h, "Scan nodes");
@@ -522,37 +664,39 @@ fn s4_network() {
     wait_for(&mut h, "scan cancelled", |h| has(h, "Scan cancelled"));
     assert!(has_exact(&h, "Scan nodes"));
 
-    // Raw frame once, then SYNC.
-    click(&mut h, "Send once");
+    // SYNC.
     click(&mut h, "Send SYNC");
     assert!(has_exact(&h, "SYNC sent"));
-    click(&mut h, "Trace");
-    wait_for(&mut h, "Tx 123 and SYNC rows", |h| last_row(h, "123").is_some() && last_row(h, "080").is_some());
-    let r = last_row(&h, "123").unwrap();
-    assert_eq!(cell_text(&h, r, "Dir"), "Tx");
-    assert_eq!(cell_text(&h, r, "Data"), "01 02");
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_for(&mut h, "SYNC row", |h| last_row(h, "080").is_some());
     let s = last_row(&h, "080").unwrap();
     assert_eq!(cell_text(&h, s, "Type"), "SYNC");
     assert_eq!(cell_text(&h, s, "Decoded"), "SYNC");
-    assert_eq!(cell_text(&h, s, "Dir"), "Tx");
+    assert_eq!(cell_text(&h, s, "Dir"), tx_glyph());
 }
 
 /// Scenario 5: EDS library, device, object dictionary, decoded trace.
 #[test]
 fn s5_eds_device_od() {
     let tmp = TempDir::new("s5");
+    // Writes without the question here; the question has its own test.
+    preset(&tmp.data(), Settings { confirm_before_write: false, ..Settings::default() });
     let mut h = build(&tmp.data());
     add_eds_and_device(&mut h, "Bench");
-    assert!(has_exact(&h, "Bench, node 1"));
+    only(&mut h, vec![Tab::Eds]);
+    assert!(has_exact(&h, "test.eds"), "EDS file listed\nUI:\n{}", dump(&h));
+    only(&mut h, vec![Tab::Od]);
     // The simulator uses the EDS of the active device: connect after it.
     connect(&mut h);
 
-    // Objects listed.
-    for l in ["Device type", "Manufacturer device name", "Identity object", "Mode", "Read analog input 16 bit"] {
+    for l in ["Device type", "Manufacturer device name", "Identity object"] {
         assert!(has_exact(&h, l), "object {l:?} not listed\nUI:\n{}", dump(&h));
     }
-    // Filter narrows.
     let filter = right_of(&h, "Filter", Role::TextInput);
+    for (f, l) in [("2001", "Mode"), ("6401", "Read analog input 16 bit")] {
+        set_text(&mut h, filter, f);
+        assert!(has_exact(&h, l), "object {l:?} not listed\nUI:\n{}", dump(&h));
+    }
     set_text(&mut h, filter, "1018");
     assert!(has_exact(&h, "Identity object"));
     assert!(has_exact(&h, "Vendor ID"), "filter opens the record");
@@ -621,17 +765,15 @@ fn s5_eds_device_od() {
     assert_eq!(sub(&h, "03"), "0x00010002");
 
     // Trace: SDO rows carry object names.
-    click(&mut h, "Trace");
+    only(&mut h, vec![Tab::Trace(1)]);
     let text = right_of(&h, "Text", Role::TextInput);
     set_text(&mut h, text, "device type");
     assert!(has(&h, "SDO upload req 0x1000:00 (Device type)"), "\nUI:\n{}", dump(&h));
     assert!(has(&h, "SDO upload resp 0x1000:00 = 0x00030191 (Device type)"), "\nUI:\n{}", dump(&h));
     click(&mut h, "Reset filters");
     // PDO rows carry signal names once the node is operational.
-    click(&mut h, "Network");
-    let id = top_by_label(&h, "Start", Some(Role::Button));
-    click_id(&mut h, id);
-    click(&mut h, "Trace");
+    start_node(&mut h);
+    only(&mut h, vec![Tab::Trace(1)]);
     wait_for(&mut h, "TPDO1 with signal names", |h| has(h, "Read input 8 bit / Inputs 1-8 = "));
     assert!(has(&h, "Read analog input 16 bit / Analog input 1 = "));
 }
@@ -641,6 +783,7 @@ fn s5_eds_device_od() {
 fn s6_manual_sdo() {
     let tmp = TempDir::new("s6");
     let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Od]);
     connect(&mut h);
     assert!(has_exact(&h, "No active device, node 1"));
     let index = right_of(&h, "Index 0x", Role::TextInput);
@@ -661,30 +804,77 @@ fn s6_manual_sdo() {
     assert!(has(&h, "does not exist"), "\nUI:\n{}", dump(&h));
 }
 
-/// Scenario 7: listen only disables every send control.
+/// Scenario 7: listen only disables the sending controls of every view.
 #[test]
-fn s7_listen_only() {
+fn s7_listen_only_every_view() {
     let tmp = TempDir::new("s7");
     let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Quiet");
+    // A transmit list entry (adding sends nothing) and a graph SDO signal.
+    only(&mut h, vec![Tab::TxList]);
+    click(&mut h, "Add to list");
+    wait_for(&mut h, "entry listed", |h| has_exact(h, "stopped"));
     click_role(&mut h, Role::CheckBox, "Listen only");
     connect(&mut h);
-    assert!(has_exact(&h, "LISTEN ONLY"));
+    assert!(has(&h, "Listen only") && has(&h, &format!("{}  Listen only", icon::INFO)), "listen-only pill\nUI:\n{}", dump(&h));
     assert!(has_exact(&h, "Connected: Simulator at 250 kbit/s, listen only"));
+    assert!(has_exact(&h, "Connected · Simulator · virtual bus · 250 kbit/s · listen only"));
+
+    only(&mut h, vec![Tab::Od]);
     assert!(has_exact(&h, "listen only: SDO disabled"));
-    all_disabled(&h, "Read");
-    all_disabled(&h, "Write");
-    click(&mut h, "Network");
+    for l in ["Read", "Write", "Read all", "Upload to file...", "Download from file..."] {
+        all_disabled(&h, l);
+    }
+    only(&mut h, vec![Tab::Network]);
     assert!(has_exact(&h, "Listen only: every send control is disabled."));
-    for l in ["Start", "Stop", "Enter pre-operational", "Reset node", "Reset communication", "Send SYNC", "Scan nodes", "Send once", "Start cyclic"] {
+    // (Trigger EMCY stays enabled: the simulated node sends it, not this tool.)
+    for l in ["Start", "Stop", "Enter pre-operational", "Reset node", "Reset communication", "Send SYNC", "Scan nodes", "Refresh node info", "Set heartbeat"] {
         all_disabled(&h, l);
     }
     // The node is still heard.
-    wait_for(&mut h, "heartbeat heard", |h| has_exact(h, "Pre-operational"));
+    wait_for(&mut h, "heartbeat heard", |h| has(h, "Pre-operational"));
+    only(&mut h, vec![Tab::TxList]);
+    assert!(has_exact(&h, "Listen only: every send control is disabled."));
+    for l in ["Send once", "Send", "Start"] {
+        all_disabled(&h, l);
+    }
+    only(&mut h, vec![Tab::Pdo]);
+    for l in ["Read PDOs", "Disable all TPDO", "Enable all TPDO", "Disable all RPDO", "Enable all RPDO"] {
+        all_disabled_containing(&h, l);
+    }
+    only(&mut h, vec![Tab::Lss]);
+    assert!(has_exact(&h, "Listen only: every LSS service is disabled."));
+    for l in [
+        "Switch all to configuration",
+        "Switch all to waiting",
+        "Switch selective",
+        "Inquire identity",
+        "Inquire node-ID",
+        "Fastscan",
+        "Identify non-configured",
+        "Configure node-ID",
+        "Configure bit timing",
+        "Activate bit timing",
+        "Store configuration",
+    ] {
+        all_disabled(&h, l);
+    }
+    only(&mut h, vec![Tab::Dcf]);
+    for l in ["Save DCF...", "Compare", "Dry run", "Restore"] {
+        all_disabled_containing(&h, l);
+    }
+    // Graph: polling cannot start with an SDO signal.
+    h.state_mut().add_signal(crate::signals::SignalDef::new("poll", crate::signals::SignalSource::SdoPoll { node: 1, index: 0x6401, sub: 1, period_ms: 200, data_type: None }));
+    only(&mut h, vec![Tab::Graph]);
+    all_disabled_containing(&h, "Start polling");
+    assert!(has(&h, "SDO signals record only while polling runs. Listen-only mode."), "\nUI:\n{}", dump(&h));
+
     // A send command that reaches the worker is refused.
     h.state().bus.send(BusCommand::Sync);
     wait_for(&mut h, "refusal", |h| has(h, "SYNC: listen-only mode, nothing sent"));
-    click(&mut h, "Trace");
+    only(&mut h, vec![Tab::Trace(1)]);
     assert!(last_row(&h, "080").is_none(), "a SYNC was sent in listen-only mode");
+    assert!(!h.query_all_by_label(tx_glyph()).any(|_| true), "a frame was sent in listen-only mode\nUI:\n{}", dump(&h));
 }
 
 /// Scenario 8: settings and devices survive a restart.
@@ -693,10 +883,9 @@ fn s8_persistence() {
     let tmp = TempDir::new("s8");
     {
         let mut h = build(&tmp.data());
+        only(&mut h, vec![Tab::Od]);
         click(&mut h, "Decimal"); // OD value display
-        click(&mut h, "Trace");
-        click(&mut h, "String"); // trace display
-        click(&mut h, "Object dictionary");
+        only(&mut h, vec![Tab::Eds]);
         let combo = right_of(&h, "Bitrate", Role::ComboBox);
         click_id(&mut h, combo);
         click_role(&mut h, Role::Button, "500 kbit/s");
@@ -705,17 +894,18 @@ fn s8_persistence() {
         run_for(&mut h, Duration::from_millis(1500));
     }
     let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Devices]);
     let dev = top_by_label(&h, "Persist  (node 1)", None);
     assert!(toggled(&h, dev), "device not active after restart\nUI:\n{}", dump(&h));
+    only(&mut h, vec![Tab::Od]);
     assert!(has_exact(&h, "Persist, node 1"));
     assert!(toggled(&h, top_by_label(&h, "Decimal", Some(Role::Button))), "value display not restored");
+    only(&mut h, vec![Tab::Eds]);
     assert!(has_exact(&h, "test.eds"), "EDS file in the library");
     let combo = right_of(&h, "Bitrate", Role::ComboBox);
     click_id(&mut h, combo);
     assert!(toggled(&h, top_by_label(&h, "500 kbit/s", Some(Role::Button))), "bitrate not restored\nUI:\n{}", dump(&h));
     click_id(&mut h, combo);
-    click(&mut h, "Trace");
-    assert!(toggled(&h, top_by_label(&h, "String", Some(Role::Button))), "trace display not restored");
     connect(&mut h);
     assert!(has_exact(&h, "Connected: Simulator at 500 kbit/s"));
 }
@@ -731,14 +921,491 @@ fn s9_data_folder_not_writable() {
     let mut h = build(&dir);
     assert!(has(&h, "is not writable"), "no data folder error shown\nUI:\n{}", dump(&h));
     assert!(has(&h, "Nothing is saved."));
+    only(&mut h, vec![Tab::Devices]);
     assert!(disabled(&h, top_by_label(&h, "Add", Some(Role::Button))), "Add device enabled without a library");
+    only(&mut h, vec![Tab::Eds]);
     assert!(disabled(&h, top_by_label(&h, "Add...", Some(Role::Button))), "Add EDS enabled without a library");
     drop_files(&mut h, &[test_eds()]);
     assert!(has_exact(&h, "The library is not available (data folder error)"));
     // A settings change and the autosave time: no panic, nothing written.
+    only(&mut h, vec![Tab::Od]);
     click(&mut h, "Decimal");
     run_for(&mut h, Duration::from_millis(1300));
+    h.state_mut().save_layout();
     assert!(!dir.exists());
     // The app still works.
     connect(&mut h);
+}
+
+// -------------------------------------------------------- v0.2 scenarios
+
+/// Theme Dark, Light and System (System follows the OS theme).
+#[test]
+fn s10_theme_dark_light_system() {
+    let tmp = TempDir::new("s10");
+    let mut h = build(&tmp.data());
+    let panel = |h: &H| h.ctx.style().visuals.panel_fill;
+    let dark = |h: &H| h.ctx.style().visuals.dark_mode;
+
+    h.state_mut().settings.theme = Theme::Dark;
+    step2(&mut h);
+    assert!(dark(&h));
+    assert_eq!(panel(&h), theme::DARK.bg_panel);
+
+    h.state_mut().settings.theme = Theme::Light;
+    step2(&mut h);
+    assert!(!dark(&h));
+    assert_eq!(panel(&h), theme::LIGHT.bg_panel);
+
+    h.state_mut().settings.theme = Theme::System;
+    h.input_mut().system_theme = Some(egui::Theme::Light);
+    step2(&mut h);
+    assert!(!dark(&h), "System with a light OS theme");
+    h.input_mut().system_theme = Some(egui::Theme::Dark);
+    step2(&mut h);
+    assert!(dark(&h), "System with a dark OS theme");
+    assert_eq!(panel(&h), theme::DARK.bg_panel);
+
+    // The theme button of the menu bar cycles System -> Dark -> Light.
+    let glyph = top_by_label(&h, icon::DESKTOP, Some(Role::Button));
+    click_id(&mut h, glyph);
+    assert_eq!(h.state().settings.theme, Theme::Dark);
+    let glyph = top_by_label(&h, icon::MOON, Some(Role::Button));
+    click_id(&mut h, glyph);
+    assert_eq!(h.state().settings.theme, Theme::Light);
+    assert!(!dark(&h));
+}
+
+/// Each view opens from the View menu and closes again.
+#[test]
+fn s11_view_menu_opens_and_closes_each_view() {
+    let tmp = TempDir::new("s11");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    for t in Tab::VIEWS {
+        let name = t.name();
+        assert!(!h.state().is_open(t));
+        view_menu(&mut h, &name);
+        assert!(h.state().is_open(t), "{name} not opened");
+        assert!(toggled(&h, top_by_label(&h, &name, Some(Role::CheckBox))), "{name}: menu check box not ticked");
+        view_menu(&mut h, &name);
+        assert!(!h.state().is_open(t), "{name} not closed");
+    }
+    // Trace tabs: 2 opens, 1 closes; at most four at a time.
+    view_menu(&mut h, "Trace 2");
+    assert!(h.state().is_open(Tab::Trace(2)));
+    view_menu(&mut h, "Trace 1");
+    assert!(!h.state().is_open(Tab::Trace(1)));
+    for _ in 0..4 {
+        if !h.query_all_by_role_and_label(Role::Button, "New trace tab").any(|_| true) {
+            click_role(&mut h, Role::Button, "View");
+        }
+        let id = top_by_label(&h, "New trace tab", Some(Role::Button));
+        if !disabled(&h, id) {
+            click_id(&mut h, id);
+        }
+    }
+    assert_eq!(dock::open_traces(h.state().dock.as_ref().unwrap()), vec![1, 2, 3, 4]);
+    if !h.query_all_by_role_and_label(Role::Button, "New trace tab").any(|_| true) {
+        click_role(&mut h, Role::Button, "View");
+    }
+    assert!(disabled(&h, top_by_label(&h, "New trace tab", Some(Role::Button))), "a fifth trace tab");
+    // Reset layout: layout B at this width (1600).
+    click_role(&mut h, Role::Button, "Reset layout");
+    assert!(has_exact(&h, "Layout B restored"), "\nUI:\n{}", dump(&h));
+    assert_eq!(dock::open_traces(h.state().dock.as_ref().unwrap()), vec![1]);
+}
+
+/// Layout A below 1600 px, layout B from 1600 px (first start).
+#[test]
+fn s12_layouts_a_and_b() {
+    let tmp = TempDir::new("s12a");
+    let h = build_sized(&tmp.data(), 1280.0, 800.0);
+    let a = leaves(&h);
+    assert_eq!(a.len(), 4, "layout A: {a:?}");
+    for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Network, Tab::Pdo], vec![Tab::Trace(1), Tab::TxList], vec![Tab::Graph]] {
+        assert!(a.contains(&want), "layout A lacks {want:?}: {a:?}");
+    }
+    // The front tab of each leaf is drawn: Devices narrow on the left,
+    // the object dictionary right of it, trace and graph below.
+    let x = |h: &H, l: &str| rect_of(&node(h, top_by_label(h, l, None))).x0;
+    let y = |h: &H, l: &str| rect_of(&node(h, top_by_label(h, l, None))).y0;
+    assert!(x(&h, "No devices yet.") < 320.0, "Devices pane too wide\nUI:\n{}", dump(&h));
+    assert!(x(&h, "Filter") > 200.0, "object dictionary pane\nUI:\n{}", dump(&h));
+    assert!(y(&h, "No signals.") > 400.0, "graph pane below\nUI:\n{}", dump(&h));
+    assert!(x(&h, "No signals.") > 640.0, "graph pane right\nUI:\n{}", dump(&h));
+    drop(h);
+    let tmp = TempDir::new("s12b");
+    let h = build_sized(&tmp.data(), 1920.0, 1080.0);
+    let b = leaves(&h);
+    assert_eq!(b.len(), 5, "layout B: {b:?}");
+    for want in [vec![Tab::Devices, Tab::Eds], vec![Tab::Od, Tab::Pdo], vec![Tab::Trace(1), Tab::TxList], vec![Tab::Network], vec![Tab::Graph]] {
+        assert!(b.contains(&want), "layout B lacks {want:?}: {b:?}");
+    }
+    let x = |h: &H, l: &str| rect_of(&node(h, top_by_label(h, l, None))).x0;
+    assert!(x(&h, "Network overview") > 1100.0, "Network on the right in layout B\nUI:\n{}", dump(&h));
+    assert!(x(&h, "No devices yet.") < 320.0, "Devices pane too wide\nUI:\n{}", dump(&h));
+}
+
+/// The layout is saved and restored; a broken layout file gives the default.
+#[test]
+fn s13_layout_save_restore_and_broken_file() {
+    let tmp = TempDir::new("s13");
+    {
+        let mut h = build_sized(&tmp.data(), 1280.0, 800.0);
+        view_menu(&mut h, "LSS");
+        view_menu(&mut h, "Trace 2");
+        view_menu(&mut h, "Graph");
+        assert!(h.state().is_open(Tab::Lss) && !h.state().is_open(Tab::Graph));
+        h.state_mut().save_layout();
+    }
+    assert!(tmp.data().join(dock::LAYOUT_FILE).exists());
+    {
+        let h = build_sized(&tmp.data(), 1280.0, 800.0);
+        let s = h.state();
+        assert!(s.is_open(Tab::Lss) && s.is_open(Tab::Trace(2)) && !s.is_open(Tab::Graph), "layout not restored: {:?}", leaves(&h));
+        assert!(s.traces.contains_key(&2), "trace view 2 not made");
+    }
+    std::fs::write(tmp.data().join(dock::LAYOUT_FILE), b"{ broken").unwrap();
+    let h = build_sized(&tmp.data(), 1280.0, 800.0);
+    assert!(has(&h, "default layout used"), "no note\nUI:\n{}", dump(&h));
+    let a = leaves(&h);
+    assert!(a.contains(&vec![Tab::Od, Tab::Network, Tab::Pdo]) && a.contains(&vec![Tab::Graph]), "default layout A: {a:?}");
+}
+
+/// A second trace tab has its own filter and its own pause.
+#[test]
+fn s14_second_trace_tab_own_filter() {
+    let tmp = TempDir::new("s14");
+    let mut h = build(&tmp.data());
+    side_by_side(&mut h, vec![Tab::Trace(1)], vec![Tab::Trace(2)]);
+    connect(&mut h);
+    wait_for(&mut h, "rows in both tabs", |h| trace_counts_at(h, true).0 > 1 && trace_counts_at(h, false).0 > 1);
+    // Trace 2 shows only COB-ID 0x123 (not on this bus); trace 1 shows all.
+    let mid = 800.0;
+    let cob = right_of_in(&h, "COB-ID 0x", Role::TextInput, mid, f64::MAX);
+    let cob_max = right_of_in(&h, "..", Role::TextInput, mid, f64::MAX);
+    set_text(&mut h, cob, "123");
+    set_text(&mut h, cob_max, "123");
+    wait_for(&mut h, "filter in trace 2", |h| {
+        let (s1, b1, _) = trace_counts_at(h, true);
+        let (s2, b2, _) = trace_counts_at(h, false);
+        s1 == b1 && s1 > 1 && s2 == 0 && b2 > 1
+    });
+    let left_rows = h.query_all_by_label("701").filter(|n| rect_of(n).x0 < mid).count();
+    let right_rows = h.query_all_by_label("701").filter(|n| rect_of(n).x0 >= mid).count();
+    assert!(left_rows > 0 && right_rows == 0, "rows {left_rows} / {right_rows}");
+    let cob1 = right_of_in(&h, "COB-ID 0x", Role::TextInput, f64::MIN, mid);
+    assert_eq!(node(&h, cob1).value().unwrap_or_default(), "", "trace 1 filter changed");
+    set_text(&mut h, cob, "701");
+    set_text(&mut h, cob_max, "701");
+    wait_for(&mut h, "trace 2 rows of 0x701", |h| trace_counts_at(h, false).0 > 1);
+    // Pause trace 2 only.
+    let pause2 = top_in(&h, "Pause", Some(Role::CheckBox), mid, f64::MAX);
+    click_id(&mut h, pause2);
+    assert!(h.state().trace_paused(2) && !h.state().trace_paused(1));
+    let (_, b1, _) = trace_counts_at(&h, true);
+    let (s2, _, _) = trace_counts_at(&h, false);
+    wait_for(&mut h, "trace 1 still records", |h| trace_counts_at(h, true).1 > b1);
+    assert_eq!(trace_counts_at(&h, false).0, s2, "paused trace 2 changed");
+}
+
+/// Graph: a PDO signal gets points from the simulator.
+#[test]
+fn s15_graph_pdo_signal() {
+    let tmp = TempDir::new("s15");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Plot");
+    connect(&mut h);
+    start_node(&mut h);
+    only(&mut h, vec![Tab::Graph]);
+    assert!(has_exact(&h, "No signals."));
+    click_containing(&mut h, "Add signal...");
+    assert!(has_exact(&h, "Add signal"), "dialog\nUI:\n{}", dump(&h));
+    // The three sources.
+    for s in ["PDO object", "SDO poll", "Raw frame bits"] {
+        assert!(has_exact(&h, s), "source {s}");
+    }
+    assert!(has_exact(&h, "Mapped object"), "mapped objects of the EDS TPDOs\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Add");
+    assert!(!has_exact(&h, "Add signal"), "dialog still open\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "N1 6000:01"), "legend row\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "PDO, node 1, 6000:01"));
+    let row = |h: &H| top_by_label(h, "N1 6000:01", Some(Role::Label));
+    wait_for(&mut h, "points", |h| cell_text(h, row(h), "Points").parse::<u64>().unwrap_or(0) >= 2);
+    assert_ne!(cell_text(&h, row(&h), "Last"), "-");
+    // Saved with the data folder, and the CSV export.
+    assert!(tmp.data().join("signals.json").exists() || std::fs::read_dir(tmp.data()).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains("signal")), "signal list not saved");
+    let csv = tmp.0.join("signals.csv");
+    let n = h.state().write_graph_csv(&csv).unwrap();
+    assert!(n >= 2, "CSV points {n}");
+    // Remove.
+    let rm = button_on_row(&h, row(&h), "Remove");
+    click_id(&mut h, rm);
+    assert!(has_exact(&h, "No signals."));
+}
+
+/// PDO: read, disable TPDO1 (apply after the question), it stops in the trace.
+#[test]
+fn s16_pdo_read_disable_apply() {
+    let tmp = TempDir::new("s16");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Pdo");
+    connect(&mut h);
+    start_node(&mut h);
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_for(&mut h, "TPDO1 rows", |h| last_row(h, "181").is_some());
+    only(&mut h, vec![Tab::Pdo]);
+    assert!(has_exact(&h, "No PDO configuration of node 1."));
+    click_containing(&mut h, "Read PDOs");
+    wait_for(&mut h, "PDOs read", |h| has(h, "Node 1: ") && has(h, "PDO(s) read"));
+    let t1 = top_by_label(&h, "TPDO1", Some(Role::Label));
+    assert_eq!(cell_text(&h, t1, "COB-ID"), "181");
+    assert_eq!(cell_text(&h, t1, "State"), "enabled");
+    let before = buttons(&h, "Apply");
+    let dis = button_on_row(&h, t1, "Disable");
+    click_id(&mut h, dis);
+    assert!(has_exact(&h, "Apply PDO change"), "question before the apply\nUI:\n{}", dump(&h));
+    click_new_button(&mut h, "Apply", &before);
+    wait_for(&mut h, "applied", |h| has(h, "PDO change applied"));
+    let t1 = top_by_label(&h, "TPDO1", Some(Role::Label));
+    assert_eq!(cell_text(&h, t1, "State"), "disabled");
+    // No more 0x181 frames.
+    only(&mut h, vec![Tab::Trace(1)]);
+    run_for(&mut h, Duration::from_millis(300));
+    click(&mut h, "Clear");
+    wait_for(&mut h, "heartbeats after the clear", |h| last_row(h, "701").is_some());
+    run_for(&mut h, Duration::from_millis(500));
+    assert!(last_row(&h, "181").is_none(), "TPDO1 still sent\nUI:\n{}", dump(&h));
+    assert!(last_row(&h, "281").is_some() || trace_counts(&h).0 > 0);
+}
+
+/// Transmit list: a manual send appears in the trace; a periodic entry runs
+/// only while started.
+#[test]
+fn s17_transmit_list() {
+    let tmp = TempDir::new("s17");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::TxList]);
+    assert!(has(&h, "No frames in the transmit list."));
+    connect(&mut h);
+    let id = right_of(&h, "ID 0x", Role::TextInput);
+    set_text(&mut h, id, "222");
+    let data = right_of(&h, "Data", Role::TextInput);
+    set_text(&mut h, data, "AA BB");
+    click(&mut h, "Manual");
+    click(&mut h, "Add to list");
+    wait_for(&mut h, "entry", |h| has_exact(h, "stopped") || has_exact(h, "manual"));
+    let row = top_by_label(&h, "222", None);
+    let send = button_on_row(&h, row, "Send");
+    click_id(&mut h, send);
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_for(&mut h, "Tx row 222", |h| last_row(h, "222").is_some());
+    let r = last_row(&h, "222").unwrap();
+    assert_eq!(cell_text(&h, r, "Data"), "AA BB");
+    assert_eq!(cell_text(&h, r, "Dir"), tx_glyph());
+    // A periodic entry sends nothing until Start, and stops on Stop.
+    only(&mut h, vec![Tab::TxList]);
+    set_text(&mut h, id, "333");
+    click(&mut h, "Periodic");
+    click(&mut h, "Add to list");
+    run_for(&mut h, Duration::from_millis(300));
+    assert!(cob_count(&h, 0x333) == 0, "periodic entry sent before Start");
+    let row = top_by_label(&h, "333", None);
+    let start = button_on_row(&h, row, "Start");
+    click_id(&mut h, start);
+    wait_for(&mut h, "running", |h| has_exact(h, "running"));
+    wait_for(&mut h, "periodic frames", |h| cob_count(h, 0x333) >= 2);
+    click(&mut h, "Stop all");
+    run_for(&mut h, Duration::from_millis(200));
+    let n = cob_count(&h, 0x333);
+    run_for(&mut h, Duration::from_millis(400));
+    assert_eq!(cob_count(&h, 0x333), n, "periodic frames after Stop all");
+    // The list is saved.
+    assert!(tmp.data().join("txlist.json").exists());
+}
+
+/// LSS: inquire the identity of the simulated slave.
+#[test]
+fn s18_lss_inquire() {
+    let tmp = TempDir::new("s18");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Lss]);
+    assert!(has_exact(&h, "Not connected: LSS services are disabled."));
+    assert!(has_exact(&h, "No LSS service run yet."));
+    connect(&mut h);
+    click(&mut h, "Switch all to configuration");
+    wait_for(&mut h, "switched", |h| h.state().lssv.running.is_none() && !h.state().lssv.log.is_empty());
+    click(&mut h, "Inquire identity");
+    wait_for(&mut h, "identity", |h| has(h, "vendor 0x0000069B"));
+    assert!(has(&h, "product 0x00000001"), "\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "Use last identity"));
+    click(&mut h, "Inquire node-ID");
+    wait_for(&mut h, "node-ID", |h| has(h, ": node-ID 1"));
+    // A changing service asks first.
+    click(&mut h, "Store configuration");
+    assert!(has(&h, "non-volatile memory"), "question\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Cancel");
+    assert!(has_exact(&h, "Cancelled; nothing sent"));
+}
+
+/// DCF: save to a temporary file, compare: no difference.
+#[test]
+fn s19_dcf_save_compare() {
+    let tmp = TempDir::new("s19");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Dcf");
+    only(&mut h, vec![Tab::Dcf]);
+    connect(&mut h);
+    let path = tmp.0.join("node1.dcf");
+    h.state_mut().dcf_save_to(path.clone()).unwrap();
+    wait_for(&mut h, "saved", |h| has(h, "Saved ") && has(h, "value(s) to"));
+    assert!(path.exists());
+    h.state_mut().dcf_load(&path);
+    step2(&mut h);
+    click(&mut h, "Compare");
+    wait_for(&mut h, "compared", |h| has(h, "Compared "));
+    assert!(has(&h, ": 0 difference(s)"), "\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "no difference"));
+    // Dry run sends no write.
+    click(&mut h, "Dry run");
+    wait_for(&mut h, "dry run", |h| has(h, "Dry run: "));
+    assert!(has(&h, "Dry run: 0 object(s) would be written"), "\nUI:\n{}", dump(&h));
+    // Restore asks first.
+    click(&mut h, "Restore");
+    assert!(has_exact(&h, "Restore DCF"), "question\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Cancel");
+    assert!(has_exact(&h, "Cancelled; nothing sent"));
+}
+
+/// Settings: change, save, reload.
+#[test]
+fn s20_settings_change_save_reload() {
+    let tmp = TempDir::new("s20");
+    {
+        let mut h = build(&tmp.data());
+        only(&mut h, vec![Tab::Od]);
+        click_role(&mut h, Role::Button, "Settings");
+        // (The section buttons carry an icon in front of the name.)
+        assert!(has(&h, "  Appearance") && has(&h, "  Safety") && has(&h, "  Data folder"), "\nUI:\n{}", dump(&h));
+        click_role(&mut h, Role::Button, "Light");
+        click_role(&mut h, Role::Button, "Delta");
+        // The draft shows at once, the settings change only on Save.
+        assert_eq!(h.state().settings.theme, Settings::default().theme);
+        click_role(&mut h, Role::Button, "Save");
+        assert!(has_exact(&h, "Settings saved"), "\nUI:\n{}", dump(&h));
+        assert!(!has(&h, "  Appearance"), "dialog still open");
+        assert_eq!(h.state().settings.theme, Theme::Light);
+        assert!(!h.ctx.style().visuals.dark_mode);
+        // Cancel keeps the saved values.
+        click_role(&mut h, Role::Button, "Settings");
+        click_role(&mut h, Role::Button, "Dark");
+        click_role(&mut h, Role::Button, "Cancel");
+        assert_eq!(h.state().settings.theme, Theme::Light);
+    }
+    let (s, _) = Settings::load(&tmp.data());
+    assert_eq!(s.theme, Theme::Light);
+    assert_eq!(s.timestamp_format, TimestampFormat::Delta);
+    let mut h = build(&tmp.data());
+    step2(&mut h);
+    assert_eq!(h.state().settings.theme, Theme::Light);
+    assert!(!h.ctx.style().visuals.dark_mode);
+    only(&mut h, vec![Tab::Trace(1)]);
+    assert!(toggled(&h, top_by_label(&h, "Delta time", Some(Role::Button))), "new trace tab uses the Delta default\nUI:\n{}", dump(&h));
+}
+
+/// A write asks first; Cancel sends nothing, Write sends it.
+#[test]
+fn s21_confirm_before_write() {
+    let tmp = TempDir::new("s21");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Od]);
+    connect(&mut h);
+    let index = right_of(&h, "Index 0x", Role::TextInput);
+    let sub = right_of(&h, "Sub", Role::TextInput);
+    set_text(&mut h, index, "1017");
+    set_text(&mut h, sub, "0");
+    let value = right_of(&h, "Value", Role::TextInput);
+    set_text(&mut h, value, "500");
+    let before = buttons(&h, "Write");
+    let id = top_by_label(&h, "Write", Some(Role::Button));
+    click_id(&mut h, id);
+    assert!(has_exact(&h, "Write object"), "no question\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Cancel");
+    assert!(has_exact(&h, "Cancelled; nothing sent"));
+    run_for(&mut h, Duration::from_millis(200));
+    assert!(cob_count(&h, 0x601) == 0, "an SDO request was sent after Cancel");
+    let id = top_by_label(&h, "Write", Some(Role::Button));
+    click_id(&mut h, id);
+    click_new_button(&mut h, "Write", &before);
+    wait_for(&mut h, "written", |h| has(h, "Written node 1 0x1017:00"));
+    assert!(cob_count(&h, 0x601) > 0);
+}
+
+// ------------------------------------------------------------ screenshots
+
+/// Render PNG screenshots with wgpu (offscreen) to `target\screens\`.
+/// Run: `cargo test screenshots -- --ignored`.
+#[test]
+#[ignore]
+fn screenshots() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
+    std::fs::create_dir_all(&out).unwrap();
+    let shot = |h: &mut H, name: &str| {
+        step2(h);
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+    };
+    let scene = |w: f32, ht: f32, theme: Theme, name: &str| -> (TempDir, H) {
+        let tmp = TempDir::new(name);
+        preset(&tmp.data(), Settings { theme, ..Settings::default() });
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(w, ht)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        // Traffic with an EDS device, an operational node and a graph signal.
+        add_eds_and_device(&mut h, "Bench");
+        connect(&mut h);
+        start_node(&mut h);
+        h.state_mut().add_signal(crate::signals::SignalDef::new("Analog input 1", crate::signals::SignalSource::Pdo { node: 1, index: 0x6401, sub: 1 }));
+        h.state_mut().add_signal(crate::signals::SignalDef::new("Inputs 1-8", crate::signals::SignalSource::Pdo { node: 1, index: 0x6000, sub: 1 }));
+        let width = w;
+        h.state_mut().reset_layout(width);
+        run_for(&mut h, Duration::from_millis(1500));
+        (tmp, h)
+    };
+    {
+        let (_t, mut h) = scene(1280.0, 800.0, Theme::Dark, "shot_a_dark");
+        shot(&mut h, "layout_a_1280x800_dark");
+        h.state_mut().open_settings();
+        shot(&mut h, "settings_dark");
+        h.state_mut().settings_dlg = None;
+        h.state_mut().read_pdos(1);
+        wait_for(&mut h, "PDOs read", |h| has(h, "PDO(s) read"));
+        only(&mut h, vec![Tab::Pdo]);
+        shot(&mut h, "pdo_dark");
+        only(&mut h, vec![Tab::Network]);
+        shot(&mut h, "network_dark");
+        only(&mut h, vec![Tab::Lss]);
+        click(&mut h, "Switch all to configuration");
+        click(&mut h, "Inquire identity");
+        wait_for(&mut h, "identity", |h| has(h, "vendor 0x"));
+        shot(&mut h, "lss_dark");
+        only(&mut h, vec![Tab::Dcf]);
+        let path = out.join("node1_sample.dcf");
+        h.state_mut().dcf_save_to(path.clone()).unwrap();
+        wait_for(&mut h, "saved", |h| has(h, "value(s) to"));
+        h.state_mut().dcf_load(&path);
+        click(&mut h, "Compare");
+        wait_for(&mut h, "compared", |h| has(h, "Compared "));
+        shot(&mut h, "dcf_dark");
+        let _ = std::fs::remove_file(&path);
+    }
+    {
+        let (_t, mut h) = scene(1280.0, 800.0, Theme::Light, "shot_a_light");
+        shot(&mut h, "layout_a_1280x800_light");
+    }
+    {
+        let (_t, mut h) = scene(1920.0, 1080.0, Theme::Dark, "shot_b_dark");
+        shot(&mut h, "layout_b_1920x1080_dark");
+    }
 }

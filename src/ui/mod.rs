@@ -1,11 +1,22 @@
-//! egui user interface: connect bar, library panel, tabs and status line.
+//! egui user interface (v0.2): menu bar, connection bar, dock area with
+//! the views as tabs, status bar. Design: docs/UI_DESIGN.md.
 //!
 //! The UI never blocks on the bus: it sends `BusCommand`s and reads
-//! `BusEvent`s each frame. Every bus send comes from a button.
+//! `BusEvent`s each frame. Every bus send comes from a button; opening the
+//! app, a view or a tab sends nothing.
 
+mod dcf_view;
+mod dock;
+mod graph;
+mod library_view;
+mod lss_view;
 mod network;
 mod od;
+mod pdo_view;
+mod settings_dlg;
+pub(crate) mod theme;
 mod trace_view;
+mod tx_view;
 #[cfg(test)]
 mod ui_tests;
 
@@ -13,12 +24,16 @@ use crate::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
 use crate::can::{pcan, Bitrate, ChannelInfo};
 use crate::canopen::decode::{decode, DecodeContext};
 use crate::canopen::sdo::SdoRequest;
+use crate::canopen::task::TaskResult;
 use crate::eds::{self, ObjectDictionary};
 use crate::library::{self, Device, Library};
-use crate::settings::{AdapterKind, Settings};
+use crate::settings::{AdapterKind, Settings, Theme};
 use crate::trace::TraceStore;
+use dock::Tab;
 use eframe::egui;
-use std::collections::HashMap;
+use egui_dock::{DockArea, DockState};
+use egui_phosphor::regular as icon;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,12 +41,12 @@ use std::time::{Duration, Instant};
 /// Start the GUI. Blocks until the window closes.
 pub fn run() -> eframe::Result {
     let boot = Boot::load();
-    let size = [boot.settings.window_width, boot.settings.window_height];
+    let size = [boot.settings.window_width.max(1024.0), boot.settings.window_height.max(640.0)];
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("CANoxide")
+            .with_title(format!("CANoxide {}", crate::VERSION))
             .with_inner_size(size)
-            .with_min_inner_size([720.0, 480.0])
+            .with_min_inner_size([1024.0, 640.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
@@ -45,6 +60,7 @@ struct Boot {
     data_error: Option<String>,
     settings: Settings,
     library: Option<Library>,
+    layout: Option<DockState<Tab>>,
     notes: Vec<String>,
 }
 
@@ -63,15 +79,16 @@ impl Boot {
                 data_error: Some(format!("No data folder: {e}. Nothing is saved.")),
                 settings: Settings::default(),
                 library: None,
+                layout: None,
                 notes: Vec::new(),
             },
         }
     }
 
-    /// Load settings and library from a given data folder (the UI tests
-    /// use a temporary folder; the app uses `CANoxide_data`).
+    /// Load settings, library and layout from a given data folder (the UI
+    /// tests use a temporary folder; the app uses `CANoxide_data`).
     fn load_dir(dir: PathBuf) -> Boot {
-        let mut b = Boot { data_dir: None, data_mode: None, data_error: None, settings: Settings::default(), library: None, notes: Vec::new() };
+        let mut b = Boot { data_dir: None, data_mode: None, data_error: None, settings: Settings::default(), library: None, layout: None, notes: Vec::new() };
         b.data_dir = Some(dir.clone());
         if let Err(e) = library::ensure_writable(&dir) {
             b.data_error = Some(format!("The data folder {} is not writable: {e}. Nothing is saved.", dir.display()));
@@ -80,6 +97,9 @@ impl Boot {
         let (settings, warn) = Settings::load(&dir);
         b.settings = settings;
         b.notes.extend(warn);
+        let (layout, note) = dock::load_layout(&dir);
+        b.layout = layout;
+        b.notes.extend(note);
         match Library::open(&dir) {
             Ok(l) => {
                 b.notes.extend(l.load_warning.clone());
@@ -91,18 +111,31 @@ impl Boot {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
-    Od,
-    Network,
-    Trace,
-}
-
 enum Dialog {
     /// Add (`idx` None) or edit a device.
     Device { idx: Option<usize>, dev: Device, error: Option<String> },
     RemoveEds(String),
     RemoveDevice(usize),
+}
+
+/// A question before a bus action (Safety settings).
+pub(crate) struct Confirm {
+    title: String,
+    text: String,
+    ok: String,
+    danger: bool,
+    action: Box<dyn FnOnce(&mut App)>,
+}
+
+/// Who started a task (`BusCommand::Task` and friends).
+pub(crate) enum TaskOwner {
+    PdoRead,
+    PdoApply,
+    NodeInfo,
+    Heartbeat,
+    DcfSave(PathBuf),
+    DcfCompare,
+    DcfRestore,
 }
 
 pub(crate) struct App {
@@ -126,10 +159,27 @@ pub(crate) struct App {
     free_node: u8,
     decode_ctx: DecodeContext,
     trace: TraceStore,
-    tv: trace_view::TraceView,
+    traces: BTreeMap<u8, trace_view::TraceView>,
     od: od::OdView,
     net: network::NetView,
-    tab: Tab,
+    graph: graph::GraphView,
+    pdo: pdo_view::PdoView,
+    txv: tx_view::TxView,
+    lssv: lss_view::LssView,
+    dcfv: dcf_view::DcfView,
+    dock: Option<DockState<Tab>>,
+    /// No layout was saved: choose A or B by the window width.
+    first_layout: bool,
+    /// Tabs to open after the dock is drawn (`None`: a new trace tab).
+    deferred: Vec<Option<Tab>>,
+    settings_dlg: Option<settings_dlg::SettingsDlg>,
+    about: bool,
+    confirm: Option<Confirm>,
+    tasks: HashMap<u64, TaskOwner>,
+    /// The OS theme (from the window), for Theme::System.
+    os_dark: Option<bool>,
+    /// The style key last applied: (dark, font offset, scale).
+    style_key: Option<(bool, i8, u32)>,
     status: String,
     status_error: bool,
     dialog: Option<Dialog>,
@@ -138,14 +188,16 @@ pub(crate) struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, boot: Boot) -> App {
-        cc.egui_ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::System);
+        cc.egui_ctx.set_fonts(theme::fonts());
         let ctx = cc.egui_ctx.clone();
         let bus = BusHandle::spawn(Arc::new(move || ctx.request_repaint()));
+        let first_layout = boot.layout.is_none();
         let mut app = App {
             data_dir: boot.data_dir,
             data_mode: boot.data_mode,
             data_error: boot.data_error,
             trace: TraceStore::new(boot.settings.trace_capacity),
+            traces: BTreeMap::new(),
             settings: boot.settings,
             settings_dirty: false,
             settings_saved: Instant::now(),
@@ -160,10 +212,22 @@ impl App {
             selected_eds: None,
             free_node: 1,
             decode_ctx: DecodeContext::default(),
-            tv: trace_view::TraceView::default(),
             od: od::OdView::default(),
             net: network::NetView::default(),
-            tab: Tab::Od,
+            graph: graph::GraphView::default(),
+            pdo: pdo_view::PdoView::default(),
+            txv: tx_view::TxView::default(),
+            lssv: lss_view::LssView::default(),
+            dcfv: dcf_view::DcfView::default(),
+            dock: Some(boot.layout.unwrap_or_else(|| dock::default_layout(1280.0))),
+            first_layout,
+            deferred: Vec::new(),
+            settings_dlg: None,
+            about: false,
+            confirm: None,
+            tasks: HashMap::new(),
+            os_dark: None,
+            style_key: None,
             status: "Ready. Nothing is sent until you press a button.".to_string(),
             status_error: false,
             dialog: None,
@@ -172,8 +236,22 @@ impl App {
         if !boot.notes.is_empty() {
             app.set_status(boot.notes.join("; "), true);
         }
+        app.lssv.delay_ms = app.settings.lss_switch_delay_ms;
+        if let Ok(mut s) = app.bus.signals.lock() {
+            s.set_capacity(app.settings.signal_capacity);
+        }
+        app.sync_traces();
+        if let Some(n) = app.txv.load(app.lib.as_ref(), &app.settings.saved_frames, &app.bus) {
+            app.set_status(n, true);
+        }
+        if let Some(n) = app.graph.load(app.lib.as_ref(), &app.bus) {
+            app.set_status(n, true);
+        }
         app.bus.send(BusCommand::ListChannels(app.settings.adapter));
         app.rebuild_decode();
+        if app.settings.connect_on_start {
+            app.connect();
+        }
         app
     }
 
@@ -200,9 +278,43 @@ impl App {
         }
     }
 
+    fn save_layout(&mut self) {
+        if self.data_error.is_some() {
+            return;
+        }
+        if let (Some(dir), Some(d)) = (&self.data_dir, &self.dock) {
+            if let Err(e) = dock::save_layout(dir, d) {
+                self.set_status(format!("Layout not saved: {e}"), true);
+            }
+        }
+    }
+
     /// True when a send control may be used.
     pub(crate) fn can_send(&self) -> bool {
         self.connected && !self.listen_only_active
+    }
+
+    /// The tooltip of a disabled send control.
+    pub(crate) fn send_hint(&self) -> &'static str {
+        if !self.connected {
+            "Connect first"
+        } else if self.listen_only_active {
+            "Listen-only mode"
+        } else {
+            ""
+        }
+    }
+
+    /// A send button: disabled (with the reason as tooltip) unless the bus
+    /// may be used and `ok` holds.
+    pub(crate) fn send_button(&self, ui: &mut egui::Ui, ok: bool, text: impl Into<egui::WidgetText>) -> egui::Response {
+        let can = self.can_send();
+        let r = ui.add_enabled(can && ok, egui::Button::new(text));
+        if !can {
+            r.on_disabled_hover_text(self.send_hint())
+        } else {
+            r
+        }
     }
 
     pub(crate) fn tag(&mut self) -> u64 {
@@ -242,7 +354,14 @@ impl App {
         Some(self.od_for(&file))
     }
 
-    /// Node -> dictionary map for the trace decoder, from the library.
+    /// The EDS of a node from the library (first device with that node).
+    pub(crate) fn od_of_node(&mut self, node: u8) -> Option<Arc<ObjectDictionary>> {
+        let file = self.lib.as_ref()?.devices.iter().find(|d| d.node_id == node)?.eds_file.clone()?;
+        self.od_for(&file).ok()
+    }
+
+    /// Node -> dictionary map for the decoders (UI trace and worker), from
+    /// the library.
     fn rebuild_decode(&mut self) {
         let pairs: Vec<(u8, String)> = match &self.lib {
             Some(l) => l.devices.iter().filter_map(|d| Some((d.node_id, d.eds_file.clone()?))).collect(),
@@ -257,13 +376,36 @@ impl App {
                 map.insert(node, od);
             }
         }
-        self.decode_ctx = DecodeContext::new(map);
+        let pdos: Vec<(u8, Vec<crate::canopen::pdo::PdoConfig>)> = self.pdo.read_configs();
+        self.decode_ctx = DecodeContext::new(map.clone());
+        for (n, p) in pdos {
+            self.decode_ctx.set_node_pdos(n, p);
+        }
+        self.bus.send(BusCommand::SetDecodeNodes(map));
     }
 
     pub(crate) fn send_sdo(&mut self, node: u8, req: SdoRequest, pending: od::Pending) {
         let tag = self.tag();
         self.od.pending.insert(tag, pending);
-        self.bus.send(BusCommand::Sdo { tag, node, req });
+        let opts = crate::canopen::sdo::StartOptions::mode(self.settings.sdo_transfer_mode);
+        self.bus.send(BusCommand::SdoOpts { tag, node, req, opts });
+    }
+
+    /// Start a task and remember who gets its result.
+    pub(crate) fn start_task(&mut self, owner: TaskOwner, task: Box<dyn crate::canopen::task::SdoTask>) -> u64 {
+        let tag = self.tag();
+        self.tasks.insert(tag, owner);
+        self.bus.send(BusCommand::Task { tag, task });
+        tag
+    }
+
+    /// Run `action` now, or after a question when `ask` is true.
+    pub(crate) fn confirm_then(&mut self, ask: bool, title: &str, text: String, ok: &str, danger: bool, action: impl FnOnce(&mut App) + 'static) {
+        if ask {
+            self.confirm = Some(Confirm { title: title.to_string(), text, ok: ok.to_string(), danger, action: Box::new(action) });
+        } else {
+            action(self);
+        }
     }
 
     fn connect(&mut self) {
@@ -280,9 +422,100 @@ impl App {
             }
         };
         self.bus.send(BusCommand::SetSdoTimeout(self.settings.sdo_timeout_ms));
+        self.bus.send(BusCommand::SetSdoBlockSize(self.settings.sdo_block_size));
+        self.bus.send(BusCommand::SetLssTimeout(self.settings.lss_timeout_ms));
         self.bus.send(BusCommand::Connect { adapter, channel, bitrate, listen_only: self.settings.listen_only });
         self.set_status("Connecting...", false);
     }
+
+    // ------------------------------------------------------------ traces
+
+    /// Make the trace views match the open trace tabs.
+    fn sync_traces(&mut self) {
+        let open = self.dock.as_ref().map(dock::open_traces).unwrap_or_default();
+        for n in &open {
+            if !self.traces.contains_key(n) {
+                let view = if *n == 1 { 0 } else { self.trace.add_view() };
+                self.traces.insert(*n, trace_view::TraceView::new(view, &self.settings));
+            }
+        }
+    }
+
+    pub(crate) fn trace_paused(&self, n: u8) -> bool {
+        self.traces.get(&n).is_some_and(|t| self.trace.view_paused(t.view))
+    }
+
+    pub(crate) fn close_trace(&mut self, n: u8) {
+        if let Some(t) = self.traces.remove(&n) {
+            if t.view != 0 {
+                self.trace.remove_view(t.view);
+            } else {
+                // View 0 stays; it is reset for the next Trace 1.
+                self.trace.set_view_filter(0, Default::default());
+                self.trace.set_view_paused(0, false);
+            }
+        }
+    }
+
+    pub(crate) fn new_trace_tab(&mut self) {
+        match self.dock.as_ref() {
+            Some(d) => {
+                let open = dock::open_traces(d);
+                if let Some(n) = (1..=dock::MAX_TRACES).find(|n| !open.contains(n)) {
+                    self.open_tab(Tab::Trace(n));
+                }
+            }
+            // A view asked while the dock is drawn: after the frame.
+            None => self.deferred.push(None),
+        }
+    }
+
+    pub(crate) fn open_tab(&mut self, tab: Tab) {
+        match self.dock.as_mut() {
+            Some(d) => dock::open_tab(d, tab),
+            None => {
+                self.deferred.push(Some(tab));
+                return;
+            }
+        }
+        self.sync_traces();
+    }
+
+    /// Tab requests made by views while the dock was drawn.
+    fn run_deferred(&mut self) {
+        for t in std::mem::take(&mut self.deferred) {
+            match t {
+                Some(tab) => self.open_tab(tab),
+                None => self.new_trace_tab(),
+            }
+        }
+    }
+
+    pub(crate) fn close_tab(&mut self, tab: Tab) {
+        if let Some(d) = self.dock.as_mut() {
+            if dock::close_tab(d, tab) {
+                if let Tab::Trace(n) = tab {
+                    self.close_trace(n);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_open(&self, tab: Tab) -> bool {
+        self.dock.as_ref().is_some_and(|d| dock::is_open(d, tab))
+    }
+
+    fn reset_layout(&mut self, width: f32) {
+        let open: Vec<u8> = self.traces.keys().copied().collect();
+        for n in open {
+            self.close_trace(n);
+        }
+        self.dock = Some(dock::default_layout(width));
+        self.sync_traces();
+        self.set_status(format!("Layout {} restored", if width < 1600.0 { "A" } else { "B" }), false);
+    }
+
+    // ------------------------------------------------------------ events
 
     fn poll_bus(&mut self) {
         while let Some(e) = self.bus.try_recv() {
@@ -306,24 +539,22 @@ impl App {
                     self.listen_only_active = listen_only;
                     self.set_status(format!("Connected: {text}"), false);
                     self.connect_text = text;
+                    self.rebuild_decode();
+                    self.graph.on_connected(&self.bus);
                 }
                 BusEvent::Disconnected => {
                     self.connected = false;
                     self.listen_only_active = false;
-                    self.net.cyclic_active.clear();
                     self.net.scanning = false;
+                    self.graph.polling = false;
                     self.set_status("Disconnected", false);
                 }
                 BusEvent::Error(s) => self.set_status(s, true),
                 BusEvent::Info(s) => self.set_status(s, false),
                 BusEvent::Frames(v) => {
-                    if self.tv.paused {
-                        self.tv.skipped += v.len() as u64;
-                    } else {
-                        for f in v {
-                            let d = decode(&f, &self.decode_ctx);
-                            self.trace.push(f, d);
-                        }
+                    for f in v {
+                        let d = decode(&f, &self.decode_ctx);
+                        self.trace.push(f, d);
                     }
                 }
                 BusEvent::SdoDone { tag, outcome } => self.on_sdo_done(tag, outcome),
@@ -336,9 +567,30 @@ impl App {
                     let what = if cancelled { "Scan cancelled" } else { "Scan finished" };
                     self.set_status(format!("{what}: {found} node(s) answered"), false);
                 }
-                // v0.2 events: the v0.2 UI handles them.
-                _ => {}
+                BusEvent::TaskProgress { .. } => {}
+                BusEvent::TaskDone { tag, result } => self.on_task_done(tag, result),
+                BusEvent::PdoConfigRead(c) => {
+                    self.decode_ctx.set_node_pdos(c.node, c.pdos.clone());
+                    self.pdo.on_config_read(c);
+                }
+                BusEvent::LssDone { tag, result } => self.on_lss_done(tag, result),
+                BusEvent::LogStarted { path } => {
+                    self.set_status(format!("Trace log started: {}", path.display()), false);
+                }
+                BusEvent::LogStopped { path, rows, error } => match error {
+                    Some(e) => self.set_status(format!("Trace log {} stopped: {e}", path.display()), true),
+                    None => self.set_status(format!("Trace log stopped: {rows} row(s) in {}", path.display()), false),
+                },
             }
+        }
+    }
+
+    fn on_task_done(&mut self, tag: u64, result: TaskResult) {
+        let Some(owner) = self.tasks.remove(&tag) else { return };
+        match owner {
+            TaskOwner::PdoRead | TaskOwner::PdoApply => self.on_pdo_task(owner, result),
+            TaskOwner::NodeInfo | TaskOwner::Heartbeat => self.on_net_task(owner, result),
+            TaskOwner::DcfSave(_) | TaskOwner::DcfCompare | TaskOwner::DcfRestore => self.on_dcf_task(owner, result),
         }
     }
 
@@ -374,17 +626,137 @@ impl App {
         self.rebuild_decode();
     }
 
-    // ---------------------------------------------------------------- panels
+    fn open_eds_dialog(&mut self) {
+        if self.lib.is_none() {
+            return;
+        }
+        if let Some(paths) = rfd::FileDialog::new().add_filter("EDS / DCF", &["eds", "dcf", "EDS", "DCF"]).add_filter("All files", &["*"]).pick_files() {
+            self.add_eds_files(paths);
+        }
+    }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
+    // ------------------------------------------------------------ frame
+
+    fn apply_style(&mut self, ctx: &egui::Context) {
+        let os = ctx.input(|i| i.raw.system_theme).map(|t| t == egui::Theme::Dark);
+        if os.is_some() {
+            self.os_dark = os;
+        }
+        let s = self.settings_dlg.as_ref().map(|d| &d.draft).unwrap_or(&self.settings);
+        let key = (theme::is_dark(s.theme, self.os_dark), s.font_offset, (s.ui_scale * 1000.0) as u32);
+        if self.style_key != Some(key) {
+            let s = s.clone();
+            theme::apply(ctx, &s, self.os_dark);
+            self.style_key = Some(key);
+        }
+    }
+
+    pub(crate) fn is_dark(&self) -> bool {
+        theme::is_dark(self.settings.theme, self.os_dark)
+    }
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        egui::menu::bar(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.add_enabled(self.lib.is_some(), egui::Button::new("Open EDS...").shortcut_text("Ctrl+O")).clicked() {
+                    ui.close_menu();
+                    self.open_eds_dialog();
+                }
+                if ui.button("Save trace as...").clicked() {
+                    ui.close_menu();
+                    let n = self.traces.keys().next().copied().unwrap_or(1);
+                    self.save_trace_csv(n);
+                }
+                if ui.add_enabled(self.data_dir.is_some(), egui::Button::new("Open data folder")).clicked() {
+                    ui.close_menu();
+                    if let Some(d) = &self.data_dir {
+                        open_folder(d);
+                    }
+                }
+                ui.separator();
+                if ui.button("Exit").clicked() {
+                    ui.close_menu();
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            ui.menu_button("View", |ui| {
+                for t in Tab::VIEWS {
+                    let mut open = self.is_open(t);
+                    if ui.checkbox(&mut open, t.name()).changed() {
+                        if open {
+                            self.open_tab(t);
+                        } else {
+                            self.close_tab(t);
+                        }
+                    }
+                }
+                for n in 1..=dock::MAX_TRACES {
+                    let t = Tab::Trace(n);
+                    let mut open = self.is_open(t);
+                    if ui.checkbox(&mut open, t.name()).changed() {
+                        if open {
+                            self.open_tab(t);
+                        } else {
+                            self.close_tab(t);
+                        }
+                    }
+                }
+                ui.separator();
+                let n = self.dock.as_ref().map(|d| dock::open_traces(d).len()).unwrap_or(0);
+                if ui.add_enabled(n < dock::MAX_TRACES as usize, egui::Button::new("New trace tab")).clicked() {
+                    ui.close_menu();
+                    self.new_trace_tab();
+                }
+                ui.separator();
+                if ui.button("Reset layout").clicked() {
+                    ui.close_menu();
+                    let w = ui.ctx().screen_rect().width();
+                    self.reset_layout(w);
+                }
+                if ui.add(egui::Button::new("Full screen").shortcut_text("F11")).clicked() {
+                    ui.close_menu();
+                    let fs = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
+                }
+            });
+            if ui.button("Settings").on_hover_text("Ctrl+,").clicked() {
+                self.open_settings();
+            }
+            ui.menu_button("Help", |ui| {
+                if ui.button("Keyboard shortcuts").clicked() {
+                    ui.close_menu();
+                    self.set_status("Ctrl+, Settings · Ctrl+O Open EDS · Ctrl+Enter connect/disconnect · F11 full screen", false);
+                }
+                if ui.button("About CANoxide").clicked() {
+                    ui.close_menu();
+                    self.about = true;
+                }
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (glyph, next, tip) = match self.settings.theme {
+                    Theme::System => (icon::DESKTOP, Theme::Dark, "Theme: System (click: Dark)"),
+                    Theme::Dark => (icon::MOON, Theme::Light, "Theme: Dark (click: Light)"),
+                    Theme::Light => (icon::SUN, Theme::System, "Theme: Light (click: System)"),
+                };
+                if ui.add(egui::Button::new(glyph).frame(false)).on_hover_text(tip).clicked() {
+                    self.settings.theme = next;
+                    self.mark_settings();
+                }
+            });
+        });
+    }
+
+    fn connection_bar(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui);
+        ui.horizontal(|ui| {
+            ui.set_min_height(30.0);
             let locked = self.connected;
-            ui.label("Adapter");
+            ui.label(egui::RichText::new("Adapter").small().color(p.text_secondary));
             let before = self.settings.adapter;
             ui.add_enabled_ui(!locked, |ui| {
-                egui::ComboBox::from_id_salt("adapter").selected_text(self.settings.adapter.label()).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.settings.adapter, AdapterKind::Peak, AdapterKind::Peak.label());
+                egui::ComboBox::from_id_salt("adapter").width(150.0).selected_text(self.settings.adapter.label()).show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.settings.adapter, AdapterKind::Simulator, AdapterKind::Simulator.label());
+                    ui.selectable_value(&mut self.settings.adapter, AdapterKind::Peak, AdapterKind::Peak.label());
                 });
             });
             if self.settings.adapter != before {
@@ -394,11 +766,11 @@ impl App {
                 self.mark_settings();
             }
 
+            ui.label(egui::RichText::new("Channel").small().color(p.text_secondary));
             if self.settings.adapter == AdapterKind::Peak {
-                ui.label("Channel");
                 let ch = self.settings.channel;
                 ui.add_enabled_ui(!locked, |ui| {
-                    egui::ComboBox::from_id_salt("channel").selected_text(pcan::channel_name(ch as u16)).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("channel").width(120.0).selected_text(pcan::channel_name(ch as u16)).show_ui(ui, |ui| {
                         if self.channels.is_empty() {
                             ui.label("No available channel reported");
                         }
@@ -411,7 +783,7 @@ impl App {
                             ui.selectable_value(&mut self.settings.channel, h as u32, pcan::channel_name(h));
                         }
                     });
-                    if ui.small_button("Refresh").on_hover_text("Ask the driver which channels are available (sends nothing)").clicked() {
+                    if ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Ask the driver which channels are available (sends nothing)").clicked() {
                         self.bus.send(BusCommand::ListChannels(AdapterKind::Peak));
                     }
                 });
@@ -419,26 +791,22 @@ impl App {
                     self.mark_settings();
                 }
                 if let Some(n) = &self.channel_note {
-                    ui.colored_label(ui.visuals().warn_fg_color, n);
+                    ui.colored_label(p.warning, n);
                 }
             } else {
-                ui.label("Channel: virtual bus");
+                ui.label("virtual bus");
             }
 
-            ui.label("Bitrate");
+            ui.label(egui::RichText::new("Bitrate").small().color(p.text_secondary));
             let br = self.settings.bitrate_kbit;
             ui.add_enabled_ui(!locked, |ui| {
                 let cur = Bitrate::from_kbit(br).map(|b| b.label()).unwrap_or_else(|| format!("{br} kbit/s"));
-                egui::ComboBox::from_id_salt("bitrate").selected_text(cur).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("bitrate").width(110.0).selected_text(cur).show_ui(ui, |ui| {
                     for b in Bitrate::ALL {
                         ui.selectable_value(&mut self.settings.bitrate_kbit, b.kbit(), b.label());
                     }
                 });
-                if ui
-                    .checkbox(&mut self.settings.listen_only, "Listen only")
-                    .on_hover_text("Open the channel in listen-only mode; every send control is disabled")
-                    .changed()
-                {
+                if ui.checkbox(&mut self.settings.listen_only, "Listen only").on_hover_text("Open the channel in listen-only mode; every send control is disabled").changed() {
                     self.settings_dirty = true;
                 }
             });
@@ -447,324 +815,208 @@ impl App {
             }
 
             if self.connected {
-                if ui.button("Disconnect").clicked() {
+                if ui.add(egui::Button::new("Disconnect").min_size(egui::vec2(110.0, 0.0))).clicked() {
                     self.bus.send(BusCommand::Disconnect);
                 }
-            } else if ui.button("Connect").on_hover_text("Opens the channel only; nothing is sent").clicked() {
-                self.connect();
-            }
-
-            ui.separator();
-            let (status, fps) = {
-                let s = self.bus.shared.lock().unwrap_or_else(|p| p.into_inner());
-                (s.status.clone(), s.fps)
-            };
-            if self.connected {
-                ui.label(format!("Bus: {status}"));
-                ui.label(format!("{fps:.0} frames/s"));
-                if self.listen_only_active {
-                    ui.colored_label(ui.visuals().warn_fg_color, "LISTEN ONLY");
-                }
             } else {
-                ui.label("Not connected");
+                let b = egui::Button::new(egui::RichText::new("Connect").color(p.on_accent)).fill(p.accent_fill).min_size(egui::vec2(110.0, 0.0));
+                if ui.add(b).on_hover_text("Opens the channel only; nothing is sent").clicked() {
+                    self.connect();
+                }
             }
-        });
-    }
 
-    fn left_panel(&mut self, ui: &mut egui::Ui) {
-        if let Some(e) = &self.data_error {
-            ui.colored_label(ui.visuals().error_fg_color, e);
-            ui.separator();
-        }
-        egui::ScrollArea::vertical().id_salt("left").show(ui, |ui| {
-            self.devices_section(ui);
-            ui.add_space(8.0);
-            self.eds_section(ui);
-        });
-    }
-
-    fn devices_section(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Devices");
-        let have_lib = self.lib.is_some();
-        let names: Vec<(String, u8, Option<String>)> = match &self.lib {
-            Some(l) => l.devices.iter().map(|d| (d.name.clone(), d.node_id, d.eds_file.clone())).collect(),
-            None => Vec::new(),
-        };
-        let active = self.active_idx();
-        if names.is_empty() {
-            ui.label("No devices yet.");
-        }
-        for (i, (name, node, eds)) in names.iter().enumerate() {
-            let text = format!("{name}  (node {node}){}", if eds.is_none() { ", no EDS" } else { "" });
-            if ui.selectable_label(active == Some(i), text).on_hover_text(eds.clone().unwrap_or_default()).clicked() {
-                self.settings.active_device = if active == Some(i) { None } else { Some(name.clone()) };
-                self.mark_settings();
-                self.od.reset_values();
-            }
-        }
-        ui.horizontal(|ui| {
-            if ui.add_enabled(have_lib, egui::Button::new("Add")).clicked() {
-                let dev = Device { name: String::new(), node_id: self.active_node(), eds_file: self.selected_eds.clone(), bitrate_kbit: self.settings.bitrate_kbit, notes: String::new() };
-                self.dialog = Some(Dialog::Device { idx: None, dev, error: None });
-            }
-            if ui.add_enabled(active.is_some(), egui::Button::new("Edit")).clicked() {
-                if let (Some(i), Some(d)) = (active, self.active_device().cloned()) {
-                    self.dialog = Some(Dialog::Device { idx: Some(i), dev: d, error: None });
-                }
-            }
-            if ui.add_enabled(active.is_some(), egui::Button::new("Remove")).clicked() {
-                if let Some(i) = active {
-                    self.dialog = Some(Dialog::RemoveDevice(i));
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Node ID");
-            match active {
-                Some(i) => {
-                    let mut n = names[i].1;
-                    if ui.add(egui::DragValue::new(&mut n).range(1..=127)).changed() {
-                        if let Some(lib) = self.lib.as_mut() {
-                            let mut d = lib.devices[i].clone();
-                            d.node_id = n;
-                            if let Err(e) = lib.update_device(i, d) {
-                                self.set_status(format!("Device not saved: {e}"), true);
-                            }
-                        }
-                        self.od.reset_values();
-                        self.rebuild_decode();
-                    }
-                }
-                None => {
-                    if ui.add(egui::DragValue::new(&mut self.free_node).range(1..=127)).on_hover_text("Node for SDO and NMT when no device is active").changed() {
-                        self.od.reset_values();
-                    }
-                }
-            }
-        });
-    }
-
-    fn eds_section(&mut self, ui: &mut egui::Ui) {
-        ui.heading("EDS files");
-        let files = self.lib.as_ref().map(|l| l.list_eds()).unwrap_or_default();
-        if files.is_empty() {
-            ui.label("No EDS files. Add one or drop .eds/.dcf files onto the window.");
-        }
-        for f in &files {
-            let sel = self.selected_eds.as_deref() == Some(f.as_str());
-            if ui.selectable_label(sel, f).clicked() {
-                self.selected_eds = if sel { None } else { Some(f.clone()) };
-            }
-        }
-        ui.horizontal(|ui| {
-            if ui.add_enabled(self.lib.is_some(), egui::Button::new("Add...")).clicked() {
-                if let Some(paths) = rfd::FileDialog::new().add_filter("EDS / DCF", &["eds", "dcf", "EDS", "DCF"]).add_filter("All files", &["*"]).pick_files() {
-                    self.add_eds_files(paths);
-                }
-            }
-            if ui.add_enabled(self.selected_eds.is_some(), egui::Button::new("Remove")).clicked() {
-                if let Some(f) = self.selected_eds.clone() {
-                    self.dialog = Some(Dialog::RemoveEds(f));
-                }
-            }
-        });
-        let Some(sel) = self.selected_eds.clone() else { return };
-        ui.separator();
-        match self.od_for(&sel) {
-            Err(e) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
-            Ok(od) => {
-                ui.strong(&sel);
-                egui::Grid::new("eds_info").num_columns(2).striped(true).show(ui, |ui| {
-                    for (k, v) in od.file_info.iter().chain(od.device_info.iter()) {
-                        if v.is_empty() {
-                            continue;
-                        }
-                        ui.label(k);
-                        ui.add(egui::Label::new(v).wrap());
-                        ui.end_row();
-                    }
-                    ui.label("Objects");
-                    ui.label(format!("{} ({} entries){}", od.objects.len(), od.entry_count(), if od.is_dcf { ", DCF" } else { "" }));
-                    ui.end_row();
-                    if let Some(n) = od.node_id {
-                        ui.label("DCF node ID");
-                        ui.label(n.to_string());
-                        ui.end_row();
-                    }
-                });
-                if od.warnings.is_empty() {
-                    ui.label("No parse warnings.");
-                } else {
-                    ui.colored_label(ui.visuals().warn_fg_color, format!("{} parse warning(s):", od.warnings.len()));
-                    egui::ScrollArea::vertical().id_salt("eds_warn").max_height(160.0).show(ui, |ui| {
-                        for w in &od.warnings {
-                            ui.add(egui::Label::new(egui::RichText::new(w).small()).wrap());
-                        }
-                    });
-                }
-            }
-        }
-    }
-
-    fn status_line(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let c = if self.status_error { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
-            ui.add(egui::Label::new(egui::RichText::new(&self.status).color(c)).truncate());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let q = self.bus.shared.lock().map(|s| s.sdo_queue).unwrap_or(0);
+                let (status, load) = {
+                    let s = self.bus.shared.lock().unwrap_or_else(|x| x.into_inner());
+                    (s.status.clone(), s.bus_load)
+                };
+                ui.add(egui::Label::new(egui::RichText::new(format!("{:>6.0}", load.frames_per_s)).monospace()));
+                ui.label(egui::RichText::new("fr/s").small().color(p.text_secondary));
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(format!("{:.1} %", load.current_pct)).monospace());
+                let frac = (load.current_pct / 100.0).clamp(0.0, 1.0) as f32;
+                let col = if load.current_pct > 90.0 {
+                    p.error
+                } else if load.current_pct > 70.0 {
+                    p.warning
+                } else {
+                    p.text_accent
+                };
+                let (r, _) = ui.allocate_exact_size(egui::vec2(60.0, 6.0), egui::Sense::hover());
+                ui.painter().rect_filled(r, 3.0, p.bg_button);
+                let mut f = r;
+                f.set_width(r.width() * frac);
+                ui.painter().rect_filled(f, 3.0, col);
+                ui.label(egui::RichText::new("Load").small().color(p.text_secondary));
+                ui.add_space(6.0);
+                if self.listen_only_active {
+                    theme::pill(ui, format!("{}  Listen only", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
+                }
+                if self.connected {
+                    let s = status.to_ascii_lowercase();
+                    let (fg, bg) = if s.contains("off") {
+                        (p.error, p.error_tint)
+                    } else if s.contains("passive") || s.contains("warn") {
+                        (p.warning, p.warning_tint)
+                    } else {
+                        (p.success, p.success_tint)
+                    };
+                    let text = if status.is_empty() { "Error active".to_string() } else { format!("Bus: {status}") };
+                    theme::pill(ui, text, fg, bg, self.settings.reduce_colour);
+                } else {
+                    theme::pill(ui, "Not connected", p.text_secondary, egui::Color32::TRANSPARENT, false);
+                }
+            });
+        });
+    }
+
+    fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui);
+        ui.horizontal(|ui| {
+            let summary = if self.connected {
+                let ch = if self.settings.adapter == AdapterKind::Simulator { "virtual bus".to_string() } else { pcan::channel_name(self.settings.channel as u16) };
+                let br = Bitrate::from_kbit(self.settings.bitrate_kbit).map(|b| b.label()).unwrap_or_default();
+                format!("Connected · {} · {ch} · {br}{}", self.settings.adapter.label(), if self.listen_only_active { " · listen only" } else { "" })
+            } else {
+                "Not connected. Nothing is sent until you press a button.".to_string()
+            };
+            ui.label(egui::RichText::new(summary).small().color(p.text_secondary));
+            ui.separator();
+            let (glyph, c) = if self.status_error { (icon::WARNING_CIRCLE, p.error) } else { (icon::CHECK_CIRCLE, p.text_primary) };
+            ui.label(egui::RichText::new(glyph).small().color(c));
+            ui.add(egui::Label::new(egui::RichText::new(&self.status).small().color(c)).truncate());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(d) = &self.data_dir {
+                    let mode = self.data_mode.map(|m| m.label()).unwrap_or("data folder");
+                    let name = d.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    if ui.add(egui::Button::new(egui::RichText::new(format!("{}  {name} ({mode})", icon::FOLDER_OPEN)).small()).frame(false)).on_hover_text(format!("Data folder ({mode}): {}", d.display())).clicked() {
+                        open_folder(d);
+                    }
+                }
+                let pct = if self.trace.capacity() == 0 { 0.0 } else { self.trace.len() as f64 * 100.0 / self.trace.capacity() as f64 };
+                ui.label(egui::RichText::new(format!("Trace {pct:.0} % of {}", self.trace.capacity())).small().color(p.text_secondary));
+                let (q, prog) = self.bus.shared.lock().map(|s| (s.sdo_queue, s.sdo_progress)).unwrap_or((0, None));
                 if q > 0 {
-                    ui.label(format!("SDO queue {q}"));
                     if ui.small_button("Cancel SDO").clicked() {
                         self.bus.send(BusCommand::CancelSdo);
                     }
-                }
-                if let Some(d) = &self.data_dir {
-                    let mode = self.data_mode.map(|m| format!(" ({})", m.label())).unwrap_or_default();
-                    ui.label(egui::RichText::new(format!("{}{mode}", d.display())).small()).on_hover_text(format!("Data folder{mode}"));
+                    let t = match prog {
+                        Some((n, i, s, pr)) => match pr.total {
+                            Some(t) => format!("SDO {n} {i:04X}:{s:02X} {} / {t} bytes", pr.done),
+                            None => format!("SDO {n} {i:04X}:{s:02X} {} bytes", pr.done),
+                        },
+                        None => format!("SDO queue {q}"),
+                    };
+                    ui.label(egui::RichText::new(t).small());
                 }
             });
         });
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
-        let Some(mut dialog) = self.dialog.take() else { return };
-        let mut keep = true;
-        let eds_files = self.lib.as_ref().map(|l| l.list_eds()).unwrap_or_default();
-        match &mut dialog {
-            Dialog::Device { idx, dev, error } => {
-                let title = if idx.is_some() { "Edit device" } else { "Add device" };
-                let mut save = false;
-                egui::Modal::new(egui::Id::new("device_dialog")).show(ctx, |ui| {
-                    ui.heading(title);
-                    egui::Grid::new("dev_grid").num_columns(2).show(ui, |ui| {
-                        ui.label("Name");
-                        ui.text_edit_singleline(&mut dev.name);
-                        ui.end_row();
-                        ui.label("Node ID");
-                        ui.add(egui::DragValue::new(&mut dev.node_id).range(1..=127));
-                        ui.end_row();
-                        ui.label("EDS file");
-                        egui::ComboBox::from_id_salt("dev_eds").selected_text(dev.eds_file.clone().unwrap_or_else(|| "(none)".to_string())).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut dev.eds_file, None, "(none)");
-                            for f in &eds_files {
-                                ui.selectable_value(&mut dev.eds_file, Some(f.clone()), f);
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Bitrate");
-                        let cur = Bitrate::from_kbit(dev.bitrate_kbit).map(|b| b.label()).unwrap_or_else(|| "(none)".to_string());
-                        egui::ComboBox::from_id_salt("dev_br").selected_text(cur).show_ui(ui, |ui| {
-                            for b in Bitrate::ALL {
-                                ui.selectable_value(&mut dev.bitrate_kbit, b.kbit(), b.label());
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Notes");
-                        ui.add(egui::TextEdit::multiline(&mut dev.notes).desired_rows(3));
-                        ui.end_row();
-                    });
-                    if let Some(e) = error {
-                        ui.colored_label(ui.visuals().error_fg_color, e.as_str());
+        if let Some(c) = self.confirm.take() {
+            let p = if self.is_dark() { &theme::DARK } else { &theme::LIGHT };
+            let mut keep = true;
+            let mut yes = false;
+            egui::Modal::new(egui::Id::new("confirm")).show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.heading(&c.title);
+                ui.add(egui::Label::new(&c.text).wrap());
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let fill = if c.danger { p.danger_fill } else { p.accent_fill };
+                    if ui.add(egui::Button::new(egui::RichText::new(&c.ok).color(p.on_accent)).fill(fill)).clicked() {
+                        yes = true;
                     }
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            save = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            keep = false;
-                        }
-                    });
+                    if ui.button("Cancel").clicked() {
+                        keep = false;
+                    }
                 });
-                if save {
-                    if let Some(lib) = self.lib.as_mut() {
-                        dev.name = dev.name.trim().to_string();
-                        let r = match idx {
-                            Some(i) => lib.update_device(*i, dev.clone()),
-                            None => lib.add_device(dev.clone()).map(|_| ()),
-                        };
-                        match r {
-                            Ok(()) => {
-                                keep = false;
-                                self.settings.active_device = Some(dev.name.clone());
-                                self.mark_settings();
-                                self.od.reset_values();
-                                let msg = format!("Device {} saved", dev.name);
-                                self.set_status(msg, false);
-                            }
-                            Err(e) => *error = Some(e.to_string()),
-                        }
-                    }
-                    self.rebuild_decode();
-                }
-            }
-            Dialog::RemoveEds(name) => {
-                let mut yes = false;
-                egui::Modal::new(egui::Id::new("rm_eds")).show(ctx, |ui| {
-                    ui.label(format!("Remove the EDS file {name} from the library? Devices that use it keep no EDS."));
-                    ui.horizontal(|ui| {
-                        yes = ui.button("Remove").clicked();
-                        if ui.button("Cancel").clicked() {
-                            keep = false;
-                        }
-                    });
-                });
-                if yes {
-                    keep = false;
-                    let name = name.clone();
-                    if let Some(lib) = self.lib.as_mut() {
-                        match lib.remove_eds(&name) {
-                            Ok(()) => {
-                                self.eds_cache.remove(&name);
-                                self.selected_eds = None;
-                                self.set_status(format!("Removed {name}"), false);
-                            }
-                            Err(e) => self.set_status(e.to_string(), true),
-                        }
-                    }
-                    self.rebuild_decode();
-                }
-            }
-            Dialog::RemoveDevice(i) => {
-                let i = *i;
-                let name = self.lib.as_ref().and_then(|l| l.devices.get(i)).map(|d| d.name.clone()).unwrap_or_default();
-                let mut yes = false;
-                egui::Modal::new(egui::Id::new("rm_dev")).show(ctx, |ui| {
-                    ui.label(format!("Remove the device {name}? The EDS file stays in the library."));
-                    ui.horizontal(|ui| {
-                        yes = ui.button("Remove").clicked();
-                        if ui.button("Cancel").clicked() {
-                            keep = false;
-                        }
-                    });
-                });
-                if yes {
-                    keep = false;
-                    if let Some(lib) = self.lib.as_mut() {
-                        match lib.remove_device(i) {
-                            Ok(d) => {
-                                self.settings.active_device = None;
-                                self.mark_settings();
-                                self.set_status(format!("Removed device {}", d.name), false);
-                            }
-                            Err(e) => self.set_status(e.to_string(), true),
-                        }
-                    }
-                    self.od.reset_values();
-                    self.rebuild_decode();
-                }
+            });
+            if yes {
+                (c.action)(self);
+            } else if keep {
+                self.confirm = Some(c);
+            } else {
+                self.set_status("Cancelled; nothing sent", false);
             }
         }
-        if keep {
-            self.dialog = Some(dialog);
+        if self.about {
+            egui::Modal::new(egui::Id::new("about")).show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.label(egui::RichText::new("CANoxide").text_style(egui::TextStyle::Name("title".into())));
+                ui.monospace(format!("Version {}", crate::VERSION));
+                ui.label("A portable CANopen bench tool. Copyright (c) 2026 MechAkh. Licence: MIT.");
+                ui.label("Fonts: Inter and JetBrains Mono (SIL Open Font License 1.1, see licenses\\). Icons: Phosphor (MIT).");
+                ui.hyperlink("https://github.com/MechAkh/CANoxide");
+                if ui.button("Close").clicked() {
+                    self.about = false;
+                }
+            });
         }
+        self.settings_dialog(ctx);
+        self.graph_dialogs(ctx);
+        self.pdo_dialogs(ctx);
+        self.library_dialogs(ctx);
+    }
+
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+        let (comma, open, enter, f11) = ctx.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Comma),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::O),
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::F11),
+            )
+        });
+        if comma {
+            self.open_settings();
+        }
+        if open {
+            self.open_eds_dialog();
+        }
+        if enter {
+            if self.connected {
+                self.bus.send(BusCommand::Disconnect);
+            } else {
+                self.connect();
+            }
+        }
+        if f11 {
+            let fs = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
+        }
+    }
+}
+
+/// Open a folder in the Explorer (only on a user click).
+fn open_folder(p: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("explorer").arg(p).spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = p;
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.apply_style(ctx);
         self.poll_bus();
+        self.shortcuts(ctx);
+
+        // The first start without a saved layout: A or B by the window width.
+        if self.first_layout {
+            self.first_layout = false;
+            let w = ctx.screen_rect().width();
+            self.dock = Some(dock::default_layout(w));
+            self.sync_traces();
+        }
 
         // Drag and drop of EDS files.
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
@@ -782,22 +1034,43 @@ impl eframe::App for App {
             }
         }
 
-        egui::TopBottomPanel::top("connect_bar").show(ctx, |ui| self.top_bar(ui));
-        egui::TopBottomPanel::bottom("status_line").show(ctx, |ui| self.status_line(ui));
-        egui::SidePanel::left("library").resizable(true).default_width(280.0).width_range(200.0..=600.0).show(ctx, |ui| self.left_panel(ui));
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Od, "Object dictionary");
-                ui.selectable_value(&mut self.tab, Tab::Network, "Network");
-                ui.selectable_value(&mut self.tab, Tab::Trace, "Trace");
+        let p = if self.is_dark() { &theme::DARK } else { &theme::LIGHT };
+        let bar = egui::Frame::new().fill(p.bg_frame).inner_margin(egui::Margin::symmetric(8, 2));
+        egui::TopBottomPanel::top("menu_bar").frame(bar).show(ctx, |ui| self.menu_bar(ui));
+        egui::TopBottomPanel::top("connect_bar").frame(bar.inner_margin(egui::Margin::symmetric(8, 4))).show(ctx, |ui| self.connection_bar(ui));
+        egui::TopBottomPanel::bottom("status_bar").frame(bar).show(ctx, |ui| self.status_bar(ui));
+        if let Some(e) = self.data_error.clone() {
+            egui::TopBottomPanel::top("data_error").frame(egui::Frame::new().fill(p.error_tint).inner_margin(egui::Margin::symmetric(8, 4))).show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(p.error, icon::WARNING_CIRCLE);
+                    ui.label(e);
+                });
             });
-            ui.separator();
-            match self.tab {
-                Tab::Od => self.od_tab(ui),
-                Tab::Network => self.network_tab(ui),
-                Tab::Trace => self.trace_tab(ui),
+        }
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(p.bg_frame).inner_margin(egui::Margin::symmetric(4, 4))).show(ctx, |ui| {
+            if let Some(mut d) = self.dock.take() {
+                let mut style = egui_dock::Style::from_egui(ui.style());
+                style.main_surface_border_stroke = egui::Stroke::NONE;
+                style.tab_bar.bg_fill = p.bg_bar;
+                style.tab.tab_body.bg_fill = p.bg_panel;
+                style.tab.active.bg_fill = p.bg_panel;
+                style.tab.active.text_color = p.text_primary;
+                style.tab.focused.bg_fill = p.bg_panel;
+                style.tab.focused.text_color = p.text_primary;
+                style.tab.inactive.bg_fill = p.bg_bar;
+                style.tab.inactive.text_color = p.text_secondary;
+                style.tab.hovered.bg_fill = p.bg_row_hover;
+                style.tab.hovered.text_color = p.text_primary;
+                style.separator.color_idle = p.border_subtle;
+                style.separator.color_hovered = p.text_accent;
+                style.separator.color_dragged = p.text_accent;
+                style.overlay.selection_color = p.text_accent.linear_multiply(0.25);
+                DockArea::new(&mut d).id(egui::Id::new("dock")).style(style).show_leaf_collapse_buttons(false).show_leaf_close_all_buttons(false).show_inside(ui, &mut dock::Viewer { app: self });
+                self.dock = Some(d);
             }
         });
+        self.run_deferred();
+        self.sync_traces();
         self.dialogs(ctx);
 
         if hovering {
@@ -810,13 +1083,14 @@ impl eframe::App for App {
             self.save_settings();
         }
         if self.connected {
-            // Node list ages, frames/s and scan progress.
-            ctx.request_repaint_after(Duration::from_millis(250));
+            // Node list ages, frames/s, graph and progress.
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.bus.send(BusCommand::Disconnect);
         self.save_settings();
+        self.save_layout();
     }
 }

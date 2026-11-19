@@ -1,18 +1,25 @@
 //! Object dictionary tab: EDS table with Read / Write per entry, Read all,
-//! and a manual SDO box that works without an EDS.
+//! and a manual SDO box that works without an EDS (with the transfer mode,
+//! upload to a file, download from a file, progress and cancel).
 
-use super::App;
-use crate::canopen::sdo::{SdoOutcome, SdoRequest};
+use super::{theme, App};
+use crate::bus::BusCommand;
+use crate::canopen::sdo::{SdoOutcome, SdoRequest, TransferMode};
 use crate::canopen::types::{check_limits, format_value, parse_int, parse_text, type_name, DataType, DisplayMode};
 use crate::eds::{eval_int, OdEntry, ObjectDictionary};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub(crate) enum Pending {
     Row { index: u16, sub: u8, write: Option<Vec<u8>> },
     Manual { write: bool },
+    /// Upload into this file.
+    ToFile(PathBuf),
+    /// Download of a file (its size).
+    FromFile(usize),
 }
 
 enum RowValue {
@@ -153,7 +160,50 @@ impl App {
                     self.set_status(r, true);
                 }
             },
+            Pending::ToFile(path) => {
+                let r = o.result.map_err(|e| e.to_string()).and_then(|d| crate::library::write_atomic(&path, &d).map(|_| d.len()).map_err(|e| e.0));
+                match r {
+                    Ok(n) => {
+                        self.od.m_error = false;
+                        self.od.m_result = format!("{what}: {n} byte(s) saved to {}", path.display());
+                    }
+                    Err(e) => {
+                        self.od.m_error = true;
+                        self.od.m_result = format!("{what} to file: {e}");
+                    }
+                }
+                let r = self.od.m_result.clone();
+                let err = self.od.m_error;
+                self.set_status(r, err);
+            }
+            Pending::FromFile(n) => {
+                match o.result {
+                    Ok(_) => {
+                        self.od.m_error = false;
+                        self.od.m_result = format!("Written {what}: {n} byte(s) from file");
+                    }
+                    Err(e) => {
+                        self.od.m_error = true;
+                        self.od.m_result = format!("{what} from file: {e}");
+                    }
+                }
+                let r = self.od.m_result.clone();
+                let err = self.od.m_error;
+                self.set_status(r, err);
+            }
         }
+    }
+
+    /// An SDO write, after the question of the Safety settings.
+    fn write_sdo(&mut self, node: u8, index: u16, sub: u8, data: Vec<u8>, pending: Pending) {
+        let text = format!("Write {} byte(s) to node {node} object 0x{index:04X}:{sub:02X}?", data.len());
+        let ask = self.settings.confirm_before_write;
+        self.confirm_then(ask, "Write object", text, "Write", false, move |app| {
+            if let Pending::Row { index, sub, .. } = &pending {
+                app.od.values.insert((*index, *sub), RowValue::Busy);
+            }
+            app.send_sdo(node, SdoRequest::Download { index, sub, data }, pending);
+        });
     }
 
     fn read_entry(&mut self, node: u8, index: u16, sub: u8) {
@@ -164,10 +214,11 @@ impl App {
     pub(crate) fn od_tab(&mut self, ui: &mut egui::Ui) {
         let node = self.active_node();
         let can_send = self.can_send();
+        let p = theme::pal(ui);
         let od = match self.active_od() {
             Some(Ok(od)) => Some(od),
             Some(Err(e)) => {
-                ui.colored_label(ui.visuals().error_fg_color, e);
+                ui.colored_label(p.error, e);
                 None
             }
             None => None,
@@ -211,16 +262,33 @@ impl App {
             if ui.button("Collapse all").clicked() {
                 self.od.expanded.clear();
             }
+            ui.separator();
+            ui.label("Transfer");
+            let before = self.settings.sdo_transfer_mode;
+            egui::ComboBox::from_id_salt("od_mode").width(100.0).selected_text(self.settings.sdo_transfer_mode.label()).show_ui(ui, |ui| {
+                for m in TransferMode::ALL {
+                    ui.selectable_value(&mut self.settings.sdo_transfer_mode, m, m.label());
+                }
+            });
+            if before != self.settings.sdo_transfer_mode {
+                self.mark_settings();
+            }
             if !can_send {
-                ui.colored_label(ui.visuals().warn_fg_color, if self.listen_only_active { "listen only: SDO disabled" } else { "not connected" });
+                ui.colored_label(p.warning, if self.listen_only_active { "listen only: SDO disabled" } else { "not connected" });
             }
         });
 
         self.manual_box(ui, node, can_send, od.as_ref());
+        self.sdo_progress_line(ui);
         ui.separator();
 
         let Some(od) = od else {
-            ui.label("Select a device with an EDS file in the left panel to see its object dictionary. The manual SDO box above works without an EDS.");
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new(egui_phosphor::regular::LIST_MAGNIFYING_GLASS).size(32.0).color(p.text_secondary));
+                ui.label("No object dictionary. Select a device with an EDS file in the Devices view, or add an EDS file in the EDS library.");
+                ui.label(egui::RichText::new("The manual SDO box above works without an EDS.").color(p.text_secondary));
+            });
             return;
         };
         self.od_table(ui, &od, node, can_send);
@@ -275,7 +343,7 @@ impl App {
                             Ok(data) => {
                                 self.od.m_result = "writing...".to_string();
                                 self.od.m_error = false;
-                                self.send_sdo(node, SdoRequest::Download { index, sub, data }, Pending::Manual { write: true });
+                                self.write_sdo(node, index, sub, data, Pending::Manual { write: true });
                             }
                             Err(e) => {
                                 self.od.m_result = format!("Not sent: {e}");
@@ -284,12 +352,40 @@ impl App {
                         }
                     }
                 }
+                ui.separator();
+                if ui.add_enabled(can_send && ok.is_some(), egui::Button::new("Upload to file...")).on_hover_text("Read the object (any size) into a file").clicked() {
+                    if let Some((index, sub)) = ok {
+                        if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{index:04X}_{sub:02X}.bin")).save_file() {
+                            self.od.m_result = "reading to file...".to_string();
+                            self.od.m_error = false;
+                            self.send_sdo(node, SdoRequest::Upload { index, sub }, Pending::ToFile(path));
+                        }
+                    }
+                }
+                if ui.add_enabled(can_send && ok.is_some(), egui::Button::new("Download from file...")).on_hover_text("Write the bytes of a file into the object").clicked() {
+                    if let Some((index, sub)) = ok {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            match std::fs::read(&path) {
+                                Ok(data) => {
+                                    let n = data.len();
+                                    self.od.m_result = "writing from file...".to_string();
+                                    self.od.m_error = false;
+                                    self.write_sdo(node, index, sub, data, Pending::FromFile(n));
+                                }
+                                Err(e) => {
+                                    self.od.m_result = format!("{}: {e}", path.display());
+                                    self.od.m_error = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 if ok.is_none() {
-                    ui.colored_label(ui.visuals().warn_fg_color, "index: hex 0..FFFF, sub: 0..255");
+                    ui.colored_label(theme::pal(ui).warning, "index: hex 0..FFFF, sub: 0..255");
                 }
             });
             if !self.od.m_result.is_empty() {
-                let c = if self.od.m_error { ui.visuals().error_fg_color } else { ui.visuals().text_color() };
+                let c = if self.od.m_error { theme::pal(ui).error } else { theme::pal(ui).text_primary };
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(c, &self.od.m_result);
                     if let Some(d) = &self.od.m_data {
@@ -299,6 +395,24 @@ impl App {
                 });
             }
         });
+    }
+
+    /// Progress of a running SDO transfer, with Cancel.
+    fn sdo_progress_line(&mut self, ui: &mut egui::Ui) {
+        let prog = self.bus.shared.lock().ok().and_then(|s| s.sdo_progress);
+        let Some((n, i, s, pr)) = prog else { return };
+        ui.horizontal(|ui| {
+            let text = match pr.total {
+                Some(t) if t > 0 => format!("SDO node {n} 0x{i:04X}:{s:02X}: {} / {t} bytes", pr.done),
+                _ => format!("SDO node {n} 0x{i:04X}:{s:02X}: {} bytes", pr.done),
+            };
+            let frac = pr.total.filter(|t| *t > 0).map(|t| pr.done as f32 / t as f32).unwrap_or(0.0);
+            ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_width(200.0).text(text));
+            if ui.button("Cancel transfer").clicked() {
+                self.bus.send(BusCommand::CancelSdo);
+            }
+        });
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
     }
 
     fn od_table(&mut self, ui: &mut egui::Ui, od: &Arc<ObjectDictionary>, node: u8, can_send: bool) {
@@ -322,7 +436,9 @@ impl App {
             }
         }
         let mode = self.settings.value_display;
-        let row_h = ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Body)) + 2.0;
+        let row_h = self.settings.row_density.row_height().max(ui.spacing().interact_size.y.max(ui.text_style_height(&egui::TextStyle::Body)) + 2.0);
+        let zebra = self.settings.zebra;
+        let err_c = theme::pal(ui).error;
         let mut reads: Vec<(u16, u8)> = Vec::new();
         let mut writes: Vec<(u16, u8)> = Vec::new();
         let mut read_all: Option<u16> = None;
@@ -331,7 +447,7 @@ impl App {
 
         TableBuilder::new(ui)
             .id_salt("od_table")
-            .striped(true)
+            .striped(zebra)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::initial(70.0).at_least(50.0))
@@ -421,7 +537,7 @@ impl App {
                                     ui.add(egui::Label::new(egui::RichText::new(&t).monospace()).truncate()).on_hover_text(t);
                                 }
                                 Some(RowValue::Error(t)) => {
-                                    ui.add(egui::Label::new(egui::RichText::new(t).color(ui.visuals().error_fg_color)).truncate()).on_hover_text(t);
+                                    ui.add(egui::Label::new(egui::RichText::new(t).color(err_c)).truncate()).on_hover_text(t);
                                 }
                                 Some(RowValue::Busy) => {
                                     ui.weak("...");
@@ -471,8 +587,7 @@ impl App {
             let text = self.od.edits.get(&(i, s)).cloned().unwrap_or_default();
             match entry_bytes(e, &text, node) {
                 Ok(data) => {
-                    self.od.values.insert((i, s), RowValue::Busy);
-                    self.send_sdo(node, SdoRequest::Download { index: i, sub: s, data: data.clone() }, Pending::Row { index: i, sub: s, write: Some(data) });
+                    self.write_sdo(node, i, s, data.clone(), Pending::Row { index: i, sub: s, write: Some(data) });
                 }
                 Err(err) => {
                     self.od.values.insert((i, s), RowValue::Error(format!("not sent: {err}")));
