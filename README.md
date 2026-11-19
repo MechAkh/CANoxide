@@ -1,7 +1,7 @@
 # CANoxide
 
 A small, portable Windows tool to test and debug CANopen devices on a
-bench. The GUI is one exe of about 4 MB, with no installer, and it works
+bench. The GUI is one exe of about 6 MB, with no installer, and it works
 with a PEAK PCAN-USB adapter. A second exe is a command-line tool for
 scripts and AI agents.
 
@@ -23,6 +23,44 @@ What it is for:
 
 It is an independent open-source project, written in Rust with `egui`. It
 is not affiliated with any commercial CANopen tool.
+
+## User interface
+
+The window has a menu bar, a connection bar (adapter, channel, bitrate,
+listen-only, Connect, bus state and load) and a status bar. The views are
+dock tabs; open and close them from the **View** menu:
+
+- **Devices** and **EDS library**: the named devices and the EDS/DCF files.
+- **Object dictionary**: the object tree of the active device, read and
+  write by SDO, the manual SDO box, upload and download of large objects.
+- **Network**: NMT for one node or all, SYNC, node scan, heartbeat, and an
+  overview of the nodes heard on the bus.
+- **Trace 1..4**: up to four trace tabs on one shared buffer, each with its
+  own filter, display mode and pause; save as CSV.
+- **Graph**: plot PDO signals, SDO-polled values or raw frame bits; export
+  as CSV. SDO polling runs only while you start it.
+- **PDO configuration**: read the PDOs of a node, edit, enable or disable
+  them, save and load them from the library.
+- **Transmit list**: saved raw frames, sent once or periodically.
+- **LSS**: switch state, inquire, fastscan, configure node-ID and bit
+  timing.
+- **DCF save / restore**: save a node to a DCF, compare a DCF with a node,
+  dry run and restore.
+
+**Docking.** Drag a tab to move or split it. The first start picks layout
+A (window narrower than 1600 px) or layout B (wider, Network on the
+right); **View > Reset layout** restores it. The layout is saved in
+`layout.json`; a broken file gives the default layout with a note.
+
+**Themes.** Dark, Light, or System (follows Windows); the button at the
+right of the menu bar cycles them. Both themes meet the WCAG AA contrast
+for text.
+
+**Settings** (menu **Settings**): appearance (theme, UI scale, font size,
+row density, zebra stripes, reduced colour), connection defaults, SDO,
+LSS, scan, trace, graph and safety options (for example the confirmation
+before a write); the Data folder page shows where the data is kept. Changes apply on **Save**;
+**Cancel** keeps the saved values.
 
 ## Download
 
@@ -67,8 +105,9 @@ See [docs/CLI.md](docs/CLI.md) for the safety model and worked examples.
 ## Data folder
 
 All state of the GUI lives in one data folder: `settings.json`,
-`devices.json`, `eds\` (copies of the added EDS/DCF files) and the saved
-PDO configurations.
+`devices.json`, `eds\` (copies of the added EDS/DCF files), the saved
+PDO configurations, `layout.json` (the dock layout), `signals.json` (the
+graph signals) and `txlist.json` (the transmit list).
 
 - **Portable (default):** `CANoxide_data\` next to the exe. A data folder
   of the old name (version 0.1) there is renamed to it on the first start.
