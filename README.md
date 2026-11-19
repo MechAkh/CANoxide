@@ -207,6 +207,14 @@ The exes are `target\release\CANoxide.exe` and
 installer is built with Inno Setup 6, see
 [installer/README.md](installer/README.md).
 
+A Rust exe contains the source paths of its dependencies, and so the name
+of your user folder. For a build that you publish, replace it (PowerShell):
+
+```
+$env:RUSTFLAGS = "-C target-feature=+crt-static --remap-path-prefix=$env:USERPROFILE=C:\Users\user"
+cargo build --release
+```
+
 ## Limits (not built)
 
 - CAN FD.
