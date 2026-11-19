@@ -2197,7 +2197,7 @@ fn s33_app_icon() {
     click(&mut h, "About CANoxide");
     assert!(has_exact(&h, "CANoxide icon"), "About icon\nUI:\n{}", dump(&h));
     assert!(has_exact(&h, &format!("Version {}", crate::VERSION)));
-    assert_eq!(crate::VERSION, "0.3.1");
+    assert_eq!(crate::VERSION, "0.3.2");
 }
 
 // ------------------------------------------------------------ 0.3 replay

@@ -376,7 +376,7 @@ Every icon-only button has a tooltip with the action and its shortcut.
 
 Top to bottom (window 1280 × 800):
 
-1. **Native window title bar** (OS). Title `CANoxide 0.3.1` (the version), the app icon.
+1. **Native window title bar** (OS). Title `CANoxide 0.3.2` (the version), the app icon.
 2. **Menu bar** — height 28, fill bg.frame, bottom 1 px border.subtle.
    Items `File  View  Settings  Help`, `body`, padding 10, hover fill
    bg.button.hover radius 4. Right side: theme quick switch (icon button
