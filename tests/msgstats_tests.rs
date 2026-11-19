@@ -2,7 +2,7 @@
 
 use canoxide::can::CanFrame;
 use canoxide::canopen::decode::{decode, DecodeContext, MsgClass};
-use canoxide::msgstats::{tint_strength, Change, MsgKey, MsgStats, MAX_IDS, NOISY_MIN_FRAMES};
+use canoxide::msgstats::{flash_strength, tint_strength, Change, MsgKey, MsgStats, FLASH_FADE_US, FLASH_HOLD_US, MAX_IDS, NOISY_MIN_FRAMES};
 
 fn frame(id: u32, data: &[u8], t_us: u64) -> CanFrame {
     let mut f = CanFrame::new(id, data);
@@ -166,4 +166,47 @@ fn tint_fades_over_the_fade_time() {
     assert_eq!(tint_strength(Some(100), 5000, 1000), 0.0);
     assert_eq!(tint_strength(Some(100), 50, 1000), 1.0, "a clock behind the frame: full");
     assert_eq!(tint_strength(Some(100), 100, 0), 0.0);
+}
+
+/// The change flash of the bit view: a toggled bit is lit (full for 1 s,
+/// then fading over 1 s), a 0 -> 1 -> 0 between two repaints is lit too,
+/// an unchanged bit never; the Hex cell follows its last changed bit.
+#[test]
+fn bit_change_flash() {
+    let mut s = MsgStats::new();
+    feed(&mut s, &frame(0x1E4, &[0x00, 0x00], 0));
+    // Byte 0 bit 3 toggles once at 1 s.
+    feed(&mut s, &frame(0x1E4, &[0x08, 0x00], 1_000_000));
+    // Byte 1 bit 0: 0 -> 1 -> 0 within 2 ms (one repaint interval).
+    feed(&mut s, &frame(0x1E4, &[0x08, 0x01], 1_001_000));
+    feed(&mut s, &frame(0x1E4, &[0x08, 0x00], 1_002_000));
+    let e = s.get(key(0x1E4)).unwrap();
+    let now = 1_010_000;
+    assert_eq!(e.bit_flash(3, now), 1.0, "toggled bit lit");
+    assert_eq!(e.bit_flash(8, now), 1.0, "0 -> 1 -> 0 between two paints is lit");
+    assert_eq!(e.data[1], 0, "the data is back to 0");
+    assert_eq!(e.byte_flash(0, now), 1.0);
+    assert_eq!(e.byte_flash(1, now), 1.0);
+    for k in (0..16).filter(|k| *k != 3 && *k != 8) {
+        assert_eq!(e.bit_flash(k, now), 0.0, "unchanged bit {k} lit");
+    }
+    // Full for the hold time, half way through the fade, out after 2 s.
+    let c = 1_000_000;
+    assert_eq!(e.bit_flash(3, c + FLASH_HOLD_US), 1.0);
+    assert!((e.bit_flash(3, c + FLASH_HOLD_US + FLASH_FADE_US / 2) - 0.5).abs() < 1e-3);
+    assert_eq!(e.bit_flash(3, c + 2_000_000), 0.0, "not lit after 2 s");
+    assert_eq!(e.byte_flash(0, c + 2_000_000), 0.0);
+    assert_eq!(flash_strength(None, 5), 0.0);
+    // A bit that keeps toggling stays lit.
+    let mut s = MsgStats::new();
+    for i in 0..40u64 {
+        feed(&mut s, &frame(0x1E4, &[(i % 2) as u8], i * 100_000));
+        let e = s.get(key(0x1E4)).unwrap();
+        if i > 0 {
+            assert_eq!(e.bit_flash(0, i * 100_000 + 50_000), 1.0, "frame {i}");
+        }
+    }
+    // Reset statistics clears the flash.
+    s.reset_id(key(0x1E4));
+    assert_eq!(s.get(key(0x1E4)).unwrap().bit_flash(0, 3_950_000), 0.0);
 }

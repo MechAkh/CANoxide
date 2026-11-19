@@ -114,7 +114,9 @@ impl App {
                 }
                 Ok(od) => {
                     ui.strong(&sel);
-                    egui::Grid::new("eds_info").num_columns(2).striped(true).show(ui, |ui| {
+                    // One grid id per file: a switch to another file starts
+                    // with a fresh layout instead of the sizes of the last one.
+                    egui::Grid::new(("eds_info", &sel)).num_columns(2).striped(true).show(ui, |ui| {
                         for (k, v) in od.file_info.iter().chain(od.device_info.iter()) {
                             if v.is_empty() {
                                 continue;

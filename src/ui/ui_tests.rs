@@ -718,6 +718,42 @@ fn s4_network() {
     assert_eq!(cell_text(&h, s, "Dir"), tx_glyph());
 }
 
+/// Scenario 34: a node found by the scan is added as a device from its
+/// scan result row.
+#[test]
+fn s34_scan_result_add_as_device() {
+    let tmp = TempDir::new("s34");
+    preset(&tmp.data(), Settings { scan_timeout_ms: 20, ..Settings::default() });
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Network]);
+    connect(&mut h);
+    wait_for(&mut h, "node 1 in the list", |h| has_exact(h, "Node 1"));
+    click(&mut h, "Scan nodes");
+    wait_for(&mut h, "scan finished", |h| has_exact(h, "Scan finished: 1 node(s) answered"));
+    let row = top_by_label(&h, "device type 0x00000191 (profile 401)", None);
+    let add = button_on_row(&h, row, "Add as device");
+    assert!(!disabled(&h, add), "Add as device disabled\nUI:\n{}", dump(&h));
+    assert_eq!(buttons(&h, "Add as device").len(), 1);
+
+    click_id(&mut h, add);
+    assert!(has_exact(&h, "Add device"), "device dialog not open\nUI:\n{}", dump(&h));
+    match &h.state().dialog {
+        Some(super::Dialog::Device { idx: None, dev, .. }) => {
+            assert_eq!(dev.node_id, 1);
+            assert_eq!(dev.name, "Node 1");
+            assert_eq!(dev.eds_file, None);
+            assert!(dev.notes.is_empty());
+        }
+        _ => panic!("no Add device dialog in the state"),
+    }
+    click(&mut h, "Save");
+    wait_for(&mut h, "device saved", |h| has(h, "Device Node 1 saved"));
+    assert!(!has_exact(&h, "Add device"), "dialog still open");
+    assert!(has_exact(&h, "Device: Node 1"), "device label on the scan row\nUI:\n{}", dump(&h));
+    assert!(buttons(&h, "Add as device").is_empty(), "Add as device still shown\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().settings.active_device.as_deref(), Some("Node 1"));
+}
+
 /// Scenario 5: EDS library, device, object dictionary, decoded trace.
 #[test]
 fn s5_eds_device_od() {
@@ -1914,6 +1950,38 @@ fn screenshots() {
     shots_v03(&out);
 }
 
+/// The bit view of the Messages tab with one changed bit lit (byte 0 bit 3,
+/// and the Hex cell of byte 0), 0.5 s after the change on a fixed clock,
+/// dark and light: `cargo test screenshots_bit_flash -- --ignored`.
+#[test]
+#[ignore]
+fn screenshots_bit_flash() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
+    std::fs::create_dir_all(&out).unwrap();
+    for (name, theme) in [("bit_flash_dark", Theme::Dark), ("bit_flash_light", Theme::Light)] {
+        let tmp = TempDir::new(name);
+        preset(&tmp.data(), Settings { theme, ..Settings::default() });
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(1280.0, 800.0)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        only(&mut h, vec![Tab::Messages]);
+        let t = 10_000_000;
+        msg_frame(&mut h, 0x1E4, &[0x00, 0x5A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], t);
+        msg_frame(&mut h, 0x1E4, &[0x08, 0x5A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], t + 10_000);
+        h.state_mut().msgv.set_fixed_clock(Some(t + 510_000));
+        step2(&mut h);
+        let r = top_by_label(&h, "1E4", None);
+        pointer_click(&mut h, r);
+        step2(&mut h);
+        let key = crate::msgstats::MsgKey { id: 0x1E4, extended: false };
+        let e = h.state().msgs.get(key).unwrap();
+        assert_eq!(e.bit_flash(3, t + 510_000), 1.0);
+        assert_eq!(e.bit_flash(4, t + 510_000), 0.0);
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+    }
+}
+
 /// Only the screenshots of 0.3: `cargo test screenshots_v03 -- --ignored`.
 #[test]
 #[ignore]
@@ -1921,6 +1989,252 @@ fn screenshots_v03() {
     let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
     std::fs::create_dir_all(&out).unwrap();
     shots_v03(&out);
+}
+
+/// The EDS info grid (one long value that wraps) in a narrow tab, a wide
+/// tab, a narrow tab at 125 % scale and a short window that scrolls, each
+/// after a switch from another EDS: `cargo test screenshots_eds -- --ignored`.
+#[test]
+#[ignore]
+fn screenshots_eds_info() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
+    std::fs::create_dir_all(&out).unwrap();
+    for (name, frac, ppp, ht) in [("eds_info_dark", 0.61, 1.0, 800.0), ("eds_info_wide_dark", 0.2, 1.0, 800.0), ("eds_info_125_dark", 0.61, 1.25, 800.0), ("eds_info_short_dark", 0.61, 1.0, 520.0)] {
+        let tmp = TempDir::new(name);
+        preset(&tmp.data(), Settings { theme: Theme::Dark, ..Settings::default() });
+        // The built-in simulator EDS with one long value that must wrap.
+        let eds = tmp.0.join("sim_long_info.eds");
+        let text = crate::can::sim::BUILTIN_EDS
+            .replace("FileName=sim_builtin.eds", "FileName=sim_long_info.eds")
+            .replace("CreatedBy=CANoxide", "CreatedBy=CANoxide test fixture, written by the screenshot test with a long value that wraps to more than one line");
+        std::fs::write(&eds, text).unwrap();
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(1280.0, ht)).with_pixels_per_point(ppp).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        only(&mut h, vec![Tab::Eds]);
+        drop_files(&mut h, &[test_eds(), eds]);
+        assert!(has(&h, "sim_long_info.eds"), "EDS not added\nUI:\n{}", dump(&h));
+        let mut d = DockState::new(vec![Tab::Trace(1)]);
+        d.main_surface_mut().split_right(NodeIndex::root(), frac, vec![Tab::Eds]);
+        set_dock(&mut h, d);
+        h.state_mut().selected_eds = Some("test.eds".to_string());
+        step2(&mut h);
+        step2(&mut h);
+        let id = top_by_label(&h, "sim_long_info.eds", None);
+        click_id(&mut h, id);
+        step2(&mut h);
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+    }
+    // The user's layout: a maximised 2560 x 1369 window, Compact rows, zebra
+    // on, an active device, the EDS tab narrow on the left and the Network
+    // view right of it. CANOXIDE_TEST_EDS names a local EDS for a local run
+    // (it is copied only into the temporary data folder); without it the
+    // test uses the temp EDS.
+    for (name, zebra, density) in [("eds_info_user_dark", true, crate::settings::RowDensity::Compact), ("eds_info_user_comf_dark", true, crate::settings::RowDensity::Comfortable), ("eds_info_user_nozebra_dark", false, crate::settings::RowDensity::Compact)] {
+        let tmp = TempDir::new(name);
+        preset(&tmp.data(), Settings { theme: Theme::Dark, zebra, row_density: density, ..Settings::default() });
+        let eds = match std::env::var_os("CANOXIDE_TEST_EDS") {
+            Some(p) => PathBuf::from(p),
+            None => {
+                let p = tmp.0.join("sim_long_info.eds");
+                let text = crate::can::sim::BUILTIN_EDS
+                    .replace("FileName=sim_builtin.eds", "FileName=sim_long_info.eds")
+                    .replace("CreatedBy=CANoxide", "CreatedBy=CANoxide test fixture, written by the screenshot test with a long value that wraps to more than one line");
+                std::fs::write(&p, text).unwrap();
+                p
+            }
+        };
+        let file = eds.file_name().unwrap().to_string_lossy().to_string();
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(2560.0, 1369.0)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        only(&mut h, vec![Tab::Eds]);
+        drop_files(&mut h, &[eds]);
+        {
+            let app = h.state_mut();
+            let dev = crate::library::Device { name: "HMI".into(), node_id: 1, eds_file: Some(file.clone()), bitrate_kbit: app.settings.bitrate_kbit, notes: String::new() };
+            app.lib.as_mut().unwrap().add_device(dev).unwrap();
+            app.settings.active_device = Some("HMI".into());
+        }
+        let mut d = DockState::new(vec![Tab::Eds]);
+        d.main_surface_mut().split_right(NodeIndex::root(), 530.0 / 2560.0, vec![Tab::Network]);
+        set_dock(&mut h, d);
+        h.state_mut().selected_eds = Some(file.clone());
+        step2(&mut h);
+        step2(&mut h);
+        for l in ["FileName", "FileVersion", "FileRevision"] {
+            let r = rect_id(&h, top_by_label(&h, l, Some(Role::Label)));
+            println!("{name} {l} {:.1} {:.1} {:.1} {:.1}", r.x0, r.y0, r.x1, r.y1);
+        }
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+    }
+    // The user's report: a 2560 x 1440 window, the EDS library in front at
+    // the top left beside Devices (layout B, the left leaf about 500 px
+    // wide), Compact rows, zebra on, an EDS whose first values have
+    // underscores. The first three rows carry the same value, so their
+    // rendered text must be the same pixel for pixel.
+    let mut bad = Vec::new();
+    // 1369: the client height of a maximised window on a 2560 x 1440 monitor
+    // with a 48 px taskbar (measured with the real exe, 2026-11-20).
+    for (ppp, phys_h) in [(1.0_f32, 1440.0_f32), (1.0, 1369.0), (1.25, 1440.0), (1.5, 1440.0)] {
+        let name = format!("eds_info_rows_{}_{}_dark", (ppp * 100.0) as u32, phys_h as u32);
+        let tmp = TempDir::new(&name);
+        preset(&tmp.data(), Settings { theme: Theme::Dark, zebra: true, row_density: crate::settings::RowDensity::Compact, ..Settings::default() });
+        let eds = tmp.0.join("uitest_rows.eds");
+        let value = "AB1140_HMI_Slave.eds";
+        let text = crate::can::sim::BUILTIN_EDS
+            .replace("FileName=sim_builtin.eds", &format!("FileName={value}"))
+            .replace("FileVersion=1", &format!("FileVersion={value}"))
+            .replace("FileRevision=0", &format!("FileRevision={value}"));
+        std::fs::write(&eds, text).unwrap();
+        let boot = Boot::load_dir(tmp.data());
+        let (w, ht) = (2560.0 / ppp, phys_h / ppp);
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(w, ht)).with_pixels_per_point(ppp).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        only(&mut h, vec![Tab::Eds]);
+        drop_files(&mut h, &[eds]);
+        let mut d = dock::layout_b();
+        if let Some(egui_dock::Node::Horizontal { fraction, .. }) = d.main_surface_mut().root_node_mut() {
+            *fraction = 500.0 / 2560.0;
+        }
+        if let Some(t) = d.find_tab(&Tab::Eds) {
+            d.set_active_tab(t);
+        }
+        set_dock(&mut h, d);
+        h.state_mut().selected_eds = Some("uitest_rows.eds".to_string());
+        step2(&mut h);
+        step2(&mut h);
+        let mut rows: Vec<Rect> = h.query_all_by(|n| n.role() == Role::Label && n.value().as_deref() == Some(value)).map(|n| rect_of(&n)).collect();
+        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        for (i, r) in rows.iter().enumerate() {
+            println!("{name} value row {i}: {:.3} {:.3} {:.3} {:.3} (px y {:.3}..{:.3})", r.x0, r.y0, r.x1, r.y1, r.y0 * ppp as f64, r.y1 * ppp as f64);
+        }
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+        assert_eq!(rows.len(), 3, "three rows with the same value\nUI:\n{}", dump(&h));
+        let (iw, ih) = img.dimensions();
+        let profiles: Vec<Vec<u32>> = rows.iter().map(|r| text_profile(img.as_raw(), iw, ih, r, ppp)).collect();
+        for (i, p) in profiles.iter().enumerate() {
+            println!("{name} row {i} bright pixels per pixel row: {p:?}");
+        }
+        // Rows 0 and 2 have the same background (row 1 is striped): the same
+        // glyph rows, and the same pitch from row to row (at 125 % a pitch of
+        // 30 points is 37.5 px, so there the pitch may differ by 1 px).
+        let (d0, d1) = (profiles[1][0] as i64 - profiles[0][0] as i64, profiles[2][0] as i64 - profiles[1][0] as i64);
+        let slack = if (30.0 * ppp).fract() == 0.0 { 0 } else { 1 };
+        if profiles[0][1..] != profiles[2][1..] || (d0 - d1).abs() > slack {
+            bad.push(name.clone());
+        }
+    }
+    assert!(bad.is_empty(), "rows of the EDS info grid render differently: {bad:?}");
+}
+
+/// Sweep of window sizes (default layout, EDS library in front, Compact,
+/// zebra): rows 0 and 2 of the EDS info grid carry the same value on the
+/// same background, so their rendered text must be equal at every size.
+/// `cargo test eds_info_sweep -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn eds_info_sweep() {
+    let value = "AB1140_HMI_Slave.eds";
+    let mut bad = Vec::new();
+    // (width, height, rebuild the default layout for this width). Without a
+    // rebuild the saved split fractions stay, as when the user resizes.
+    let mut sizes: Vec<(f32, f32, bool)> = (700..=1000).map(|ht| (1280.0, ht as f32, true)).collect();
+    for w in [1281.0, 1333.0, 1599.0, 1700.0, 1919.0, 2001.0, 2333.0, 2559.0] {
+        for ht in [700.0, 777.0, 801.0, 853.0, 999.0, 1080.0, 1369.0] {
+            sizes.push((w, ht, true));
+        }
+    }
+    sizes.push((1280.0, 800.0, true));
+    sizes.push((2560.0, 1369.0, true));
+    sizes.extend((1200..=2560).map(|w| (w as f32, 1369.0, false)));
+    sizes.extend((600..=1369).map(|ht| (2000.0, ht as f32, false)));
+    sizes.extend((600..=1369).step_by(23).flat_map(|ht| (1200..=2560).step_by(101).map(move |w| (w as f32, ht as f32, false))));
+    let tmp = TempDir::new("eds_sweep");
+    preset(&tmp.data(), Settings { theme: Theme::Dark, zebra: true, row_density: crate::settings::RowDensity::Compact, ..Settings::default() });
+    let eds = tmp.0.join("uitest_rows.eds");
+    let text = crate::can::sim::BUILTIN_EDS
+        .replace("FileName=sim_builtin.eds", &format!("FileName={value}"))
+        .replace("FileVersion=1", &format!("FileVersion={value}"))
+        .replace("FileRevision=0", &format!("FileRevision={value}"));
+    std::fs::write(&eds, text).unwrap();
+    let boot = Boot::load_dir(tmp.data());
+    let mut h: H = Harness::builder().with_size(egui::Vec2::new(1280.0, 800.0)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+    h.state_mut().first_layout = false;
+    only(&mut h, vec![Tab::Eds]);
+    drop_files(&mut h, &[eds]);
+    let mut last_w = 0.0;
+    let mut checked = 0;
+    for (w, ht, rebuild) in sizes {
+        h.set_size(egui::Vec2::new(w, ht));
+        if rebuild && w != last_w {
+            let mut d = dock::default_layout(w);
+            if w >= 1600.0 {
+                // The user's left leaf, about 500 px wide.
+                if let Some(egui_dock::Node::Horizontal { fraction, .. }) = d.main_surface_mut().root_node_mut() {
+                    *fraction = 500.0 / 2560.0;
+                }
+            }
+            if let Some(t) = d.find_tab(&Tab::Eds) {
+                d.set_active_tab(t);
+            }
+            set_dock(&mut h, d);
+            h.state_mut().selected_eds = Some("uitest_rows.eds".to_string());
+        }
+        last_w = w;
+        checked += 1;
+        step2(&mut h);
+        step2(&mut h);
+        let mut rows: Vec<Rect> = h.query_all_by(|n| n.role() == Role::Label && n.value().as_deref() == Some(value)).map(|n| rect_of(&n)).collect();
+        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        assert_eq!(rows.len(), 3, "{w}x{ht}: three rows with the same value\nUI:\n{}", dump(&h));
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render failed: {e}"));
+        let (iw, ih) = img.dimensions();
+        let p: Vec<Vec<u32>> = rows.iter().map(|r| text_profile(img.as_raw(), iw, ih, r, 1.0)).collect();
+        let ys: Vec<String> = rows.iter().map(|r| format!("{:.3}..{:.3}", r.y0, r.y1)).collect();
+        if p[0][1..] != p[2][1..] || p[1][0] - p[0][0] != p[2][0] - p[1][0] {
+            println!("MISMATCH {w}x{ht} rows {ys:?}\n  row0 {:?}\n  row1 {:?}\n  row2 {:?}", p[0], p[1], p[2]);
+            if bad.len() < 5 {
+                let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
+                std::fs::create_dir_all(&out).unwrap();
+                img.save(out.join(format!("eds_sweep_{w}x{ht}.png"))).unwrap();
+            }
+            bad.push(format!("{w}x{ht}"));
+        } else if rows.iter().any(|r| r.y0.fract().abs() > 1e-6) {
+            println!("frac ok {w}x{ht} rows {ys:?}");
+        }
+    }
+    println!("checked {checked} sizes");
+    assert!(bad.is_empty(), "rows 0 and 2 render differently at {} size(s): {bad:?}", bad.len());
+}
+
+/// The first pixel row with text, then the bright pixels per pixel row of a
+/// text rect (RGBA image, 2 px margin above and below) without the empty
+/// rows at both ends: a pixel level compare of two rows with the same text.
+fn text_profile(raw: &[u8], w: u32, ht: u32, r: &Rect, ppp: f32) -> Vec<u32> {
+    let ppp = ppp as f64;
+    let (x0, x1) = ((r.x0 * ppp).floor() as u32, ((r.x1 * ppp).ceil() as u32).min(w));
+    let (y0, y1) = (((r.y0 * ppp).floor() as u32).saturating_sub(2), ((r.y1 * ppp).ceil() as u32 + 2).min(ht));
+    let mut v: Vec<u32> = (y0..y1)
+        .map(|y| {
+            (x0..x1)
+                .filter(|&x| {
+                    let i = ((y * w + x) * 4) as usize;
+                    (raw[i] as u32 + raw[i + 1] as u32 + raw[i + 2] as u32) > 330
+                })
+                .count() as u32
+        })
+        .collect();
+    while v.last() == Some(&0) {
+        v.pop();
+    }
+    let lead = v.iter().take_while(|&&c| c == 0).count();
+    v.drain(..lead);
+    v.insert(0, y0 + lead as u32);
+    v
 }
 
 fn shots_v03(out: &Path) {
@@ -2197,7 +2511,7 @@ fn s33_app_icon() {
     click(&mut h, "About CANoxide");
     assert!(has_exact(&h, "CANoxide icon"), "About icon\nUI:\n{}", dump(&h));
     assert!(has_exact(&h, &format!("Version {}", crate::VERSION)));
-    assert_eq!(crate::VERSION, "0.3.2");
+    assert_eq!(crate::VERSION, "0.3.3");
 }
 
 // ------------------------------------------------------------ 0.3 replay
@@ -2288,4 +2602,90 @@ fn s30_replay_connect_and_scrub() {
     click(&mut h, "Disconnect");
     wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect") && !has(h, "Replay: nothing is sent"));
     assert!(!has_exact(&h, "Replay speed"));
+}
+
+/// The visible part of the Object dictionary leaf, in accesskit units:
+/// the leaf rect without the room of the vertical scroll bar.
+fn od_visible(h: &H) -> Rect {
+    let d = h.state().dock.as_ref().expect("dock");
+    let (s, n, _) = d.find_tab(&Tab::Od).expect("Od tab open");
+    let r = d[s][n].rect().expect("leaf rect");
+    let ppp = h.ctx.pixels_per_point() as f64;
+    let bar = h.ctx.style().spacing.scroll.allocated_width() as f64;
+    Rect { x0: r.min.x as f64 * ppp, y0: r.min.y as f64 * ppp, x1: (r.max.x as f64 - bar) * ppp, y1: r.max.y as f64 * ppp }
+}
+
+/// Spec 8.2: the actions column of the object dictionary shows both
+/// buttons completely, in the default layout at every UI scale and in both
+/// row densities: every Write button (the right one) lies inside the
+/// visible table, left of the vertical scroll bar.
+#[test]
+fn s35_od_actions_column_fits() {
+    for (scale, density) in [(1.0, crate::settings::RowDensity::Compact), (1.0, crate::settings::RowDensity::Comfortable), (1.25, crate::settings::RowDensity::Compact), (1.5, crate::settings::RowDensity::Comfortable), (2.0, crate::settings::RowDensity::Compact)] {
+        let tmp = TempDir::new("s35");
+        preset(&tmp.data(), Settings { ui_scale: scale, row_density: density, ..Settings::default() });
+        let s = Settings::default();
+        let mut h = build_sized(&tmp.data(), s.window_width, s.window_height);
+        add_eds_and_device(&mut h, "Bench");
+        only(&mut h, vec![Tab::Od]);
+        connect(&mut h);
+        let width = h.ctx.screen_rect().width();
+        h.state_mut().reset_layout(width);
+        step2(&mut h);
+        step2(&mut h);
+        let vis = od_visible(&h);
+        let writes = buttons(&h, "Write");
+        assert!(!writes.is_empty(), "no Write button at scale {scale}\nUI:\n{}", dump(&h));
+        let mut seen_rw = false;
+        for id in writes {
+            let r = rect_id(&h, id);
+            seen_rw |= !disabled(&h, id);
+            assert!(r.x0 >= vis.x0 && r.x1 <= vis.x1 + 0.01, "Write button {r:?} not inside the visible table {vis:?} at scale {scale}, {density:?}");
+        }
+        assert!(seen_rw, "no enabled Write button (rw row) at scale {scale}\nUI:\n{}", dump(&h));
+    }
+}
+
+/// Help > Copy display diagnostics: the text goes to the clipboard and the
+/// status bar says so. The harness has no Win32 window.
+#[test]
+fn s36_copy_display_diagnostics() {
+    let tmp = TempDir::new("s36");
+    let mut h = build(&tmp.data());
+    click_role(&mut h, Role::Button, "Help");
+    click(&mut h, "Copy display diagnostics");
+    step2(&mut h);
+    assert!(has(&h, "Display diagnostics copied"), "status\nUI:\n{}", dump(&h));
+    let t = h.state().diag_text.clone().expect("diagnostics text");
+    println!("{t}");
+    for k in ["app_version: ", "pixels_per_point: ", "native_pixels_per_point: ", "screen_rect_physical: ", "inner_rect_points: ", "settings_ui_scale: ", "win32: not available", "mismatch: no"] {
+        assert!(t.contains(k), "{k} missing\n{t}");
+    }
+    let home = std::env::var("USERNAME").unwrap_or_default();
+    assert!(!t.contains(":\\") && (home.len() < 3 || !t.contains(&home)), "no path, no user name\n{t}");
+}
+
+/// The object dictionary at the default window size, at 100 % and 150 %,
+/// for a look at the actions column: `cargo test screenshots_od_actions -- --ignored`.
+#[test]
+#[ignore]
+fn screenshots_od_actions() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
+    std::fs::create_dir_all(&out).unwrap();
+    for (name, scale) in [("od_actions_100_dark", 1.0), ("od_actions_150_dark", 1.5)] {
+        let tmp = TempDir::new(name);
+        preset(&tmp.data(), Settings { ui_scale: scale, theme: Theme::Dark, ..Settings::default() });
+        let s = Settings::default();
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(s.window_width, s.window_height)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        add_eds_and_device(&mut h, "Bench");
+        only(&mut h, vec![Tab::Od]);
+        connect(&mut h);
+        let width = h.ctx.screen_rect().width();
+        h.state_mut().reset_layout(width);
+        step2(&mut h);
+        step2(&mut h);
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+    }
 }

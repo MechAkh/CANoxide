@@ -7,7 +7,9 @@
 
 mod analysis_view;
 mod dcf_view;
+mod diag;
 mod dock;
+mod gpu;
 mod graph;
 mod library_view;
 mod lss_view;
@@ -67,8 +69,28 @@ pub fn run() -> eframe::Result {
     if let Ok(icon) = app_icon() {
         viewport = viewport.with_icon(Arc::new(icon));
     }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("CANoxide", options, Box::new(move |cc| Ok(Box::new(App::new(cc, boot)))))
+    // Debug switches for display checks, off by default, read once here:
+    // CANOXIDE_NO_ACTIVATE=1 opens the window without taking the focus;
+    // CANOXIDE_DIAG_FILE=<path> writes the display diagnostics text (Help >
+    // Copy display diagnostics) to that file about once a second.
+    if std::env::var_os("CANOXIDE_NO_ACTIVATE").is_some_and(|v| v == "1") {
+        viewport = viewport.with_active(false);
+    }
+    let diag_file = std::env::var_os("CANOXIDE_DIAG_FILE").filter(|v| !v.is_empty()).map(PathBuf::from);
+    // wgpu on the low-power GPU, else glow (see gpu.rs); CANOXIDE_RENDERER=
+    // glow|wgpu forces one.
+    let (renderer, wgpu_options, render_note) = gpu::choose();
+    let options = eframe::NativeOptions { viewport, renderer, wgpu_options, ..Default::default() };
+    eframe::run_native(
+        "CANoxide",
+        options,
+        Box::new(move |cc| {
+            let mut app = App::new(cc, boot);
+            app.diag_file = diag_file.map(|p| (p, None));
+            app.render_note = render_note;
+            Ok(Box::new(app))
+        }),
+    )
 }
 
 /// What is loaded before the window opens.
@@ -203,6 +225,14 @@ pub(crate) struct App {
     deferred: Vec<Option<Tab>>,
     settings_dlg: Option<settings_dlg::SettingsDlg>,
     about: bool,
+    /// Help > Copy display diagnostics was clicked; done in update(), which
+    /// has the window handle. The last text stays for the tests.
+    diag_request: bool,
+    pub(crate) diag_text: Option<String>,
+    /// CANOXIDE_DIAG_FILE (see `run`) and the time of its last write.
+    diag_file: Option<(PathBuf, Option<Instant>)>,
+    /// How the renderer was chosen at start (gpu.rs); empty in the tests.
+    render_note: String,
     /// The app icon of the About dialog (made on the first open).
     about_icon: Option<egui::TextureHandle>,
     confirm: Option<Confirm>,
@@ -261,6 +291,10 @@ impl App {
             deferred: Vec::new(),
             settings_dlg: None,
             about: false,
+            diag_request: false,
+            diag_text: None,
+            diag_file: None,
+            render_note: String::new(),
             about_icon: None,
             confirm: None,
             tasks: HashMap::new(),
@@ -297,6 +331,81 @@ impl App {
     pub(crate) fn set_status(&mut self, s: impl Into<String>, error: bool) {
         self.status = s.into();
         self.status_error = error;
+    }
+
+    /// Help > Copy display diagnostics: the text of `diag` to the clipboard.
+    fn copy_display_diagnostics(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let text = self.display_diagnostics(ctx, frame);
+        ctx.copy_text(text.clone());
+        self.diag_text = Some(text);
+        self.set_status("Display diagnostics copied", false);
+    }
+
+    /// CANOXIDE_DIAG_FILE: the diagnostics text to the file about once a second.
+    fn write_diag_file(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let due = match &self.diag_file {
+            Some((_, last)) => last.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)),
+            None => return,
+        };
+        if due {
+            let text = self.display_diagnostics(ctx, frame);
+            if let Some((path, last)) = &mut self.diag_file {
+                let _ = std::fs::write(path, text);
+                *last = Some(Instant::now());
+            }
+        }
+        ctx.request_repaint_after(Duration::from_secs(1));
+    }
+
+    /// The display diagnostics text of this frame.
+    fn display_diagnostics(&self, ctx: &egui::Context, frame: &eframe::Frame) -> String {
+        let vp = ctx.input(|i| i.viewport().clone());
+        let sr = ctx.screen_rect();
+        let r4 = |r: egui::Rect| [r.min.x, r.min.y, r.width(), r.height()];
+        let s = &self.settings;
+        #[cfg(windows)]
+        let win32 = {
+            use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+            frame.window_handle().ok().and_then(|h| match h.as_raw() {
+                RawWindowHandle::Win32(w) => Some(diag::win32(w.hwnd.get())),
+                _ => None,
+            })
+        };
+        #[cfg(not(windows))]
+        let win32 = None;
+        let d = diag::Diag {
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            renderer: {
+                let r = match (frame.gl(), frame.wgpu_render_state()) {
+                    (Some(gl), _) => diag::gl_info(gl),
+                    (None, Some(rs)) => {
+                        let i = rs.adapter.get_info();
+                        format!("wgpu, {:?} / {} / {}, power {:?}", i.backend, i.name, i.driver_info, gpu::power_preference())
+                    }
+                    (None, None) => "none (no GPU context)".to_string(),
+                };
+                if self.render_note.is_empty() { r } else { format!("{r}; {}", self.render_note) }
+            },
+            os: diag::os_version(),
+            ppp: ctx.pixels_per_point(),
+            native_ppp: vp.native_pixels_per_point,
+            zoom_factor: ctx.zoom_factor(),
+            screen_rect: r4(sr),
+            inner_rect: vp.inner_rect.map(r4),
+            outer_rect: vp.outer_rect.map(r4),
+            monitor_size: vp.monitor_size.map(|m| [m.x, m.y]),
+            maximized: vp.maximized,
+            fullscreen: vp.fullscreen,
+            minimized: vp.minimized,
+            focused: vp.focused,
+            ui_scale: s.ui_scale,
+            window_width: s.window_width,
+            window_height: s.window_height,
+            window_pos: s.window_pos,
+            window_maximized: s.window_maximized,
+            win32,
+        };
+        diag::format(&d)
     }
 
     fn mark_settings(&mut self) {
@@ -823,6 +932,10 @@ impl App {
                     ui.close_menu();
                     self.set_status("Ctrl+, Settings · Ctrl+O Open EDS · Ctrl+Enter connect/disconnect · F11 full screen", false);
                 }
+                if ui.button("Copy display diagnostics").on_hover_text("Window, screen and DPI values for a bug report, to the clipboard").clicked() {
+                    ui.close_menu();
+                    self.diag_request = true;
+                }
                 if ui.button("About CANoxide").clicked() {
                     ui.close_menu();
                     self.about = true;
@@ -1145,7 +1258,7 @@ fn open_folder(p: &std::path::Path) {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.apply_style(ctx);
         self.poll_bus();
         self.shortcuts(ctx);
@@ -1182,6 +1295,10 @@ impl eframe::App for App {
         let p = if self.is_dark() { &theme::DARK } else { &theme::LIGHT };
         let bar = egui::Frame::new().fill(p.bg_frame).inner_margin(egui::Margin::symmetric(8, 2));
         egui::TopBottomPanel::top("menu_bar").frame(bar).show(ctx, |ui| self.menu_bar(ui));
+        if std::mem::take(&mut self.diag_request) {
+            self.copy_display_diagnostics(ctx, frame);
+        }
+        self.write_diag_file(ctx, frame);
         egui::TopBottomPanel::top("connect_bar").frame(bar.inner_margin(egui::Margin::symmetric(8, 4))).show(ctx, |ui| self.connection_bar(ui));
         if self.replay_active {
             let pos = self.bus.shared.lock().map(|s| s.now_us).unwrap_or(0);

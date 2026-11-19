@@ -207,6 +207,16 @@ pub(crate) fn bit_heat(p: &Palette, rate: f32) -> Color32 {
     mix(p.bg_button, hot, rate)
 }
 
+/// Messages bit view: the change flash of a bit or Hex cell over the cell
+/// fill `base` with the strength `k` (1 = full): (fill, text colour). The
+/// full flash is the warning colour; the text turns to the panel colour
+/// while the flash is strong, so that it stays readable on it.
+pub(crate) fn bit_flash(p: &Palette, base: Color32, k: f32) -> (Color32, Color32) {
+    let fill = mix(base, p.warning, k);
+    let text = if k > 0.5 { p.bg_panel } else { p.text_primary };
+    (fill, text)
+}
+
 /// `a` mixed with `b` by `t` (0: `a`, 1: `b`), opaque.
 pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
@@ -264,6 +274,13 @@ pub(crate) fn icon_button(ui: &mut egui::Ui, enabled: bool, glyph: &str, name: &
     let name = name.to_string();
     r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
     r
+}
+
+/// The width of an [`icon_button`] with this glyph in this ui: the glyph
+/// galley and the button padding on both sides, as the widget lays it out.
+pub(crate) fn icon_button_width(ui: &egui::Ui, glyph: &str) -> f32 {
+    let g = egui::WidgetText::from(egui::RichText::new(glyph).size(16.0)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, TextStyle::Button);
+    g.size().x + 2.0 * ui.spacing().button_padding.x
 }
 
 /// Toggle icon button (spec 5.1: Pause, Autoscroll): ON has the accent

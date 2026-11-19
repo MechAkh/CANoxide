@@ -548,9 +548,16 @@ impl App {
                             let k = b as u32 * 8 + bit;
                             let (r, resp) = ui.allocate_exact_size(cell, egui::Sense::click_and_drag());
                             let rate = e.toggle_rate(k as usize);
-                            ui.painter().rect_filled(r.shrink(1.0), 2.0, theme::bit_heat(p, rate));
+                            // Toggle heat, and over it the change flash of
+                            // the last change of this bit.
+                            let fk = e.bit_flash(k as usize, now);
                             let v = e.bit(k as usize);
-                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, if v { "1" } else { "0" }, egui::FontId::monospace(12.0), if v { p.text_primary } else { p.text_secondary });
+                            let (fill, mut fg) = theme::bit_flash(p, theme::bit_heat(p, rate), fk);
+                            if fk <= 0.5 && !v {
+                                fg = p.text_secondary;
+                            }
+                            ui.painter().rect_filled(r.shrink(1.0), 2.0, fill);
+                            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, if v { "1" } else { "0" }, egui::FontId::monospace(12.0), fg);
                             if let Some(si) = sig_of(k) {
                                 ui.painter().rect_stroke(r.shrink(1.5), 2.0, egui::Stroke::new(1.5_f32, theme::series_colour(p, si)), egui::StrokeKind::Inside);
                             }
@@ -595,10 +602,18 @@ impl App {
                             kt = 0.0;
                         }
                         let (r, _) = ui.allocate_exact_size(egui::vec2(40.0, cell.y), egui::Sense::hover());
-                        if kt > 0.0 {
+                        // The change flash of the byte (its last changed
+                        // bit) first; after it the up / down tint.
+                        let fb = e.byte_flash(b, now);
+                        let mut fg = p.text_primary;
+                        if fb > 0.0 {
+                            let (fill, t) = theme::bit_flash(p, p.bg_panel, fb);
+                            fg = t;
+                            ui.painter().rect_filled(r.shrink(1.0), 2.0, fill);
+                        } else if kt > 0.0 {
                             ui.painter().rect_filled(r.shrink(1.0), 2.0, theme::mix(p.bg_panel, theme::change_tint(p, s.dir == Some(Change::Up)), kt));
                         }
-                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, byte_text(e.data[b], self.settings.msg_decimal), egui::FontId::monospace(12.0), p.text_primary);
+                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, byte_text(e.data[b], self.settings.msg_decimal), egui::FontId::monospace(12.0), fg);
                         // The names of the user signals in this byte.
                         for (i, _, c) in usr.iter().filter(|(_, bits, _)| bits.iter().any(|k| *k / 8 == b as u32)) {
                             ui.label(egui::RichText::new(&usigs[*i].name).small().color(*c));
@@ -664,7 +679,8 @@ impl App {
         if !down {
             drag = false;
         }
-        let fading = (0..n).any(|b| tint_strength(e.bytes[b].last_change_us, now, fade_us) > 0.0);
+        // Repaints while a tint or a change flash fades (none when all are out).
+        let fading = (0..n).any(|b| tint_strength(e.bytes[b].last_change_us, now, fade_us) > 0.0 || e.byte_flash(b, now) > 0.0);
         // The history columns: the mapped PDO signals, then the user signals.
         let mut cols: Vec<UserSignal> = self.msgv.mapped.iter().filter(|s| s.bits <= 64).map(|s| UserSignal::new(s.text.clone(), key.id, key.extended, s.offset, s.bits)).collect();
         cols.extend(usr.iter().map(|(i, _, _)| self.an.usigs[*i].clone()));

@@ -67,6 +67,10 @@ pub struct MsgEntry {
     /// Smoothed interval between frames in microseconds.
     pub period_us: Option<f64>,
     pub bytes: [ByteStat; 8],
+    /// Time stamp of the frame with the last change of bit `k` (byte
+    /// `k / 8`, bit `k % 8`): the change flash of the bit view. Set per
+    /// frame, so a 0 -> 1 -> 0 between two repaints is kept.
+    pub bit_change_us: [Option<u64>; 64],
     /// Toggles of bit `k` (byte `k / 8`, bit `k % 8`) since the last reset.
     pub bit_toggles: [u32; 64],
     /// Frames that were compared with a previous frame since the last
@@ -93,6 +97,7 @@ impl MsgEntry {
             last_us: f.timestamp_us,
             period_us: None,
             bytes: [ByteStat::default(); 8],
+            bit_change_us: [None; 64],
             bit_toggles: [0; 64],
             compared: 0,
             search,
@@ -125,6 +130,7 @@ impl MsgEntry {
                     let bit = x.trailing_zeros() as usize;
                     let t = &mut self.bit_toggles[i * 8 + bit];
                     *t = t.saturating_add(1);
+                    self.bit_change_us[i * 8 + bit] = Some(f.timestamp_us);
                     x &= x - 1;
                 }
             }
@@ -182,8 +188,42 @@ impl MsgEntry {
         self.count = 0;
         self.period_us = None;
         self.bytes = [ByteStat::default(); 8];
+        self.bit_change_us = [None; 64];
         self.bit_toggles = [0; 64];
         self.compared = 0;
+    }
+
+    /// The change flash of bit `k` at the time `now_us` (see
+    /// [`flash_strength`]).
+    pub fn bit_flash(&self, k: usize, now_us: u64) -> f32 {
+        if k >= 64 {
+            return 0.0;
+        }
+        flash_strength(self.bit_change_us[k], now_us)
+    }
+
+    /// The change flash of byte `i`: that of its last changed bit.
+    pub fn byte_flash(&self, i: usize, now_us: u64) -> f32 {
+        (0..8).map(|b| self.bit_flash(i * 8 + b, now_us)).fold(0.0, f32::max)
+    }
+}
+
+/// The change flash of the bit view holds at full strength this long after
+/// the last change of a bit ...
+pub const FLASH_HOLD_US: u64 = 1_000_000;
+/// ... and then fades out over this time.
+pub const FLASH_FADE_US: u64 = 1_000_000;
+
+/// The strength (1 = full, 0 = none) of the change flash of a bit that
+/// changed at `change_us`, at the time `now_us`: full for
+/// [`FLASH_HOLD_US`], then a linear fade over [`FLASH_FADE_US`].
+pub fn flash_strength(change_us: Option<u64>, now_us: u64) -> f32 {
+    let Some(c) = change_us else { return 0.0 };
+    let age = now_us.saturating_sub(c);
+    if age <= FLASH_HOLD_US {
+        1.0
+    } else {
+        (1.0 - (age - FLASH_HOLD_US) as f64 / FLASH_FADE_US as f64).clamp(0.0, 1.0) as f32
     }
 }
 

@@ -2,8 +2,9 @@
 //! (state, last seen, identity, last EMCY of every node), Refresh node
 //! info, heartbeat of all nodes and the node scan.
 
-use super::{theme, App, TaskOwner};
+use super::{theme, App, Dialog, TaskOwner};
 use crate::bus::BusCommand;
+use crate::library::Device;
 use crate::canopen::nmt::NmtCommand;
 use crate::canopen::task::TaskResult;
 use crate::settings::AdapterKind;
@@ -287,16 +288,42 @@ impl App {
         if !self.net.scan_results.is_empty() {
             let mut res = self.net.scan_results.clone();
             res.sort_by_key(|r| r.0);
-            egui::Grid::new("scan_res").striped(true).num_columns(2).show(ui, |ui| {
+            let p = theme::pal(ui);
+            let have_lib = self.lib.is_some();
+            let devs: Vec<(u8, String)> = match &self.lib {
+                Some(l) => l.devices.iter().map(|d| (d.node_id, d.name.clone())).collect(),
+                None => Vec::new(),
+            };
+            let names: Vec<(u8, String)> = {
+                let s = self.bus.shared.lock().unwrap_or_else(|p| p.into_inner());
+                s.network.nodes().into_iter().filter_map(|n| n.device_name.clone().filter(|d| !d.trim().is_empty()).map(|d| (n.node, d))).collect()
+            };
+            let mut add: Option<u8> = None;
+            egui::Grid::new("scan_res").striped(true).num_columns(3).show(ui, |ui| {
                 for (n, r) in &res {
                     ui.label(format!("Node {n}"));
                     match r {
                         Ok(v) => ui.label(format!("device type 0x{v:08X} (profile {})", v & 0xFFFF)),
                         Err(e) => ui.label(format!("answered: {e}")),
                     };
+                    match devs.iter().find(|d| d.0 == *n) {
+                        Some((_, name)) => {
+                            ui.label(egui::RichText::new(format!("Device: {name}")).color(p.text_secondary));
+                        }
+                        None => {
+                            if ui.add_enabled(have_lib, egui::Button::new("Add as device").small()).on_hover_text("Open Add device with this node").clicked() {
+                                add = Some(*n);
+                            }
+                        }
+                    }
                     ui.end_row();
                 }
             });
+            if let Some(n) = add {
+                let name = names.iter().find(|d| d.0 == n).map(|d| d.1.trim().to_string()).unwrap_or_else(|| format!("Node {n}"));
+                let dev = Device { name, node_id: n, eds_file: self.selected_eds.clone(), bitrate_kbit: self.settings.bitrate_kbit, notes: String::new() };
+                self.dialog = Some(Dialog::Device { idx: None, dev, error: None });
+            }
         }
     }
 }

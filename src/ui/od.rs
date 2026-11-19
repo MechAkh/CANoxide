@@ -43,6 +43,10 @@ pub(crate) struct OdView {
     m_result: String,
     m_error: bool,
     m_data: Option<Vec<u8>>,
+    /// The width the table had last frame, and a reset of the column
+    /// widths for the next frame (the view got narrower than the columns).
+    table_avail: Option<f32>,
+    reset_cols: bool,
 }
 
 impl Default for OdView {
@@ -61,6 +65,8 @@ impl Default for OdView {
             m_result: String::new(),
             m_error: false,
             m_data: None,
+            table_avail: None,
+            reset_cols: false,
         }
     }
 }
@@ -447,140 +453,161 @@ impl App {
 
         let dis_c = theme::pal(ui).text_disabled;
         // Column widths from the width of the view (spec 8.2): the actions
-        // column has a fixed width and is always inside the view; Name
-        // takes the rest.
-        const ACTIONS: f32 = 64.0;
+        // column has a fixed width, measured from its two buttons (it
+        // follows the font and the button padding); Name takes the rest.
         let gap = ui.spacing().item_spacing.x;
-        let fixed = 76.0 + 30.0 + 48.0 + ACTIONS + gap * 9.0;
-        let rest = (ui.available_width() - fixed).max(420.0);
-        let w = |f: f32, min: f32| (rest * f).max(min);
-        TableBuilder::new(ui)
-            .id_salt("od_table")
-            .striped(zebra)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            // The user drags the column borders; the widths above are only
-            // the start values. Name takes what is left; the actions stay fixed.
-            .resizable(true)
-            .column(Column::initial(76.0).at_least(60.0).clip(true))
-            .column(Column::initial(30.0).at_least(26.0).clip(true))
-            .column(Column::remainder().at_least(80.0).clip(true))
-            .column(Column::initial(w(0.13, 56.0)).at_least(40.0).clip(true))
-            .column(Column::initial(48.0).at_least(36.0).clip(true))
-            .column(Column::initial(w(0.22, 70.0)).at_least(40.0).clip(true))
-            .column(Column::initial(w(0.13, 50.0)).at_least(40.0).clip(true))
-            .column(Column::initial(w(0.18, 64.0)).at_least(50.0).clip(true))
-            .column(Column::exact(ACTIONS).resizable(false))
-            .min_scrolled_height(0.0)
-            .header(row_h, |mut h| {
-                for t in ["Index", "Sub", "Name", "Type", "Access", "Value", "Default", "New value", ""] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, rows.len(), |mut row| {
-                    let r = rows[row.index()];
-                    match r {
-                        RowRef::Object(index) => {
-                            let o = &od.objects[&index];
-                            let open = self.od.expanded.contains(&index) || !f.is_empty();
-                            let sel = self.od.selected == Some(index);
-                            row.set_selected(sel);
-                            row.col(|ui| {
-                                let (arrow, name) = if open { (icon::CARET_DOWN, "Collapse") } else { (icon::CARET_RIGHT, "Expand") };
-                                let r = ui.add(egui::Button::new(arrow).frame(false).small());
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
-                                if r.clicked() {
-                                    toggle = Some(index);
-                                }
-                                if ui.selectable_label(sel, format!("{index:04X}")).clicked() {
-                                    select = Some(index);
-                                }
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{}", o.subs.len()));
-                            });
-                            row.col(|ui| {
-                                ui.add(egui::Label::new(egui::RichText::new(&o.name).strong()).truncate());
-                            });
-                            row.col(|ui| {
-                                ui.label(o.object_type.label());
-                            });
-                            row.col(|_| {});
-                            row.col(|_| {});
-                            row.col(|_| {});
-                            row.col(|_| {});
-                            row.col(|ui| {
-                                if theme::icon_button(ui, can_send, icon::DOWNLOAD_SIMPLE, "Read all", "Read all sub-objects from the device").clicked() {
-                                    read_all = Some(index);
-                                }
-                            });
-                        }
-                        RowRef::Entry(index, sub) => {
-                            let o = &od.objects[&index];
-                            let e = &o.subs[&sub];
-                            let is_var = o.is_var();
-                            row.set_selected(self.od.selected == Some(index));
-                            row.col(|ui| {
-                                if is_var {
-                                    if ui.selectable_label(self.od.selected == Some(index), format!("{index:04X}")).clicked() {
+        let actions = (theme::icon_button_width(ui, icon::DOWNLOAD_SIMPLE) + gap + theme::icon_button_width(ui, icon::UPLOAD_SIMPLE)).ceil() + 1.0;
+        let fixed = 76.0 + 30.0 + 48.0 + actions + gap * 9.0;
+        // When the columns need more than the view (a tab too narrow for the
+        // smallest widths, or columns the user made wider), the whole table
+        // scrolls sideways, so that the actions column is never the one cut
+        // off at the right edge. When the view gets narrower (window, dock
+        // split, UI scale) and the columns no longer fit, the column widths
+        // start again from the start values of the new width.
+        egui::ScrollArea::horizontal().id_salt("od_hscroll").auto_shrink([false, false]).show(ui, |ui| {
+            let (avail, right) = (ui.available_width(), ui.max_rect().right());
+            let bar = ui.spacing().scroll.allocated_width();
+            let narrower = self.od.table_avail.is_some_and(|a| avail < a - 0.5);
+            self.od.table_avail = Some(avail);
+            let reset = std::mem::take(&mut self.od.reset_cols);
+            let mut table_right = f32::NEG_INFINITY;
+            let rest = (avail - fixed).max(420.0);
+            let w = |f: f32, min: f32| (rest * f).max(min);
+            let tb = TableBuilder::new(ui).id_salt("od_table");
+            if reset {
+                tb.reset();
+            }
+            tb.striped(zebra)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                // The user drags the column borders; the widths above are only
+                // the start values. Name takes what is left; the actions stay fixed.
+                .resizable(true)
+                .column(Column::initial(76.0).at_least(60.0).clip(true))
+                .column(Column::initial(30.0).at_least(26.0).clip(true))
+                .column(Column::remainder().at_least(80.0).clip(true))
+                .column(Column::initial(w(0.13, 56.0)).at_least(40.0).clip(true))
+                .column(Column::initial(48.0).at_least(36.0).clip(true))
+                .column(Column::initial(w(0.22, 70.0)).at_least(40.0).clip(true))
+                .column(Column::initial(w(0.13, 50.0)).at_least(40.0).clip(true))
+                .column(Column::initial(w(0.18, 64.0)).at_least(50.0).clip(true))
+                .column(Column::exact(actions).resizable(false))
+                .min_scrolled_height(0.0)
+                .header(row_h, |mut h| {
+                    for t in ["Index", "Sub", "Name", "Type", "Access", "Value", "Default", "New value", ""] {
+                        let (r, _) = h.col(|ui| {
+                            ui.strong(t);
+                        });
+                        table_right = table_right.max(r.right());
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_h, rows.len(), |mut row| {
+                        let r = rows[row.index()];
+                        match r {
+                            RowRef::Object(index) => {
+                                let o = &od.objects[&index];
+                                let open = self.od.expanded.contains(&index) || !f.is_empty();
+                                let sel = self.od.selected == Some(index);
+                                row.set_selected(sel);
+                                row.col(|ui| {
+                                    let (arrow, name) = if open { (icon::CARET_DOWN, "Collapse") } else { (icon::CARET_RIGHT, "Expand") };
+                                    let r = ui.add(egui::Button::new(arrow).frame(false).small());
+                                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+                                    if r.clicked() {
+                                        toggle = Some(index);
+                                    }
+                                    if ui.selectable_label(sel, format!("{index:04X}")).clicked() {
                                         select = Some(index);
                                     }
-                                } else {
-                                    ui.weak(format!("{index:04X}"));
-                                }
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{sub:02X}"));
-                            });
-                            row.col(|ui| {
-                                let name = if is_var { o.name.as_str() } else { e.name.as_str() };
-                                ui.add(egui::Label::new(name).truncate()).on_hover_text(name);
-                            });
-                            row.col(|ui| {
-                                ui.add(egui::Label::new(type_name(e.data_type)).truncate());
-                            });
-                            row.col(|ui| {
-                                ui.label(e.access.label());
-                            });
-                            row.col(|ui| match self.od.values.get(&(index, sub)) {
-                                Some(RowValue::Value(b)) => {
-                                    let t = format_value(e.dtype(), b, mode);
-                                    ui.add(egui::Label::new(egui::RichText::new(&t).monospace()).truncate()).on_hover_text(t);
-                                }
-                                Some(RowValue::Error(t)) => {
-                                    ui.add(egui::Label::new(egui::RichText::new(t).color(err_c)).truncate()).on_hover_text(t);
-                                }
-                                Some(RowValue::Busy) => {
-                                    ui.weak("...");
-                                }
-                                None => {
-                                    ui.label(egui::RichText::new("\u{2014}").color(dis_c)).on_hover_text("not read yet");
-                                }
-                            });
-                            row.col(|ui| {
-                                let d = e.effective_text().unwrap_or("");
-                                ui.add(egui::Label::new(d).truncate()).on_hover_text(d);
-                            });
-                            row.col(|ui| {
-                                if e.access.writable() {
-                                    let buf = self.od.edits.entry((index, sub)).or_default();
-                                    ui.add(egui::TextEdit::singleline(buf).desired_width(f32::INFINITY).hint_text("dec / 0x hex"));
-                                }
-                            });
-                            row.col(|ui| {
-                                if theme::icon_button(ui, can_send && e.access.readable(), icon::DOWNLOAD_SIMPLE, "Read", "Read from the device").clicked() {
-                                    reads.push((index, sub));
-                                }
-                                if theme::icon_button(ui, can_send && e.access.writable(), icon::UPLOAD_SIMPLE, "Write", "Write the new value to the device").clicked() {
-                                    writes.push((index, sub));
-                                }
-                            });
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{}", o.subs.len()));
+                                });
+                                row.col(|ui| {
+                                    ui.add(egui::Label::new(egui::RichText::new(&o.name).strong()).truncate());
+                                });
+                                row.col(|ui| {
+                                    ui.label(o.object_type.label());
+                                });
+                                row.col(|_| {});
+                                row.col(|_| {});
+                                row.col(|_| {});
+                                row.col(|_| {});
+                                row.col(|ui| {
+                                    if theme::icon_button(ui, can_send, icon::DOWNLOAD_SIMPLE, "Read all", "Read all sub-objects from the device").clicked() {
+                                        read_all = Some(index);
+                                    }
+                                });
+                            }
+                            RowRef::Entry(index, sub) => {
+                                let o = &od.objects[&index];
+                                let e = &o.subs[&sub];
+                                let is_var = o.is_var();
+                                row.set_selected(self.od.selected == Some(index));
+                                row.col(|ui| {
+                                    if is_var {
+                                        if ui.selectable_label(self.od.selected == Some(index), format!("{index:04X}")).clicked() {
+                                            select = Some(index);
+                                        }
+                                    } else {
+                                        ui.weak(format!("{index:04X}"));
+                                    }
+                                });
+                                row.col(|ui| {
+                                    ui.label(format!("{sub:02X}"));
+                                });
+                                row.col(|ui| {
+                                    let name = if is_var { o.name.as_str() } else { e.name.as_str() };
+                                    ui.add(egui::Label::new(name).truncate()).on_hover_text(name);
+                                });
+                                row.col(|ui| {
+                                    ui.add(egui::Label::new(type_name(e.data_type)).truncate());
+                                });
+                                row.col(|ui| {
+                                    ui.label(e.access.label());
+                                });
+                                row.col(|ui| match self.od.values.get(&(index, sub)) {
+                                    Some(RowValue::Value(b)) => {
+                                        let t = format_value(e.dtype(), b, mode);
+                                        ui.add(egui::Label::new(egui::RichText::new(&t).monospace()).truncate()).on_hover_text(t);
+                                    }
+                                    Some(RowValue::Error(t)) => {
+                                        ui.add(egui::Label::new(egui::RichText::new(t).color(err_c)).truncate()).on_hover_text(t);
+                                    }
+                                    Some(RowValue::Busy) => {
+                                        ui.weak("...");
+                                    }
+                                    None => {
+                                        ui.label(egui::RichText::new("\u{2014}").color(dis_c)).on_hover_text("not read yet");
+                                    }
+                                });
+                                row.col(|ui| {
+                                    let d = e.effective_text().unwrap_or("");
+                                    ui.add(egui::Label::new(d).truncate()).on_hover_text(d);
+                                });
+                                row.col(|ui| {
+                                    if e.access.writable() {
+                                        let buf = self.od.edits.entry((index, sub)).or_default();
+                                        ui.add(egui::TextEdit::singleline(buf).desired_width(f32::INFINITY).hint_text("dec / 0x hex"));
+                                    }
+                                });
+                                row.col(|ui| {
+                                    if theme::icon_button(ui, can_send && e.access.readable(), icon::DOWNLOAD_SIMPLE, "Read", "Read from the device").clicked() {
+                                        reads.push((index, sub));
+                                    }
+                                    if theme::icon_button(ui, can_send && e.access.writable(), icon::UPLOAD_SIMPLE, "Write", "Write the new value to the device").clicked() {
+                                        writes.push((index, sub));
+                                    }
+                                });
+                            }
                         }
-                    }
+                    });
                 });
-            });
+            if narrower && table_right > right - bar + 0.5 {
+                self.od.reset_cols = true;
+                ui.ctx().request_repaint();
+            }
+        });
 
         if let Some(i) = toggle {
             if !self.od.expanded.remove(&i) {

@@ -1,6 +1,6 @@
 //! CAN frame model and the adapter trait. Classic CAN only (no CAN FD).
 
-// The PCAN FFI module is the only place with `unsafe` code.
+// `unsafe` code is only in the PCAN FFI module and in the Win32 queries of ui::diag.
 #[allow(unsafe_code)]
 pub mod pcan;
 pub mod sim;
