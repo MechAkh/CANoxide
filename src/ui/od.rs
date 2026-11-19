@@ -458,15 +458,18 @@ impl App {
             .id_salt("od_table")
             .striped(zebra)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(76.0))
-            .column(Column::exact(30.0))
+            // The user drags the column borders; the widths above are only
+            // the start values. Name takes what is left; the actions stay fixed.
+            .resizable(true)
+            .column(Column::initial(76.0).at_least(60.0).clip(true))
+            .column(Column::initial(30.0).at_least(26.0).clip(true))
             .column(Column::remainder().at_least(80.0).clip(true))
-            .column(Column::exact(w(0.13, 56.0)).clip(true))
-            .column(Column::exact(48.0))
-            .column(Column::exact(w(0.22, 70.0)).clip(true))
-            .column(Column::exact(w(0.13, 50.0)).clip(true))
-            .column(Column::exact(w(0.18, 64.0)).clip(true))
-            .column(Column::exact(ACTIONS))
+            .column(Column::initial(w(0.13, 56.0)).at_least(40.0).clip(true))
+            .column(Column::initial(48.0).at_least(36.0).clip(true))
+            .column(Column::initial(w(0.22, 70.0)).at_least(40.0).clip(true))
+            .column(Column::initial(w(0.13, 50.0)).at_least(40.0).clip(true))
+            .column(Column::initial(w(0.18, 64.0)).at_least(50.0).clip(true))
+            .column(Column::exact(ACTIONS).resizable(false))
             .min_scrolled_height(0.0)
             .header(row_h, |mut h| {
                 for t in ["Index", "Sub", "Name", "Type", "Access", "Value", "Default", "New value", ""] {

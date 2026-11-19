@@ -1,7 +1,7 @@
 ; CANoxide setup script for Inno Setup 6.7.3.
 ;
 ; Build with installer\build.ps1, or directly:
-;   ISCC.exe /DAppVersion=0.3.0 [/DExeDir=..\target\release] installer\CANoxide.iss
+;   ISCC.exe /DAppVersion=0.3.1 [/DExeDir=..\target\release] installer\CANoxide.iss
 ;
 ; All source paths are relative to this script. The setup exe goes to
 ; ..\target\installer\CANoxide-<version>-setup.exe.

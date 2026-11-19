@@ -182,6 +182,8 @@ fn age_text(age_us: u64) -> String {
 }
 
 enum DetailAction {
+    /// Close the detail pane (deselect the row).
+    Close,
     ResetRow,
     AddToGraph(u32, u32),
     Define(u32, u32),
@@ -390,10 +392,9 @@ impl App {
                 });
             });
         if let Some(k) = clicked {
-            if self.msgv.selected != Some(k) {
-                self.msgv.bit_sel = None;
-            }
-            self.msgv.selected = Some(k);
+            // A click on the selected row closes the detail pane.
+            self.msgv.bit_sel = None;
+            self.msgv.selected = if self.msgv.selected == Some(k) { None } else { Some(k) };
         }
         // Repaint only while a tint fades (frames repaint on their own).
         if fading {
@@ -461,6 +462,9 @@ impl App {
         let usr: Vec<(usize, Vec<u32>, egui::Color32)> = self.an.usigs.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended)).map(|(i, s)| (i, s.bit_list(), analysis_view::colour32(s.colour))).collect();
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
+            if ui.add(egui::Button::new(icon::X).frame(false)).on_hover_text("Close the bit view (also: click the selected row again)").clicked() {
+                action = Some(DetailAction::Close);
+            }
             let node = e.node.map(|n| format!(" node {n}")).unwrap_or_default();
             ui.strong(format!("{} {}{node}", key_text(key), e.label));
             ui.label(egui::RichText::new(format!("{} frames, {} compared", e.count, e.compared)).color(p.text_secondary));
@@ -656,6 +660,10 @@ impl App {
         self.history_section(ui, key, cols);
         let be = self.msgv.sel_be;
         match action {
+            Some(DetailAction::Close) => {
+                self.msgv.selected = None;
+                self.msgv.bit_sel = None;
+            }
             Some(DetailAction::ResetRow) => self.msgs.reset_id(key),
             Some(DetailAction::AddToGraph(start_bit, bits)) => {
                 let source = SignalSource::Raw { cob_id: key.id, extended: key.extended, start_bit, bits, raw_kind: RawKind::Unsigned, big_endian: be };
