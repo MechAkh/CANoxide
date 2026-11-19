@@ -102,10 +102,81 @@ pub struct Settings {
     pub default_data_view: DataView,
     /// Consecutive missing PDOs that end the PDO read of one direction.
     pub pdo_scan_stop: u16,
-    /// Ask before an SDO write, a PDO apply or a DCF restore.
+    /// Ask before an SDO write (object dictionary, manual SDO, from file).
     pub confirm_before_write: bool,
     /// LSS answer timeout.
     pub lss_timeout_ms: u64,
+    // ---- v0.2 UI ----
+    /// Body text size offset in points, -2..4 (body 14 + offset).
+    pub font_offset: i8,
+    pub row_density: RowDensity,
+    /// Alternate row background in tables.
+    pub zebra: bool,
+    /// Chips and pills outlined instead of filled.
+    pub reduce_colour: bool,
+    /// Connect with the saved adapter when the app starts (opens the
+    /// channel only; nothing is sent).
+    pub connect_on_start: bool,
+    /// Transfer mode of the object dictionary view.
+    pub sdo_transfer_mode: crate::canopen::sdo::TransferMode,
+    /// Default switch delay of "Activate bit rate".
+    pub lss_switch_delay_ms: u16,
+    /// Trace time stamps in microseconds (false: milliseconds).
+    pub timestamp_us: bool,
+    pub trace_colour: TraceColour,
+    /// New trace tabs start with auto-scroll on.
+    pub trace_autoscroll: bool,
+    /// Graph time window in seconds.
+    pub graph_window_s: f32,
+    pub graph_line_width: f32,
+    pub graph_cursor_readout: bool,
+    /// Ask before NMT to all nodes and "set heartbeat of all nodes".
+    pub confirm_nmt_all: bool,
+    /// Ask before a PDO apply / enable / disable.
+    pub confirm_pdo_apply: bool,
+    /// Ask before an LSS node-ID or bit rate change or Activate bit rate.
+    pub confirm_lss: bool,
+    /// Ask before a DCF restore (not before a dry run).
+    pub confirm_dcf_restore: bool,
+}
+
+/// Table row height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RowDensity {
+    /// 22 px rows.
+    #[default]
+    Compact,
+    /// 28 px rows.
+    Comfortable,
+}
+
+impl RowDensity {
+    pub fn row_height(self) -> f32 {
+        match self {
+            RowDensity::Compact => 22.0,
+            RowDensity::Comfortable => 28.0,
+        }
+    }
+}
+
+/// How the trace colours message types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TraceColour {
+    Off,
+    #[default]
+    Chips,
+    ChipsAndTint,
+}
+
+impl TraceColour {
+    pub const ALL: [TraceColour; 3] = [TraceColour::Off, TraceColour::Chips, TraceColour::ChipsAndTint];
+    pub fn label(self) -> &'static str {
+        match self {
+            TraceColour::Off => "Off",
+            TraceColour::Chips => "Chips",
+            TraceColour::ChipsAndTint => "Chips + row tint",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -135,6 +206,23 @@ impl Default for Settings {
             pdo_scan_stop: crate::canopen::pdo::DEFAULT_PDO_SCAN_STOP,
             confirm_before_write: true,
             lss_timeout_ms: crate::canopen::lss::DEFAULT_LSS_TIMEOUT_MS,
+            font_offset: 0,
+            row_density: RowDensity::Compact,
+            zebra: true,
+            reduce_colour: false,
+            connect_on_start: false,
+            sdo_transfer_mode: crate::canopen::sdo::TransferMode::Auto,
+            lss_switch_delay_ms: 100,
+            timestamp_us: true,
+            trace_colour: TraceColour::Chips,
+            trace_autoscroll: true,
+            graph_window_s: 10.0,
+            graph_line_width: 1.5,
+            graph_cursor_readout: true,
+            confirm_nmt_all: true,
+            confirm_pdo_apply: true,
+            confirm_lss: true,
+            confirm_dcf_restore: true,
         }
     }
 }
@@ -180,5 +268,12 @@ impl Settings {
         self.signal_capacity = self.signal_capacity.clamp(100, 1_000_000);
         self.pdo_scan_stop = self.pdo_scan_stop.clamp(1, crate::canopen::pdo::MAX_PDOS);
         self.lss_timeout_ms = self.lss_timeout_ms.clamp(10, 5_000);
+        self.font_offset = self.font_offset.clamp(-2, 4);
+        if !(1.0..=3600.0).contains(&self.graph_window_s) {
+            self.graph_window_s = 10.0;
+        }
+        if !(0.5..=5.0).contains(&self.graph_line_width) {
+            self.graph_line_width = 1.5;
+        }
     }
 }

@@ -237,3 +237,33 @@ fn listen_only_refuses_the_v02_senders() {
     assert_eq!((errors, tx, done), (6, 0, 3));
     assert!(!bus.shared.lock().unwrap().signal_polling);
 }
+
+
+#[test]
+fn shared_state_shows_the_progress_of_a_long_sdo_transfer() {
+    use canoxide::can::sim::{LARGE_OBJECT, LARGE_OBJECT_SIZE};
+    use canoxide::canopen::sdo::{SdoRequest, StartOptions, TransferMode};
+    let bus = connect(false);
+    bus.send(BusCommand::SdoOpts { tag: 9, node: NODE, req: SdoRequest::Upload { index: LARGE_OBJECT, sub: 0 }, opts: StartOptions::mode(TransferMode::Segmented) });
+    let mut seen = None;
+    let mut len = None;
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end && len.is_none() {
+        if let Some(p) = bus.shared.lock().unwrap().sdo_progress {
+            seen = Some(p);
+        }
+        while let Some(e) = bus.try_recv() {
+            if let BusEvent::SdoDone { tag: 9, outcome } = e {
+                len = Some(outcome.result.map(|d| d.len()));
+            }
+        }
+        // (A sleep of 1 ms is about 15 ms on Windows: too coarse to see
+        // a short transfer every time.)
+        std::thread::yield_now();
+    }
+    assert_eq!(len, Some(Ok(LARGE_OBJECT_SIZE)));
+    let (node, index, sub, _) = seen.expect("progress seen during the transfer");
+    assert_eq!((node, index, sub), (NODE, LARGE_OBJECT, 0));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(bus.shared.lock().unwrap().sdo_progress.is_none());
+}

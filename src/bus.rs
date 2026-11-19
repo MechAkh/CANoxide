@@ -156,6 +156,8 @@ pub struct Shared {
     pub signal_polling: bool,
     /// Path and rows of the running trace log.
     pub log: Option<(PathBuf, u64)>,
+    /// (node, index, sub, progress) of the running SDO transfer.
+    pub sdo_progress: Option<(u8, u16, u8, crate::canopen::sdo::SdoProgress)>,
 }
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -241,6 +243,8 @@ struct Worker {
     listen_only: bool,
     t0: Instant,
     sdo: SdoClient,
+    /// (index, sub) of the last started transfer, for `Shared::sdo_progress`.
+    sdo_current: Option<(u16, u8)>,
     jobs: VecDeque<Job>,
     running: Running,
     scan: Option<Scan>,
@@ -273,6 +277,7 @@ impl Worker {
             listen_only: false,
             t0: Instant::now(),
             sdo: SdoClient::default(),
+            sdo_current: None,
             jobs: VecDeque::new(),
             running: Running::None,
             scan: None,
@@ -816,6 +821,7 @@ impl Worker {
         match self.sdo.start_opts(node, req, now, opts) {
             Ok(f) => {
                 self.running = running;
+                self.sdo_current = Some((index, sub));
                 if !self.transmit(f) {
                     let out = self.sdo.cancel();
                     self.handle_sdo_output(SdoOutput { tx: None, burst: Vec::new(), done: out.done });
@@ -969,6 +975,10 @@ impl Worker {
             }
             s.now_us = now_us;
             s.sdo_queue = self.jobs.len() + self.sdo.is_busy() as usize;
+            s.sdo_progress = match (self.sdo.node(), self.sdo.progress(), self.sdo_current) {
+                (Some(n), Some(p), Some((i, sub))) => Some((n, i, sub, p)),
+                _ => None,
+            };
             s.bus_load = self.load.stats();
             if let (Some(l), Some(v)) = (self.log.as_ref(), s.log.as_mut()) {
                 v.1 = l.rows();
