@@ -281,6 +281,13 @@ impl TraceStore {
         self.by_seq(seq)
     }
 
+    /// Index of the first row of a view whose sequence number is `seq` or
+    /// later (the view length when there is none). A scrolled view keeps its
+    /// place with it while the ring drops old rows.
+    pub fn view_index_of_seq(&self, id: ViewId, seq: u64) -> usize {
+        self.view(id).map_or(0, |v| v.filtered.partition_point(|&s| s < seq))
+    }
+
     /// Rows of the fixed view that match the filter of view `id`, sorted by
     /// COB-ID.
     pub fn fixed_rows_of(&self, id: ViewId) -> Vec<&FixedRow> {

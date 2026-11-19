@@ -23,6 +23,71 @@ pub(crate) struct TraceView {
     id_max_text: String,
     /// Frames received when the view was paused.
     paused_at: u64,
+    /// Top row while auto-scroll is off: its sequence number and the pixels
+    /// scrolled into it. The view keeps this row in place while new frames
+    /// arrive and while the ring drops old ones.
+    anchor: Option<(u64, f32)>,
+    /// Height and rect of the table body in the last frame.
+    body_h: f32,
+    body_rect: Option<egui::Rect>,
+}
+
+/// A key that scrolls the trace table (the pointer is over the table and no
+/// widget has the keyboard focus).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScrollKey {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+/// The auto-scroll state after one frame of the table. `requested` is the
+/// offset the view asked for, `offset` the one egui ended the frame with,
+/// `max` the largest offset. When the offset moved by itself the user
+/// scrolled (wheel, scroll bar, drag): auto-scroll is on when that left the
+/// view at the end, off otherwise. Otherwise the state stays as it was.
+pub(crate) fn stick_after(autoscroll: bool, requested: f32, offset: f32, max: f32) -> bool {
+    let max = max.max(0.0);
+    if (offset - requested.clamp(0.0, max)).abs() <= 0.5 {
+        return autoscroll;
+    }
+    offset >= max - 0.5
+}
+
+/// The offset and auto-scroll state after a scroll key. Up keys switch
+/// auto-scroll off; down keys switch it on when they reach the end.
+pub(crate) fn key_scroll(key: ScrollKey, offset: f32, row: f32, page: f32, max: f32) -> (f32, bool) {
+    let max = max.max(0.0);
+    let o = match key {
+        ScrollKey::Up => offset - row,
+        ScrollKey::Down => offset + row,
+        ScrollKey::PageUp => offset - page,
+        ScrollKey::PageDown => offset + page,
+        ScrollKey::Home => 0.0,
+        ScrollKey::End => max,
+    }
+    .clamp(0.0, max);
+    let down = matches!(key, ScrollKey::Down | ScrollKey::PageDown | ScrollKey::End);
+    (o, down && o >= max - 0.5)
+}
+
+/// The scroll key pressed this frame, if the pointer is over `rect` and no
+/// widget has the keyboard focus.
+fn pressed_scroll_key(ui: &egui::Ui, rect: Option<egui::Rect>) -> Option<ScrollKey> {
+    let rect = rect?;
+    if !ui.ctx().pointer_hover_pos().is_some_and(|p| rect.contains(p)) || ui.memory(|m| m.focused().is_some()) {
+        return None;
+    }
+    use egui::Key;
+    ui.input(|i| {
+        [(Key::ArrowUp, ScrollKey::Up), (Key::ArrowDown, ScrollKey::Down), (Key::PageUp, ScrollKey::PageUp), (Key::PageDown, ScrollKey::PageDown), (Key::Home, ScrollKey::Home), (Key::End, ScrollKey::End)]
+            .into_iter()
+            .find(|(k, _)| i.key_pressed(*k))
+            .map(|(_, s)| s)
+    })
 }
 
 impl TraceView {
@@ -38,6 +103,9 @@ impl TraceView {
             id_min_text: String::new(),
             id_max_text: String::new(),
             paused_at: 0,
+            anchor: None,
+            body_h: 0.0,
+            body_rect: None,
         }
     }
 }
@@ -269,6 +337,12 @@ impl App {
         }
     }
 
+    /// Auto-scroll state of trace tab `n` (tests).
+    #[cfg(test)]
+    pub(crate) fn trace_autoscroll(&self, n: u8) -> bool {
+        self.traces.get(&n).is_some_and(|t| t.autoscroll)
+    }
+
     /// Save the rows of trace tab `n` as CSV (file dialog).
     pub(crate) fn save_trace_csv(&mut self, n: u8) {
         let (view, mode) = self.traces.get(&n).map(|t| (t.view, t.mode)).unwrap_or((0, self.settings.trace_display));
@@ -288,7 +362,7 @@ impl App {
         }
     }
 
-    fn chrono_table(&mut self, ui: &mut egui::Ui, tv: &TraceView, look: Look) {
+    fn chrono_table(&mut self, ui: &mut egui::Ui, tv: &mut TraceView, look: Look) {
         let delta = tv.delta;
         let view = tv.view;
         let n = self.trace.view_len_of(view);
@@ -296,11 +370,28 @@ impl App {
         let us = self.settings.timestamp_us;
         let trace = &self.trace;
         let p = look.p;
-        TableBuilder::new(ui)
+        // The offset this frame (spec: each tab scrolls on its own). With
+        // auto-scroll: the end. Without: the anchor row stays on top.
+        let rhs = row_h + ui.spacing().item_spacing.y;
+        if tv.body_h <= 0.0 {
+            tv.body_h = (ui.available_height() - row_h).max(rhs);
+        }
+        let bottom = (n as f32 * rhs - tv.body_h).max(0.0);
+        let mut requested = match (tv.autoscroll, tv.anchor) {
+            (false, Some((seq, frac))) => trace.view_index_of_seq(view, seq) as f32 * rhs + frac,
+            _ => bottom,
+        };
+        if let Some(k) = pressed_scroll_key(ui, tv.body_rect) {
+            let (o, stick) = key_scroll(k, requested.min(bottom), rhs, (tv.body_h - rhs).max(rhs), bottom);
+            requested = o;
+            tv.autoscroll = stick;
+        }
+        let out = TableBuilder::new(ui)
             .id_salt(("trace_chrono", view))
             .striped(self.settings.zebra)
             .resizable(true)
             .stick_to_bottom(tv.autoscroll)
+            .vertical_scroll_offset(requested)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::initial(100.0).at_least(60.0))
             .column(Column::initial(30.0).at_least(24.0))
@@ -346,6 +437,17 @@ impl App {
                     common_cols(&mut row, e, look);
                 });
             });
+        let max = out.content_size.y - out.inner_rect.height();
+        let offset = out.state.offset.y;
+        tv.body_h = out.inner_rect.height();
+        tv.body_rect = Some(out.inner_rect);
+        tv.autoscroll = stick_after(tv.autoscroll, requested, offset, max);
+        tv.anchor = if tv.autoscroll {
+            None
+        } else {
+            let i = (offset / rhs).floor().max(0.0) as usize;
+            trace.view_row_of(view, i).map(|e| (e.seq, offset - i as f32 * rhs))
+        };
     }
 
     fn fixed_table(&mut self, ui: &mut egui::Ui, tv: &TraceView, look: Look) {
@@ -394,5 +496,50 @@ impl App {
                     common_cols(&mut row, &r.last, look);
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stick_after_keeps_the_state_without_user_scroll() {
+        // Requested the end, egui stayed there (also when it clamped).
+        assert!(stick_after(true, 500.0, 500.0, 500.0));
+        assert!(stick_after(true, 520.0, 500.0, 500.0));
+        // Auto-scroll off, the anchor offset was kept: still off.
+        assert!(!stick_after(false, 200.0, 200.0, 500.0));
+        // Off and the anchor is at the end by chance: stays off.
+        assert!(!stick_after(false, 500.0, 500.0, 500.0));
+        // Content shorter than the view.
+        assert!(stick_after(true, 0.0, 0.0, -30.0));
+        assert!(!stick_after(false, 0.0, 0.0, -30.0));
+    }
+
+    #[test]
+    fn stick_after_follows_the_user() {
+        // Wheel or scroll bar up: off.
+        assert!(!stick_after(true, 500.0, 380.0, 500.0));
+        // Stick forced the exact end a little below the estimate: still on.
+        assert!(stick_after(true, 496.0, 500.0, 500.0));
+        // Scrolled back down to the end: on again.
+        assert!(stick_after(false, 300.0, 500.0, 500.0));
+        // Scrolled, not to the end: off.
+        assert!(!stick_after(false, 300.0, 340.0, 500.0));
+    }
+
+    #[test]
+    fn key_scroll_moves_and_sets_the_state() {
+        let (row, page, max) = (26.0, 260.0, 1000.0);
+        assert_eq!(key_scroll(ScrollKey::Up, 1000.0, row, page, max), (974.0, false));
+        assert_eq!(key_scroll(ScrollKey::PageUp, 100.0, row, page, max), (0.0, false));
+        assert_eq!(key_scroll(ScrollKey::Home, 600.0, row, page, max), (0.0, false));
+        assert_eq!(key_scroll(ScrollKey::Down, 500.0, row, page, max), (526.0, false));
+        assert_eq!(key_scroll(ScrollKey::PageDown, 900.0, row, page, max), (1000.0, true));
+        assert_eq!(key_scroll(ScrollKey::End, 0.0, row, page, max), (1000.0, true));
+        // Nothing to scroll: End still means auto-scroll.
+        assert_eq!(key_scroll(ScrollKey::End, 0.0, row, page, -5.0), (0.0, true));
+        assert_eq!(key_scroll(ScrollKey::Up, 0.0, row, page, -5.0), (0.0, false));
     }
 }

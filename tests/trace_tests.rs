@@ -93,3 +93,21 @@ fn continuous_log_file_content() {
     assert_eq!(log.stop().unwrap(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn view_index_of_seq_follows_dropped_rows() {
+    let mut t = TraceStore::new(5);
+    for i in 0..5u64 {
+        push(&mut t, 0x181, &[i as u8], i);
+    }
+    // Row 2 has sequence number 2.
+    assert_eq!(t.view_index_of_seq(0, 2), 2);
+    // Two more frames drop the two oldest: the same frame is now row 0.
+    push(&mut t, 0x181, &[5], 5);
+    push(&mut t, 0x181, &[6], 6);
+    assert_eq!(t.view_index_of_seq(0, 2), 0);
+    assert_eq!(t.view_row_of(0, 0).unwrap().seq, 2);
+    // A dropped sequence number gives the oldest row; a future one the end.
+    assert_eq!(t.view_index_of_seq(0, 0), 0);
+    assert_eq!(t.view_index_of_seq(0, 99), t.view_len());
+}
