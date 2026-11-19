@@ -454,3 +454,50 @@ fn cli_pcan_without_driver_is_adapter_error() {
     }
     fails(&["--adapter", "pcan", "sdo", "read", "0x1000"], 3, "adapter");
 }
+
+#[test]
+fn cli_replay_of_a_log_file() {
+    let dir = temp("replay");
+    // A made-up candump log: a heartbeat, TPDO2 of node 1 twice, an SDO.
+    let log = dir.join("bus.log");
+    std::fs::write(
+        &log,
+        "(1700000000.000000) can0 701#05\n\
+         (1700000000.010000) can0 281#05009CFFFFFF\n\
+         (1700000000.020000) can0 581#4B171000E8030000\n\
+         (1700000000.030000) can0 281#0600F6FFFFFF\n\
+         bad line\n",
+    )
+    .unwrap();
+    let l = log.to_str().unwrap();
+    let r = run(&["--adapter", "replay", "--file", l, "monitor"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let v = r.lines();
+    assert_eq!(v.len(), 5, "{}", r.out);
+    assert_eq!(v[1]["t"], 0.01);
+    assert_eq!(v[1]["id"], "0x281");
+    assert_eq!(v[1]["data"], "05 00 9C FF FF FF");
+    assert_eq!(v[4]["frames"], 4);
+    // --duration counts log time; --count stops early.
+    let r = run(&["--adapter", "replay", "--file", l, "monitor", "--duration", "0.015"]);
+    assert_eq!(r.json()["frames"], 2, "{}", r.out);
+    let r = run(&["--adapter", "replay", "--file", l, "--speed", "1", "monitor", "--count", "1", "--class", "tpdo"]);
+    assert_eq!(r.json()["frames"], 1, "{}", r.out);
+    // watch pdo: with the mapping of the EDS.
+    let eds = dir.join("dev.eds");
+    std::fs::write(&eds, canoxide::can::sim::BUILTIN_EDS).unwrap();
+    let r = run(&["--adapter", "replay", "--file", l, "--eds", eds.to_str().unwrap(), "watch", "pdo:0x2001:0"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let v = r.lines();
+    assert_eq!((v[0]["value"].clone(), v[1]["value"].clone()), (serde_json::json!(5), serde_json::json!(6)), "{}", r.out);
+    assert_eq!(v[2]["samples"], 2);
+    // Nothing is sent: commands that need a live bus are refused.
+    fails(&["--adapter", "replay", "--file", l, "sdo", "read", "0x1000"], 2, "usage");
+    fails(&["--adapter", "replay", "--file", l, "nmt", "start"], 2, "usage");
+    fails(&["--adapter", "replay", "--file", l, "watch", "0x2001:0"], 2, "usage");
+    fails(&["--adapter", "replay", "--file", l, "watch", "pdo:0x2001:0"], 2, "usage");
+    fails(&["--adapter", "replay", "monitor"], 2, "usage");
+    fails(&["--file", l, "monitor", "--count", "1"], 2, "usage");
+    fails(&["--adapter", "replay", "--file", dir.join("missing.log").to_str().unwrap(), "monitor"], 2, "file");
+    let _ = std::fs::remove_dir_all(dir);
+}

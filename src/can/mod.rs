@@ -168,4 +168,13 @@ pub trait CanAdapter: Send {
     fn as_sim(&mut self) -> Option<&mut sim::SimAdapter> {
         None
     }
+    /// The adapter sets the frame time stamps itself (a log replay); the
+    /// driver keeps them instead of its own clock.
+    fn keeps_timestamps(&self) -> bool {
+        false
+    }
+    /// No frame will come any more (the end of a log).
+    fn finished(&self) -> bool {
+        false
+    }
 }

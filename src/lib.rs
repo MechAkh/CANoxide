@@ -5,7 +5,8 @@
 //! block transfer, NMT, PDO read/write, LSS, tasks), `dcf` (save, compare,
 //! restore), `netinfo` (network overview), `signals` (graph data),
 //! `busload`, `txlist` (transmit list), `trace` (store, views, logging),
-//! `msgstats` (per-COB-ID statistics of the Messages view),
+//! `msgstats` (per-COB-ID statistics of the Messages view), `replay` (log
+//! parsers, replay clock, seek rebuild),
 //! `session` (blocking driver for the CLI and tests), `library`,
 //! `settings`, `bus` (worker thread).
 
@@ -24,6 +25,7 @@ pub mod eds;
 pub mod library;
 pub mod msgstats;
 pub mod netinfo;
+pub mod replay;
 pub mod session;
 pub mod settings;
 pub mod signals;

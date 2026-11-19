@@ -765,8 +765,9 @@ fn class_name(c: MsgClass) -> &'static str {
     }
 }
 
-/// --duration and --count of monitor and watch; one is required.
-fn bounds(a: &Args) -> Result<(Option<Duration>, Option<u64>), CliError> {
+/// --duration and --count of monitor and watch; one is required, except
+/// for a replay (a log file ends by itself).
+fn bounds(a: &Args, replay: bool) -> Result<(Option<Duration>, Option<u64>), CliError> {
     let d = match a.get("duration") {
         Some(s) => match s.trim().parse::<f64>() {
             Ok(x) if x > 0.0 && x <= 86_400.0 => Some(Duration::from_secs_f64(x)),
@@ -778,7 +779,7 @@ fn bounds(a: &Args) -> Result<(Option<Duration>, Option<u64>), CliError> {
     if c == Some(0) {
         return Err(CliError::usage("--count must be at least 1"));
     }
-    if d.is_none() && c.is_none() {
+    if d.is_none() && c.is_none() && !replay {
         return Err(CliError::usage("give --duration <s> or --count <n> (the command must be bounded)"));
     }
     Ok((d, c))
@@ -795,7 +796,8 @@ fn line(out: &mut dyn Write, v: &Value, text: Option<String>) {
 
 fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdResult {
     max_args(pos, 0)?;
-    let (dur, count) = bounds(a)?;
+    let replay = ctx.is_replay();
+    let (dur, count) = bounds(a, replay)?;
     let node_f = a.get("filter-node").map(|s| parse_node(s, "--filter-node")).transpose()?;
     let classes: Option<Vec<String>> = a.get("class").map(|s| s.split(',').map(|c| c.trim().to_ascii_lowercase()).collect());
     if let Some(cs) = &classes {
@@ -822,10 +824,19 @@ fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdR
     let t0 = Instant::now();
     let mut n = 0u64;
     loop {
-        if dur.is_some_and(|d| t0.elapsed() >= d) || count.is_some_and(|c| n >= c) {
+        // A replay counts --duration in log time.
+        if (!replay && dur.is_some_and(|d| t0.elapsed() >= d)) || count.is_some_and(|c| n >= c) {
             break;
         }
-        let Some(f) = s.receive(Duration::from_millis(2)).map_err(sess_err)? else { continue };
+        let Some(f) = s.receive(Duration::from_millis(2)).map_err(sess_err)? else {
+            if s.finished() {
+                break;
+            }
+            continue;
+        };
+        if replay && dur.is_some_and(|d| f.timestamp_us as u128 > d.as_micros()) {
+            break;
+        }
         let d = tracker.decode(&f, &dctx);
         if node_f.is_some_and(|x| d.node != Some(x)) {
             continue;
@@ -981,7 +992,11 @@ fn watch(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdRes
         None => (false, target),
     };
     let (index, sub) = parse_obj(obj)?;
-    let (dur, count) = bounds(a)?;
+    let replay = ctx.is_replay();
+    if replay && !from_pdo {
+        return Err(CliError::usage("an SDO watch sends requests; with --adapter replay use watch pdo:<index:sub>"));
+    }
+    let (dur, count) = bounds(a, replay)?;
     let period = a.num::<u64>("period")?.unwrap_or(100);
     if period < 50 {
         return Err(CliError::usage("--period: at least 50 ms"));
@@ -997,7 +1012,7 @@ fn watch(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdRes
     let node = ctx.node;
     let text = ctx.text;
     let mut n = 0u64;
-    let done = |n: u64, t0: Instant| dur.is_some_and(|d| t0.elapsed() >= d) || count.is_some_and(|c| n >= c);
+    let done = |n: u64, t0: Instant| (!replay && dur.is_some_and(|d| t0.elapsed() >= d)) || count.is_some_and(|c| n >= c);
     let mut res = Map::new();
     res.extend(obj_head(node, index, sub, od.as_deref()));
     if !from_pdo {
@@ -1019,9 +1034,16 @@ fn watch(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdRes
         res.insert("source".into(), json!("sdo"));
         res.insert("period_ms".into(), json!(period));
     } else {
-        let cfg = read_pdos(ctx, None, DEFAULT_PDO_SCAN_STOP)?;
+        // A replay cannot ask the node: the PDOs come from the defaults of
+        // the --eds dictionary.
+        let pdos = if replay {
+            let od = od.clone().ok_or_else(|| CliError::usage("watch pdo: with --adapter replay needs --eds (the PDO mapping comes from it)"))?;
+            canoxide::canopen::pdo::configs_from_od(&od, node)
+        } else {
+            read_pdos(ctx, None, DEFAULT_PDO_SCAN_STOP)?.pdos
+        };
         let mut hit = None;
-        for p in cfg.pdos.iter().filter(|p| p.kind == PdoKind::Tpdo && p.valid) {
+        for p in pdos.iter().filter(|p| p.kind == PdoKind::Tpdo && p.valid) {
             let mut off = 0u32;
             for m in &p.mapping {
                 if m.index == index && m.sub == sub {
@@ -1040,7 +1062,15 @@ fn watch(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdRes
         let s = ctx.session()?;
         let t0 = Instant::now();
         while !done(n, t0) {
-            let Some(f) = s.receive(Duration::from_millis(2)).map_err(sess_err)? else { continue };
+            let Some(f) = s.receive(Duration::from_millis(2)).map_err(sess_err)? else {
+                if s.finished() {
+                    break;
+                }
+                continue;
+            };
+            if replay && dur.is_some_and(|d| f.timestamp_us as u128 > d.as_micros()) {
+                break;
+            }
             if f.id != p.cob_id || f.extended != p.extended || f.rtr {
                 continue;
             }

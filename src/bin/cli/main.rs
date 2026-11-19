@@ -17,6 +17,7 @@ use canoxide::canopen::types::parse_int;
 use canoxide::eds::{self, ObjectDictionary};
 use canoxide::library::Library;
 use canoxide::netinfo::NetworkOverview;
+use canoxide::replay::FileAdapter;
 use canoxide::session::Session;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -150,6 +151,10 @@ pub struct Global {
     pub node: u8,
     pub eds: Option<PathBuf>,
     pub listen_only: bool,
+    /// The log of `--adapter replay` and its speed (`None` = as fast as
+    /// possible).
+    pub replay_file: Option<PathBuf>,
+    pub replay_speed: Option<f64>,
     pub timeout_ms: u64,
     pub data_dir: Option<PathBuf>,
     pub device: Option<String>,
@@ -190,10 +195,30 @@ fn parse_channel(s: &str) -> Result<u32, CliError> {
 impl Global {
     fn from_args(a: &Args) -> Result<Global, CliError> {
         let adapter = a.get("adapter").unwrap_or("sim").to_ascii_lowercase();
-        if adapter != "sim" && adapter != "pcan" {
-            return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim or pcan")));
+        if adapter != "sim" && adapter != "pcan" && adapter != "replay" {
+            return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim, pcan or replay")));
         }
+        let replay = adapter == "replay";
+        let file = a.get("file").map(PathBuf::from);
+        if replay && file.is_none() {
+            return Err(CliError::usage("--adapter replay needs --file <log> (a trace CSV of CANoxide or a candump log)"));
+        }
+        if !replay && (file.is_some() || a.get("speed").is_some()) {
+            return Err(CliError::usage("--file and --speed are for --adapter replay"));
+        }
+        let speed = match a.get("speed") {
+            None => None,
+            Some(s) if s.eq_ignore_ascii_case("max") => None,
+            Some(s) => match s.trim().trim_end_matches(['x', 'X']).parse::<f64>() {
+                Ok(x) if (0.01..=1000.0).contains(&x) => Some(x),
+                _ => return Err(CliError::usage(format!("--speed: '{s}' is not max or a factor 0.01..1000"))),
+            },
+        };
         let g = Global {
+            replay_file: file,
+            replay_speed: speed,
+            // A replay sends nothing.
+            listen_only: a.flag("listen-only") || replay,
             adapter,
             channel: parse_channel(a.get("channel").unwrap_or("usb1"))?,
             bitrate: parse_bitrate(a.get("bitrate").unwrap_or("250k"))?,
@@ -202,7 +227,6 @@ impl Global {
                 None => 1,
             },
             eds: a.get("eds").map(PathBuf::from),
-            listen_only: a.flag("listen-only"),
             timeout_ms: a.num::<u64>("timeout")?.unwrap_or(1000).clamp(1, 600_000),
             data_dir: a.get("data-dir").map(PathBuf::from),
             device: a.get("device").map(str::to_string),
@@ -271,6 +295,10 @@ impl Ctx {
         self.g.adapter == "sim"
     }
 
+    pub fn is_replay(&self) -> bool {
+        self.g.adapter == "replay"
+    }
+
     /// The dictionary for names and types: --eds, or the dictionary of the
     /// built-in simulated node.
     pub fn dict(&mut self) -> Option<Arc<ObjectDictionary>> {
@@ -301,6 +329,13 @@ impl Ctx {
                     None => SimNode::builtin(self.g.node),
                 };
                 Session::sim(node, self.g.listen_only)
+            } else if let Some(path) = self.g.replay_file.clone().filter(|_| self.is_replay()) {
+                let (a, log) = FileAdapter::open_file(&path, self.g.replay_speed).map_err(|e| CliError::new("file", format!("--file {}: {e}", path.display())))?;
+                if log.bad_lines > 0 {
+                    let first = log.errors.first().map(|e| format!(" (first: {e})")).unwrap_or_default();
+                    eprintln!("{CLI_NAME}: {}: {} bad line(s) skipped{first}", path.display(), log.bad_lines);
+                }
+                Session::open(Box::new(a), 0, self.g.bitrate, true).map_err(|e| CliError::new("adapter", format!("replay: {e}")))?
             } else {
                 let a = PcanAdapter::load().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
                 Session::open(Box::new(a), self.g.channel, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open channel: {e}")))?
@@ -478,7 +513,12 @@ fn split_line(line: &str) -> Result<Vec<String>, CliError> {
 
 /// Run one command (after the listen-only check).
 fn run_one(ctx: &mut Ctx, s: &'static spec::Spec, rest: &[String], a: &Args, out: &mut dyn Write) -> CmdResult {
-    if s.sends && ctx.g.listen_only {
+    if ctx.is_replay() && s.bus {
+        let pdo_watch = s.name == "watch" && rest.first().is_some_and(|t| t.starts_with("pdo:"));
+        if s.name != "monitor" && !pdo_watch {
+            return Err(CliError::usage(format!("'{}' needs a live bus; with --adapter replay only monitor and watch pdo:<index:sub> run (nothing was opened or sent)", s.name)));
+        }
+    } else if s.sends && ctx.g.listen_only {
         return Err(CliError::new("listen_only", format!("'{}' transmits on the bus; refused with --listen-only (nothing was opened or sent)", s.name)));
     }
     let r = cmds::dispatch(ctx, s.name, rest, a, out);

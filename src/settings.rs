@@ -10,6 +10,8 @@ pub enum AdapterKind {
     #[default]
     Simulator,
     Peak,
+    /// A log file played back (never transmits).
+    Replay,
 }
 
 impl AdapterKind {
@@ -17,6 +19,7 @@ impl AdapterKind {
         match self {
             AdapterKind::Simulator => "Simulator",
             AdapterKind::Peak => "PEAK PCAN",
+            AdapterKind::Replay => "Log file (replay)",
         }
     }
 }
@@ -145,6 +148,10 @@ pub struct Settings {
     /// Messages view: no tint on a byte that changes in nearly every frame
     /// (for example a counter).
     pub msg_mute_noisy: bool,
+    /// The log file of the replay adapter.
+    pub replay_file: String,
+    /// Seconds shown by the sparkline of a signal value, 1..120.
+    pub sparkline_s: f32,
 }
 
 /// Table row height.
@@ -232,6 +239,8 @@ impl Default for Settings {
             confirm_dcf_restore: true,
             msg_fade_s: 2.0,
             msg_mute_noisy: false,
+            replay_file: String::new(),
+            sparkline_s: 10.0,
         }
     }
 }
@@ -286,6 +295,9 @@ impl Settings {
         }
         if !(0.2..=10.0).contains(&self.msg_fade_s) {
             self.msg_fade_s = 2.0;
+        }
+        if !(1.0..=120.0).contains(&self.sparkline_s) {
+            self.sparkline_s = 10.0;
         }
     }
 }

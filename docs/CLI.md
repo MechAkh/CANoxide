@@ -36,7 +36,7 @@ Read this before you use `--adapter pcan`.
    kind `listen_only`, *before* the adapter is opened. Use it to watch a
    live machine without any risk of a frame from this tool.
 4. **Bounded commands.** `monitor` and `watch` need `--duration` or
-   `--count`. A cyclic `send` needs `--count` (at most 100000).
+   `--count` (a replay ends with its log file). A cyclic `send` needs `--count` (at most 100000).
 5. **No state between commands** unless you give `--data-dir`. Each
    command opens the adapter, does its work and closes it. The simulator
    restarts with each command; use `shell` for multi-step work.
@@ -113,7 +113,8 @@ A `shell` run returns the code of the last failed line, else 0.
 
 `help --json` has the options and the output fields of each command.
 
-Global options: `--adapter sim|pcan`, `--channel usb1..usb8`,
+Global options: `--adapter sim|pcan|replay`, `--file log`,
+`--speed max|factor`, `--channel usb1..usb8`,
 `--bitrate 10k..1M`, `--node 1..127`, `--eds file`, `--listen-only`,
 `--timeout ms` (SDO), `--data-dir dir`, `--device name`, `--text`.
 
@@ -282,3 +283,33 @@ canoxide-cli --adapter pcan --node 5 --eds dev.eds sdo read 0x1008
 
 The PEAK driver (`PCANBasic.dll`, 64 bit) must be installed; without it a
 command with `--adapter pcan` ends with exit code 3, kind `adapter`.
+
+## Replay of a log file
+
+`--adapter replay --file <log>` feeds `monitor` and `watch pdo:` from a log
+file instead of a bus. Nothing is sent: the replay adapter refuses every
+frame, and every other command that needs a bus fails with exit code 2,
+kind `usage`, before the file is opened.
+
+```
+canoxide-cli --adapter replay --file trace.csv monitor
+canoxide-cli --adapter replay --file can0.log --speed 1 monitor --class tpdo --text
+canoxide-cli --adapter replay --file trace.csv --eds dev.eds watch pdo:0x2001:0
+```
+
+- Formats: the trace CSV that CANoxide writes (the continuous log and
+  "Save as CSV", also the files of 0.2.0; data in hex or decimal) and
+  candump logs (`(1700000000.123456) can0 123#DEADBEEF`, `#R` for a remote
+  frame). The format comes from the first line.
+- Time: the first frame is at 0 s; `t` is the log time. A time that goes
+  back is raised to the one before it.
+- `--speed max` (the default) reads the file as fast as possible;
+  `--speed 1` paces the frames in real time, `--speed 4` four times faster.
+- `monitor` and `watch` end at the end of the log, so `--duration` and
+  `--count` are optional. `--duration` counts log time.
+- The `dir` column of a CANoxide CSV is kept (`tx` frames stay `tx`);
+  candump frames are `rx`.
+- A bad line is skipped; the count and the first error (with its line
+  number) go to stderr. A file with no good frame fails with kind `file`.
+- `watch pdo:` takes the TPDO mapping from the defaults of `--eds`
+  (the node cannot be asked). An SDO `watch` is refused.

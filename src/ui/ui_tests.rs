@@ -1911,4 +1911,143 @@ fn screenshots() {
         let (_t, mut h) = scene(1920.0, 1080.0, Theme::Dark, "shot_b_dark");
         shot(&mut h, "layout_b_1920x1080_dark");
     }
+    shots_v03(&out);
+}
+
+/// Only the screenshots of 0.3: `cargo test screenshots_v03 -- --ignored`.
+#[test]
+#[ignore]
+fn screenshots_v03() {
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("screens");
+    std::fs::create_dir_all(&out).unwrap();
+    shots_v03(&out);
+}
+
+fn shots_v03(out: &Path) {
+    let shot = |h: &mut H, name: &str| {
+        step2(h);
+        let img = h.render().unwrap_or_else(|e| panic!("wgpu render of {name} failed: {e}"));
+        img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
+    };
+    let dark = |name: &str, w: f32, ht: f32| -> (TempDir, H) {
+        let tmp = TempDir::new(name);
+        preset(&tmp.data(), Settings { theme: Theme::Dark, ..Settings::default() });
+        let boot = Boot::load_dir(tmp.data());
+        let mut h: H = Harness::builder().with_size(egui::Vec2::new(w, ht)).wgpu().build_eframe(move |cc| App::new(cc, boot));
+        h.state_mut().first_layout = false;
+        (tmp, h)
+    };
+    // Replay: a log loaded and scrubbed to the middle, paused.
+    {
+        let (t, mut h) = dark("shot_replay", 1600.0, 900.0);
+        let log = t.0.join("bench_run.log");
+        write_replay_log(&log, 3000);
+        let mut d = DockState::new(vec![Tab::Trace(1)]);
+        d.main_surface_mut().split_right(NodeIndex::root(), 0.66, vec![Tab::Messages]);
+        set_dock(&mut h, d);
+        {
+            let app = h.state_mut();
+            app.settings.adapter = AdapterKind::Replay;
+            app.settings.replay_file = log.display().to_string();
+        }
+        step2(&mut h);
+        click(&mut h, "Connect");
+        wait_for(&mut h, "bad-line question", |h| has(h, "Log file with bad lines"));
+        click(&mut h, "Load the good frames");
+        wait_for(&mut h, "replay connected", |h| replay_info(h).is_some());
+        h.state_mut().replay_seek(17_420_000);
+        wait_for(&mut h, "seek done", |h| replay_info(h).is_some_and(|i| i.seeking.is_none() && i.cursor > 0));
+        run_for(&mut h, Duration::from_millis(200));
+        shot(&mut h, "replay_dark");
+    }
+}
+
+// ------------------------------------------------------------ 0.3 replay
+
+/// A made-up candump log: `n` frames 10 ms apart (a heartbeat of node 5
+/// every 10th frame, else TPDO1 of node 5 with a counter), and one bad line.
+fn write_replay_log(path: &Path, n: u64) {
+    let mut s = String::new();
+    for i in 0..n {
+        let us = 100_000_000 + i * 10_000;
+        let (sec, usec) = (us / 1_000_000, us % 1_000_000);
+        if i % 10 == 0 {
+            s.push_str(&format!("({sec}.{usec:06}) can0 705#05\n"));
+        } else {
+            s.push_str(&format!("({sec}.{usec:06}) can0 185#{:02X}{:02X}\n", i & 0xFF, i >> 8));
+        }
+        if i == 3 {
+            s.push_str("this is not a frame\n");
+        }
+    }
+    std::fs::write(path, s).unwrap();
+}
+
+fn replay_info(h: &H) -> Option<crate::bus::ReplayInfo> {
+    h.state().bus.shared.lock().ok().and_then(|s| s.replay.clone())
+}
+
+/// Press and release the primary button at a point.
+fn press_at(h: &mut H, pos: egui::Pos2) {
+    h.input_mut().events.push(egui::Event::PointerMoved(pos));
+    h.step();
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    step2(h);
+}
+
+/// Replay: choose a log file, accept its bad line, connect, scrub with the
+/// slider, play as fast as possible to the end; nothing can be sent.
+#[test]
+fn s30_replay_connect_and_scrub() {
+    let t = TempDir::new("replay");
+    let log = t.0.join("bench.log");
+    write_replay_log(&log, 1000);
+    let mut h = build(&t.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    {
+        let app = h.state_mut();
+        app.settings.adapter = AdapterKind::Replay;
+        app.settings.replay_file = log.display().to_string();
+    }
+    step2(&mut h);
+    assert!(has_exact(&h, "bench.log"), "file name in the connection bar\nUI:\n{}", dump(&h));
+    // No transport bar before the log is loaded.
+    assert!(!has_exact(&h, "Replay speed"));
+    click(&mut h, "Connect");
+    wait_for(&mut h, "bad-line question", |h| has(h, "Log file with bad lines"));
+    assert!(has(&h, "line 5: "), "the bad line is named\nUI:\n{}", dump(&h));
+    click(&mut h, "Load the good frames");
+    wait_for(&mut h, "replay connected", |h| has(h, "Replay: nothing is sent") && has_exact(h, "frame 0 / 1000"));
+    assert!(has(&h, "Connected: log file bench.log"), "status text\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "0.000 s / 9.990 s"));
+    // Scrub: a click in the middle of the slider.
+    let id = h.query_all_by_role(Role::Slider).next().expect("scrubber").id();
+    let r = rect_id(&h, id);
+    press_at(&mut h, egui::pos2(((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32));
+    wait_for(&mut h, "seek done", |h| replay_info(h).is_some_and(|i| i.seeking.is_none() && i.cursor > 0));
+    let info = replay_info(&h).unwrap();
+    assert!((3_500_000..6_500_000).contains(&info.pos_us), "pos {}", info.pos_us);
+    // Frames at 0, 10 ms, ...: the cursor is one past the frame at pos.
+    assert_eq!(info.cursor as u64, info.pos_us / 10_000 + 1);
+    assert!(!info.playing);
+    step2(&mut h);
+    assert_eq!(trace_counts(&h).0, info.cursor, "the trace holds the frames up to the cursor");
+    assert!(has_exact(&h, &format!("frame {} / 1000", info.cursor)));
+    // Play as fast as possible to the end.
+    pick(&mut h, "Replay speed", "As fast as possible");
+    click(&mut h, "Play");
+    wait_for(&mut h, "end of the log", |h| has_exact(h, "frame 1000 / 1000") && replay_info(h).is_some_and(|i| !i.playing));
+    step2(&mut h);
+    assert_eq!(trace_counts(&h).0, 1000);
+    // Nothing is sent.
+    h.state().bus.send(BusCommand::Sync);
+    run_for(&mut h, Duration::from_millis(100));
+    assert!(has(&h, "a log is played back, nothing is sent"), "send refused\nUI:\n{}", dump(&h));
+    assert_eq!(trace_counts(&h).0, 1000, "no frame was added");
+    click(&mut h, "Disconnect");
+    wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect") && !has(h, "Replay: nothing is sent"));
+    assert!(!has_exact(&h, "Replay speed"));
 }

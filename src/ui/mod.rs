@@ -14,6 +14,7 @@ mod messages_view;
 mod network;
 mod od;
 mod pdo_view;
+mod replay_bar;
 mod settings_dlg;
 pub(crate) mod theme;
 mod trace_view;
@@ -150,6 +151,12 @@ pub(crate) struct App {
     bus: BusHandle,
     connected: bool,
     listen_only_active: bool,
+    /// A log file is played back (no send control works).
+    replay_active: bool,
+    /// A loaded log with bad lines: the question to the user.
+    replay_bad: Option<replay_bar::BadLines>,
+    /// The scrubber position while it is dragged (seconds).
+    replay_drag: Option<f64>,
     connect_text: String,
     channels: Vec<ChannelInfo>,
     channel_note: Option<String>,
@@ -211,6 +218,9 @@ impl App {
             bus,
             connected: false,
             listen_only_active: false,
+            replay_active: false,
+            replay_bad: None,
+            replay_drag: None,
             connect_text: String::new(),
             channels: Vec::new(),
             channel_note: None,
@@ -304,6 +314,8 @@ impl App {
     pub(crate) fn send_hint(&self) -> &'static str {
         if !self.connected {
             "Connect first"
+        } else if self.replay_active {
+            "Log replay: nothing is sent"
         } else if self.listen_only_active {
             "Listen-only mode"
         } else {
@@ -430,6 +442,14 @@ impl App {
         let bitrate = Bitrate::from_kbit(self.settings.bitrate_kbit).unwrap_or(Bitrate::K250);
         let (adapter, channel) = match self.settings.adapter {
             AdapterKind::Peak => (AdapterChoice::Peak, self.settings.channel),
+            AdapterKind::Replay => {
+                if self.settings.replay_file.trim().is_empty() {
+                    self.set_status("Choose a log file first (Browse...)", true);
+                    return;
+                }
+                let path = PathBuf::from(self.settings.replay_file.trim());
+                (AdapterChoice::Replay { path, tail: self.trace.capacity(), ctx: self.decode_ctx.clone() }, 0)
+            }
             AdapterKind::Simulator => {
                 let node_id = self.active_node();
                 let od = match self.active_od() {
@@ -557,9 +577,14 @@ impl App {
                         }
                     }
                 }
-                BusEvent::Connected { text, listen_only } => {
+                BusEvent::Connected { text, listen_only, replay } => {
                     self.connected = true;
                     self.listen_only_active = listen_only;
+                    self.replay_active = replay;
+                    self.replay_drag = None;
+                    if replay {
+                        self.trace.clear();
+                    }
                     self.set_status(format!("Connected: {text}"), false);
                     self.connect_text = text;
                     self.rebuild_decode();
@@ -570,6 +595,9 @@ impl App {
                 BusEvent::Disconnected => {
                     self.connected = false;
                     self.listen_only_active = false;
+                    self.replay_active = false;
+                    self.replay_drag = None;
+                    self.msgv.set_fixed_clock(None);
                     self.net.scanning = false;
                     self.graph.polling = false;
                     self.set_status("Disconnected", false);
@@ -608,6 +636,20 @@ impl App {
                     Some(e) => self.set_status(format!("Trace log {} stopped: {e}", path.display()), true),
                     None => self.set_status(format!("Trace log stopped: {rows} row(s) in {}", path.display()), false),
                 },
+                BusEvent::ReplayBadLines { path, frames, bad, errors } => {
+                    let first = errors.first().map(|e| format!("; first: {e}")).unwrap_or_default();
+                    self.set_status(format!("{}: {bad} bad line(s){first}", path.display()), true);
+                    self.replay_bad = Some(replay_bar::BadLines { path, frames, bad, errors });
+                }
+                BusEvent::ReplaySnapshot { msgs, tail } => {
+                    self.trace.clear();
+                    for (f, d) in tail {
+                        self.trace.push(f, d);
+                    }
+                    self.msgs = *msgs;
+                    self.msgv.on_reset();
+                    self.msgv.on_frames(self.msgs.latest_us());
+                }
             }
         }
     }
@@ -784,6 +826,7 @@ impl App {
                 egui::ComboBox::from_id_salt("adapter").width(150.0).selected_text(self.settings.adapter.label()).show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.settings.adapter, AdapterKind::Simulator, AdapterKind::Simulator.label());
                     ui.selectable_value(&mut self.settings.adapter, AdapterKind::Peak, AdapterKind::Peak.label());
+                    ui.selectable_value(&mut self.settings.adapter, AdapterKind::Replay, AdapterKind::Replay.label());
                 });
             });
             if self.settings.adapter != before {
@@ -793,8 +836,11 @@ impl App {
                 self.mark_settings();
             }
 
-            ui.label(egui::RichText::new("Channel").small().color(p.text_secondary));
-            if self.settings.adapter == AdapterKind::Peak {
+            let replay = self.settings.adapter == AdapterKind::Replay;
+            ui.label(egui::RichText::new(if replay { "File" } else { "Channel" }).small().color(p.text_secondary));
+            if replay {
+                self.replay_file_picker(ui, locked);
+            } else if self.settings.adapter == AdapterKind::Peak {
                 let ch = self.settings.channel;
                 ui.add_enabled_ui(!locked, |ui| {
                     egui::ComboBox::from_id_salt("channel").width(120.0).selected_text(pcan::channel_name(ch as u16)).show_ui(ui, |ui| {
@@ -896,7 +942,9 @@ impl App {
                 ui.painter().rect_filled(f, 3.0, col);
                 ui.label(egui::RichText::new("Load").small().color(p.text_secondary));
                 ui.add_space(6.0);
-                if self.listen_only_active {
+                if self.replay_active {
+                    theme::pill(ui, format!("{}  Replay: nothing is sent", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
+                } else if self.listen_only_active {
                     theme::pill(ui, format!("{}  Listen only", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
                 }
                 if self.connected {
@@ -920,8 +968,14 @@ impl App {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let p = theme::pal(ui);
         ui.horizontal(|ui| {
-            let summary = if self.connected {
-                let ch = if self.settings.adapter == AdapterKind::Simulator { "virtual bus".to_string() } else { pcan::channel_name(self.settings.channel as u16) };
+            let summary = if self.connected && self.replay_active {
+                let name = std::path::Path::new(&self.settings.replay_file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                format!("Replay · {name} · nothing is sent")
+            } else if self.connected {
+                let ch = match self.settings.adapter {
+                    AdapterKind::Simulator => "virtual bus".to_string(),
+                    _ => pcan::channel_name(self.settings.channel as u16),
+                };
                 let br = Bitrate::from_kbit(self.settings.bitrate_kbit).map(|b| b.label()).unwrap_or_default();
                 format!("Connected · {} · {ch} · {br}{}", self.settings.adapter.label(), if self.listen_only_active { " · listen only" } else { "" })
             } else {
@@ -1002,6 +1056,7 @@ impl App {
             });
         }
         self.settings_dialog(ctx);
+        self.replay_dialogs(ctx);
         self.graph_dialogs(ctx);
         self.pdo_dialogs(ctx);
         self.library_dialogs(ctx);
@@ -1085,6 +1140,11 @@ impl eframe::App for App {
         let bar = egui::Frame::new().fill(p.bg_frame).inner_margin(egui::Margin::symmetric(8, 2));
         egui::TopBottomPanel::top("menu_bar").frame(bar).show(ctx, |ui| self.menu_bar(ui));
         egui::TopBottomPanel::top("connect_bar").frame(bar.inner_margin(egui::Margin::symmetric(8, 4))).show(ctx, |ui| self.connection_bar(ui));
+        if self.replay_active {
+            let pos = self.bus.shared.lock().map(|s| s.now_us).unwrap_or(0);
+            self.msgv.set_fixed_clock(Some(pos));
+            egui::TopBottomPanel::top("replay_bar").frame(bar.inner_margin(egui::Margin::symmetric(8, 2))).show(ctx, |ui| self.transport_bar(ui));
+        }
         egui::TopBottomPanel::bottom("status_bar").frame(bar).show(ctx, |ui| self.status_bar(ui));
         if let Some(e) = self.data_error.clone() {
             egui::TopBottomPanel::top("data_error").frame(egui::Frame::new().fill(p.error_tint).inner_margin(egui::Margin::symmetric(8, 4))).show(ctx, |ui| {

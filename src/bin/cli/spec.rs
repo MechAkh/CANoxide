@@ -22,7 +22,9 @@ pub struct Spec {
 }
 
 pub const GLOBAL: &[Opt] = &[
-    ("adapter", Some("sim|pcan"), "Adapter. Default sim (the built-in simulator; nothing touches hardware)."),
+    ("adapter", Some("sim|pcan|replay"), "Adapter. Default sim (the built-in simulator; nothing touches hardware). replay plays back a log file (--file) and sends nothing."),
+    ("file", Some("log"), "Log file of --adapter replay: a trace CSV written by CANoxide or a candump log."),
+    ("speed", Some("max|factor"), "Replay speed: max (as fast as possible, the default) or a factor of the log time (1 = real time)."),
     ("channel", Some("usb1..usb8"), "PCAN-USB channel. Default usb1."),
     ("bitrate", Some("10k..1M"), "Bit rate: 10k 20k 50k 125k 250k 500k 800k 1M. Default 250k."),
     ("node", Some("1..127"), "Node-ID of the device. Default 1. With the simulator, also the ID of the simulated node."),

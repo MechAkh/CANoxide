@@ -195,7 +195,7 @@ fn payload8(f: &CanFrame) -> [u8; 8] {
 }
 
 /// The statistics of all identifiers.
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct MsgStats {
     map: HashMap<MsgKey, MsgEntry>,
     /// Frames of identifiers past `MAX_IDS` since the last reset.

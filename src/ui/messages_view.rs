@@ -60,6 +60,7 @@ pub(crate) struct MessagesView {
     /// The newest frame time stamp and when it arrived: the clock of the
     /// age and of the tint fade.
     clock: Option<(u64, Instant)>,
+    fixed_clock: Option<u64>,
     /// The selected bits of the detail pane (anchor, end; bit k = byte
     /// k / 8, bit k % 8).
     bit_sel: Option<(u32, u32)>,
@@ -82,7 +83,16 @@ impl MessagesView {
         }
     }
 
+    /// Replay: the clock is the replay position (it does not run on while
+    /// the replay is paused). `None`: the live clock.
+    pub(crate) fn set_fixed_clock(&mut self, us: Option<u64>) {
+        self.fixed_clock = us;
+    }
+
     fn now_us(&self) -> u64 {
+        if let Some(t) = self.fixed_clock {
+            return t;
+        }
         self.clock.map_or(0, |(t, at)| t + at.elapsed().as_micros() as u64)
     }
 

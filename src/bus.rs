@@ -16,7 +16,7 @@ use crate::busload::{BusLoad, BusLoadStats};
 use crate::can::pcan::PcanAdapter;
 use crate::can::sim::{SimAdapter, SimNode};
 use crate::can::{Bitrate, CanAdapter, CanFrame, ChannelInfo, Dir};
-use crate::canopen::decode::{DecodeContext, SdoBlockTracker};
+use crate::canopen::decode::{DecodeContext, Decoded, SdoBlockTracker};
 use crate::canopen::lss::{LssCommand, LssError, LssMaster, LssOutput, LssResult};
 use crate::canopen::nmt::{nmt_frame, sync_frame, NmtCommand, NodeTracker};
 use crate::canopen::pdo::NodePdoConfig;
@@ -24,7 +24,9 @@ use crate::canopen::sdo::{SdoClient, SdoError, SdoOutcome, SdoOutput, SdoRequest
 use crate::canopen::task::{SdoTask, StepsTask, TaskResult};
 use crate::canopen::types::DisplayMode;
 use crate::eds::ObjectDictionary;
+use crate::msgstats::MsgStats;
 use crate::netinfo::{heartbeat_steps, NetworkOverview, NodeInfoTask};
+use crate::replay::{FileAdapter, LineError, ParsedLog, Rebuild, ReplayPlayer, Speed, Tick};
 use crate::settings::AdapterKind;
 use crate::signals::{PollRequest, SignalStore};
 use crate::trace::{TraceEntry, TraceFilter, TraceLogger};
@@ -32,6 +34,7 @@ use crate::txlist::{Trigger, TxEntry, TxList};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -39,7 +42,14 @@ use std::time::{Duration, Instant};
 pub enum AdapterChoice {
     Peak,
     Sim { node_id: u8, od: Option<Arc<ObjectDictionary>> },
+    /// Play a log file back (listen-only, never transmits). `tail` is the
+    /// trace capacity (the newest decoded frames sent after a seek); `ctx`
+    /// the decoder of the UI trace, for the seek rebuild.
+    Replay { path: PathBuf, tail: usize, ctx: DecodeContext },
 }
+
+/// Frames fed per service round while a seek is rebuilt.
+const REBUILD_CHUNK: usize = 20_000;
 
 pub enum BusCommand {
     ListChannels(AdapterKind),
@@ -103,13 +113,26 @@ pub enum BusCommand {
     StopLog,
     /// Reset the bus load peak and average.
     ResetBusLoad,
+    // ---- v0.3: replay ----
+    /// Load (true) or drop (false) a log whose bad lines were reported
+    /// with `ReplayBadLines`.
+    ReplayAccept(bool),
+    ReplayPlay,
+    ReplayPause,
+    /// One frame forward (pauses).
+    ReplayStep,
+    /// Move to this log time: the views are rebuilt from the start of the
+    /// log without pacing (`ReplaySnapshot` at the end).
+    ReplaySeek { pos_us: u64, ctx: DecodeContext },
+    ReplaySpeed(Speed),
+    ReplayLoop(bool),
     Shutdown,
 }
 
 #[derive(Debug)]
 pub enum BusEvent {
     Channels { kind: AdapterKind, result: Result<Vec<ChannelInfo>, String> },
-    Connected { text: String, listen_only: bool },
+    Connected { text: String, listen_only: bool, replay: bool },
     Disconnected,
     Error(String),
     Info(String),
@@ -126,6 +149,28 @@ pub enum BusEvent {
     LogStarted { path: PathBuf },
     /// The log ended (`StopLog`, disconnect, or a write error).
     LogStopped { path: PathBuf, rows: u64, error: Option<String> },
+    // ---- v0.3: replay ----
+    /// The log has bad lines: load the rest (`ReplayAccept(true)`) or not.
+    ReplayBadLines { path: PathBuf, frames: usize, bad: usize, errors: Vec<LineError> },
+    /// The view state at the new replay position (after a seek or a
+    /// restart): the UI replaces its Messages statistics and its trace.
+    ReplaySnapshot { msgs: Box<MsgStats>, tail: Vec<(CanFrame, Decoded)> },
+}
+
+/// The state of a replay (for the transport bar).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReplayInfo {
+    pub path: PathBuf,
+    pub frames: usize,
+    pub duration_us: u64,
+    pub pos_us: u64,
+    /// Frames fed so far.
+    pub cursor: usize,
+    pub playing: bool,
+    pub speed: Speed,
+    pub looping: bool,
+    /// (done, total) frames of a running seek.
+    pub seeking: Option<(usize, usize)>,
 }
 
 /// State the UI reads (locked briefly).
@@ -158,6 +203,11 @@ pub struct Shared {
     pub log: Option<(PathBuf, u64)>,
     /// (node, index, sub, progress) of the running SDO transfer.
     pub sdo_progress: Option<(u8, u16, u8, crate::canopen::sdo::SdoProgress)>,
+    // ---- v0.3 ----
+    /// The running replay.
+    pub replay: Option<ReplayInfo>,
+    /// (file, bytes read, file size) while a log loads.
+    pub replay_loading: Option<(PathBuf, usize, usize)>,
 }
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -234,6 +284,36 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// A log being read by a loader thread.
+struct Loading {
+    path: PathBuf,
+    bitrate: Bitrate,
+    tail: usize,
+    ctx: DecodeContext,
+    progress: Arc<AtomicUsize>,
+    total: usize,
+    rx: Receiver<Result<ParsedLog, String>>,
+}
+
+/// A read log waiting for `ReplayAccept`.
+struct PendingLog {
+    path: PathBuf,
+    bitrate: Bitrate,
+    tail: usize,
+    ctx: DecodeContext,
+    log: ParsedLog,
+}
+
+struct ReplayRun {
+    path: PathBuf,
+    frames: Arc<Vec<CanFrame>>,
+    player: ReplayPlayer,
+    ctx: DecodeContext,
+    tail: usize,
+    kbit: u32,
+    rebuild: Option<Rebuild>,
+}
+
 struct Worker {
     events: Sender<BusEvent>,
     shared: Arc<Mutex<Shared>>,
@@ -264,6 +344,9 @@ struct Worker {
     fps_t: Instant,
     status_t: Instant,
     shutdown: bool,
+    replay: Option<ReplayRun>,
+    loading: Option<Loading>,
+    pending_log: Option<PendingLog>,
 }
 
 impl Worker {
@@ -297,6 +380,9 @@ impl Worker {
             fps_t: Instant::now(),
             status_t: Instant::now(),
             shutdown: false,
+            replay: None,
+            loading: None,
+            pending_log: None,
         }
     }
 
@@ -316,7 +402,8 @@ impl Worker {
     fn run(mut self, rx: Receiver<BusCommand>) {
         while !self.shutdown {
             if self.adapter.is_none() {
-                match rx.recv_timeout(Duration::from_millis(100)) {
+                let wait = if self.loading.is_some() { 20 } else { 100 };
+                match rx.recv_timeout(Duration::from_millis(wait)) {
                     Ok(c) => self.command(c),
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => break,
@@ -332,6 +419,7 @@ impl Worker {
                     }
                 }
             }
+            self.poll_loading();
             if self.adapter.is_some() && !self.shutdown {
                 self.service();
             }
@@ -343,6 +431,10 @@ impl Worker {
     fn guard_send(&self, what: &str) -> bool {
         if self.adapter.is_none() {
             self.emit(BusEvent::Error(format!("{what}: not connected")));
+            return false;
+        }
+        if self.replay.is_some() {
+            self.emit(BusEvent::Error(format!("{what}: a log is played back, nothing is sent")));
             return false;
         }
         if self.listen_only {
@@ -364,12 +456,17 @@ impl Worker {
                 let result = match kind {
                     AdapterKind::Simulator => Ok(vec![ChannelInfo { handle: 0, name: "Virtual bus".to_string(), available: true }]),
                     AdapterKind::Peak => PcanAdapter::load().and_then(|mut a| a.list_channels()).map_err(|e| e.to_string()),
+                    AdapterKind::Replay => Ok(Vec::new()),
                 };
                 self.emit(BusEvent::Channels { kind, result });
             }
             BusCommand::Connect { adapter, channel, bitrate, listen_only } => {
                 self.disconnect();
                 let mut a: Box<dyn CanAdapter> = match adapter {
+                    AdapterChoice::Replay { path, tail, ctx } => {
+                        self.start_loading(path, bitrate, tail, ctx);
+                        return;
+                    }
                     AdapterChoice::Peak => match PcanAdapter::load() {
                         Ok(a) => Box::new(a),
                         Err(e) => {
@@ -410,7 +507,7 @@ impl Worker {
                     s.bus_load = BusLoadStats::default();
                     s.signal_polling = false;
                 }
-                self.emit(BusEvent::Connected { text, listen_only });
+                self.emit(BusEvent::Connected { text, listen_only, replay: false });
             }
             BusCommand::Disconnect => {
                 self.disconnect();
@@ -566,6 +663,10 @@ impl Worker {
                 self.update_tx_shared();
             }
             BusCommand::StartLog { path, mode, filter } => {
+                if self.replay.is_some() {
+                    self.emit(BusEvent::Error("trace log: not available while a log is played back".to_string()));
+                    return;
+                }
                 self.stop_log(None);
                 match TraceLogger::start(&path, mode, filter, self.now_ms()) {
                     Ok(l) => {
@@ -581,7 +682,235 @@ impl Worker {
                 self.load.reset();
                 lock(&self.shared).bus_load = BusLoadStats::default();
             }
+            BusCommand::ReplayAccept(yes) => {
+                if let Some(p) = self.pending_log.take() {
+                    if yes {
+                        self.start_replay(p);
+                    } else {
+                        self.emit(BusEvent::Info(format!("Log not loaded: {}", p.path.display())));
+                    }
+                }
+            }
+            BusCommand::ReplayPlay => {
+                let wall = self.now_us();
+                if let Some(mut r) = self.replay.take() {
+                    if r.rebuild.is_none() && r.player.at_end() {
+                        // Play at the end starts again from the beginning.
+                        self.begin_rebuild(&mut r, 0);
+                    }
+                    r.player.play(wall);
+                    self.replay = Some(r);
+                }
+            }
+            BusCommand::ReplayPause => {
+                if let Some(r) = self.replay.as_mut() {
+                    r.player.pause();
+                }
+            }
+            BusCommand::ReplayStep => {
+                if let Some(mut r) = self.replay.take() {
+                    if r.rebuild.is_none() {
+                        if let Some(i) = r.player.step(&r.frames) {
+                            let f = r.frames[i];
+                            self.feed_replay_frame(f);
+                        }
+                    }
+                    self.replay = Some(r);
+                }
+            }
+            BusCommand::ReplaySeek { pos_us, ctx } => {
+                if let Some(mut r) = self.replay.take() {
+                    r.ctx = ctx;
+                    self.begin_rebuild(&mut r, pos_us);
+                    self.replay = Some(r);
+                }
+            }
+            BusCommand::ReplaySpeed(s) => {
+                let wall = self.now_us();
+                if let Some(r) = self.replay.as_mut() {
+                    r.player.set_speed(s, wall);
+                }
+            }
+            BusCommand::ReplayLoop(on) => {
+                if let Some(r) = self.replay.as_mut() {
+                    r.player.set_looping(on);
+                }
+            }
         }
+    }
+
+    // ------------------------------------------------------------ replay
+
+    fn start_loading(&mut self, path: PathBuf, bitrate: Bitrate, tail: usize, ctx: DecodeContext) {
+        let total = std::fs::metadata(&path).map(|m| m.len() as usize).unwrap_or(0);
+        let progress = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel();
+        let (p, pr, waker) = (path.clone(), progress.clone(), self.waker.clone());
+        let spawned = std::thread::Builder::new().name("replay-load".to_string()).spawn(move || {
+            let r = crate::replay::load_log(&p, Some(&pr));
+            let _ = tx.send(r);
+            waker();
+        });
+        if let Err(e) = spawned {
+            self.emit(BusEvent::Error(format!("replay: {e}")));
+            return;
+        }
+        lock(&self.shared).replay_loading = Some((path.clone(), 0, total));
+        self.loading = Some(Loading { path, bitrate, tail, ctx, progress, total, rx });
+        (self.waker)();
+    }
+
+    fn poll_loading(&mut self) {
+        let Some(l) = self.loading.as_ref() else { return };
+        let r = match l.rx.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => {
+                let done = l.progress.load(Ordering::Relaxed);
+                lock(&self.shared).replay_loading = Some((l.path.clone(), done.min(l.total), l.total));
+                return;
+            }
+            Err(TryRecvError::Disconnected) => Err("the loader stopped".to_string()),
+        };
+        let Some(l) = self.loading.take() else { return };
+        lock(&self.shared).replay_loading = None;
+        match r {
+            Err(e) => self.emit(BusEvent::Error(format!("replay {}: {e}", l.path.display()))),
+            Ok(log) => {
+                let p = PendingLog { path: l.path, bitrate: l.bitrate, tail: l.tail, ctx: l.ctx, log };
+                if p.log.bad_lines > 0 {
+                    let ev = BusEvent::ReplayBadLines { path: p.path.clone(), frames: p.log.frames.len(), bad: p.log.bad_lines, errors: p.log.errors.clone() };
+                    self.pending_log = Some(p);
+                    self.emit(ev);
+                } else {
+                    self.start_replay(p);
+                }
+            }
+        }
+    }
+
+    fn start_replay(&mut self, p: PendingLog) {
+        self.disconnect();
+        let PendingLog { path, bitrate, tail, ctx, log } = p;
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let frames = Arc::new(log.frames);
+        let player = ReplayPlayer::new(&frames);
+        self.t0 = Instant::now();
+        self.fps_t = self.t0;
+        self.rx_count = 0;
+        self.listen_only = true;
+        self.load = BusLoad::new(bitrate.kbit());
+        self.block.reset();
+        self.polling = false;
+        self.polls.clear();
+        lock(&self.signals).clear();
+        let skipped = if log.bad_lines > 0 { format!(", {} bad line(s) skipped", log.bad_lines) } else { String::new() };
+        let text = format!("log file {name} ({}, {} frames, {:.3} s{skipped})", log.format.label(), frames.len(), player.duration_us() as f64 / 1e6);
+        self.adapter = Some(Box::new(FileAdapter::new(format!("replay {name}"), Vec::new(), None)));
+        let run = ReplayRun { path, frames, player, ctx, tail, kbit: bitrate.kbit(), rebuild: None };
+        {
+            let mut s = lock(&self.shared);
+            s.connected = true;
+            s.listen_only = true;
+            s.nodes.clear();
+            s.network.clear();
+            s.status = "OK".to_string();
+            s.fps = 0.0;
+            s.bus_load = BusLoadStats::default();
+            s.signal_polling = false;
+            s.now_us = 0;
+            s.replay = Some(Self::replay_info(&run));
+        }
+        self.replay = Some(run);
+        self.emit(BusEvent::Connected { text, listen_only: true, replay: true });
+    }
+
+    fn replay_info(r: &ReplayRun) -> ReplayInfo {
+        ReplayInfo {
+            path: r.path.clone(),
+            frames: r.frames.len(),
+            duration_us: r.player.duration_us(),
+            pos_us: r.player.pos_us(),
+            cursor: r.player.cursor(),
+            playing: r.player.playing(),
+            speed: r.player.speed(),
+            looping: r.player.looping(),
+            seeking: r.rebuild.as_ref().map(|b| (b.done, b.target)),
+        }
+    }
+
+    /// Seek: the views are rebuilt from the start of the log to `pos_us`.
+    fn begin_rebuild(&mut self, r: &mut ReplayRun, pos_us: u64) {
+        let wall = self.now_us();
+        let target = r.player.seek(&r.frames, pos_us, wall);
+        lock(&self.signals).clear();
+        r.rebuild = Some(Rebuild::new(target, r.player.pos_us(), r.tail, r.kbit));
+    }
+
+    fn feed_replay_frame(&mut self, f: CanFrame) {
+        self.batch.push(f);
+        self.on_bus_frame(&f);
+        if f.dir == Dir::Rx {
+            let mut s = lock(&self.shared);
+            s.nodes.on_frame(&f);
+            s.network.on_frame(&f);
+        }
+        self.rx_count += 1;
+    }
+
+    /// A service round of a replay: a step of a running seek, or the frames
+    /// that are due. Nothing is sent.
+    fn service_replay(&mut self) {
+        let Some(mut r) = self.replay.take() else { return };
+        if let Some(mut rb) = r.rebuild.take() {
+            let finished = rb.step(&r.frames, &r.ctx, Some(&mut lock(&self.signals)), REBUILD_CHUNK);
+            if finished {
+                let Rebuild { msgs, tail, nodes, network, load, pos_us, .. } = rb;
+                self.load = load;
+                {
+                    let mut s = lock(&self.shared);
+                    s.nodes = nodes;
+                    s.network = network;
+                    s.bus_load = self.load.stats();
+                    s.now_us = pos_us;
+                }
+                self.emit(BusEvent::ReplaySnapshot { msgs: Box::new(msgs), tail: tail.into() });
+                let wall = self.now_us();
+                r.player.resume_clock(wall);
+            } else {
+                r.rebuild = Some(rb);
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
+            let wall = self.now_us();
+            match r.player.advance(&r.frames, wall) {
+                Tick::Restart => self.begin_rebuild(&mut r, 0),
+                Tick::Frames(range) => {
+                    let frames = r.frames.clone();
+                    for f in &frames[range] {
+                        self.feed_replay_frame(*f);
+                    }
+                }
+            }
+            if r.rebuild.is_none() {
+                self.load.advance(r.player.pos_us());
+            }
+        }
+        {
+            let mut s = lock(&self.shared);
+            if r.rebuild.is_none() {
+                s.now_us = r.player.pos_us();
+                s.bus_load = self.load.stats();
+            }
+            s.replay = Some(Self::replay_info(&r));
+            let el = self.fps_t.elapsed();
+            if el >= Duration::from_secs(1) {
+                s.fps = self.rx_count as f64 / el.as_secs_f64();
+                self.rx_count = 0;
+                self.fps_t = Instant::now();
+            }
+        }
+        self.replay = Some(r);
+        self.flush();
     }
 
     fn queue_sdo(&mut self, tag: u64, node: u8, req: SdoRequest, opts: StartOptions) {
@@ -673,6 +1002,13 @@ impl Worker {
     }
 
     fn disconnect(&mut self) {
+        if self.loading.take().is_some() {
+            lock(&self.shared).replay_loading = None;
+        }
+        self.pending_log = None;
+        if self.replay.take().is_some() {
+            lock(&self.shared).replay = None;
+        }
         if let Some(mut a) = self.adapter.take() {
             a.close();
             self.flush();
@@ -896,6 +1232,10 @@ impl Worker {
     }
 
     fn service(&mut self) {
+        if self.replay.is_some() {
+            self.service_replay();
+            return;
+        }
         let mut received: Vec<CanFrame> = Vec::new();
         for i in 0..2000 {
             let wait = if i == 0 { Duration::from_millis(1) } else { Duration::ZERO };

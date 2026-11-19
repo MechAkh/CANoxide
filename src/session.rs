@@ -146,9 +146,20 @@ impl Session {
         Ok(())
     }
 
-    /// Receive one frame, waiting up to `wait`.
+    /// True when the adapter has no more frames to give (the end of a
+    /// replayed log file). A live adapter never ends.
+    pub fn finished(&self) -> bool {
+        self.adapter.finished()
+    }
+
+    /// Receive one frame, waiting up to `wait`. A replayed log keeps its own
+    /// time stamps and direction.
     pub fn receive(&mut self, wait: Duration) -> Result<Option<CanFrame>, SessionError> {
         match self.adapter.receive(wait).map_err(|e| SessionError::Adapter(e.to_string()))? {
+            Some(f) if self.adapter.keeps_timestamps() => {
+                self.log(f);
+                Ok(Some(f))
+            }
             Some(mut f) => {
                 f.dir = Dir::Rx;
                 f.timestamp_us = self.now_us();
