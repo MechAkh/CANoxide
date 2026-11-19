@@ -1,9 +1,9 @@
 //! Trace views and the continuous CSV log (A4).
 
-use canopen_tester::can::{CanFrame, Dir};
-use canopen_tester::canopen::decode::{decode, DecodeContext};
-use canopen_tester::canopen::types::DisplayMode;
-use canopen_tester::trace::*;
+use canoxide::can::{CanFrame, Dir};
+use canoxide::canopen::decode::{decode, DecodeContext};
+use canoxide::canopen::types::DisplayMode;
+use canoxide::trace::*;
 
 fn push(t: &mut TraceStore, id: u32, data: &[u8], us: u64) -> TraceEntry {
     let mut f = CanFrame::new(id, data);
@@ -57,7 +57,7 @@ fn several_views_share_one_buffer() {
 
 #[test]
 fn continuous_log_file_content() {
-    let dir = std::env::temp_dir().join(format!("cot_trace_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("canoxide_trace_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("log.csv");
     let mut t = TraceStore::new(2);
@@ -73,7 +73,7 @@ fn continuous_log_file_content() {
     let text = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[1], canopen_tester::trace::csv_row(&e1, None, DisplayMode::Hex));
+    assert_eq!(lines[1], canoxide::trace::csv_row(&e1, None, DisplayMode::Hex));
     assert!(lines[1].starts_with("1.000000,,Rx,185,0,0,2,12 34,TPDO1,5,"), "{}", lines[1]);
     assert!(lines[2].starts_with("1.002500,2.500,Rx,701,0,0,1,05,"), "{}", lines[2]);
     // More frames than the ring holds: the log keeps all of them.

@@ -1,5 +1,5 @@
-use canopen_tester::library::{ensure_writable, Device, Library};
-use canopen_tester::settings::{AdapterKind, Settings};
+use canoxide::library::{ensure_writable, Device, Library};
+use canoxide::settings::{AdapterKind, Settings};
 use std::fs;
 use std::path::PathBuf;
 
@@ -9,7 +9,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(tag: &str) -> TempDir {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let p = std::env::temp_dir().join(format!("canopen_tester_{tag}_{}_{nanos}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("canoxide_{tag}_{}_{nanos}", std::process::id()));
         fs::create_dir_all(&p).unwrap();
         TempDir(p)
     }

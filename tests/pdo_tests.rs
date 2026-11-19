@@ -1,14 +1,14 @@
 //! PDO configuration read / apply (A2) and network overview (A4) against
 //! the simulator.
 
-use canopen_tester::can::sim::{builtin_dictionary, SimNode};
-use canopen_tester::can::CanFrame;
-use canopen_tester::canopen::decode::{decode, DecodeContext, MsgClass};
-use canopen_tester::canopen::nmt::{nmt_frame, NmtCommand};
-use canopen_tester::canopen::pdo::*;
-use canopen_tester::canopen::task::{StepsReport, StepsTask, TaskResult};
-use canopen_tester::netinfo::{heartbeat_steps, NetworkOverview, NodeInfoTask};
-use canopen_tester::session::{Ctl, Session};
+use canoxide::can::sim::{builtin_dictionary, SimNode};
+use canoxide::can::CanFrame;
+use canoxide::canopen::decode::{decode, DecodeContext, MsgClass};
+use canoxide::canopen::nmt::{nmt_frame, NmtCommand};
+use canoxide::canopen::pdo::*;
+use canoxide::canopen::task::{StepsReport, StepsTask, TaskResult};
+use canoxide::netinfo::{heartbeat_steps, NetworkOverview, NodeInfoTask};
+use canoxide::session::{Ctl, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,7 +26,7 @@ fn read_pdos(s: &mut Session) -> NodePdoConfig {
     }
 }
 
-fn run_steps(s: &mut Session, steps: Vec<canopen_tester::canopen::task::SdoStep>) -> StepsReport {
+fn run_steps(s: &mut Session, steps: Vec<canoxide::canopen::task::SdoStep>) -> StepsReport {
     match s.run_task(Box::new(StepsTask::new("test", steps, true)), &mut Ctl::default()).unwrap() {
         TaskResult::Steps(r) => r,
         r => panic!("unexpected {r:?}"),
@@ -211,7 +211,7 @@ fn a_failed_step_stops_the_sequence_with_the_abort() {
     // A COB-ID change while the PDO is valid is refused by the node.
     let mut s = session();
     let raw = 0x3A0u32.to_le_bytes().to_vec();
-    let rep = run_steps(&mut s, vec![canopen_tester::canopen::task::SdoStep::write(NODE, 0x1800, 1, raw, "direct")]);
+    let rep = run_steps(&mut s, vec![canoxide::canopen::task::SdoStep::write(NODE, 0x1800, 1, raw, "direct")]);
     assert_eq!(rep.first_error().unwrap().abort_code, Some(0x0609_0030));
 }
 
@@ -268,11 +268,11 @@ fn network_overview_from_frames() {
     let mut ov = NetworkOverview::new();
     let mut hb = CanFrame::new(0x705, &[0x05]);
     hb.timestamp_us = 1000;
-    hb.dir = canopen_tester::can::Dir::Rx;
+    hb.dir = canoxide::can::Dir::Rx;
     ov.on_frame(&hb);
     let mut em = CanFrame::new(0x085, &[0x10, 0x81, 0x11, 1, 2, 3, 4, 5]);
     em.timestamp_us = 2000;
-    em.dir = canopen_tester::can::Dir::Rx;
+    em.dir = canoxide::can::Dir::Rx;
     ov.on_frame(&em);
     let n = ov.get(NODE).unwrap();
     assert_eq!(n.state.as_deref(), Some("Operational"));
@@ -283,7 +283,7 @@ fn network_overview_from_frames() {
     assert!(e.text.contains("CAN overrun"));
     // Sent frames do not count.
     let mut tx = CanFrame::new(0x706, &[0x05]);
-    tx.dir = canopen_tester::can::Dir::Tx;
+    tx.dir = canoxide::can::Dir::Tx;
     ov.on_frame(&tx);
     assert!(ov.get(6).is_none());
 }

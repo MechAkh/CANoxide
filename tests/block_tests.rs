@@ -1,10 +1,10 @@
 //! SDO block transfer (A1) against the simulator.
 
-use canopen_tester::can::sim::{large_object_pattern, SimNode, LARGE_OBJECT, LARGE_OBJECT_SIZE};
-use canopen_tester::can::CanFrame;
-use canopen_tester::canopen::decode::{DecodeContext, SdoBlockTracker};
-use canopen_tester::canopen::sdo::*;
-use canopen_tester::session::{download_from_file, upload_to_file, Ctl, Session};
+use canoxide::can::sim::{large_object_pattern, SimNode, LARGE_OBJECT, LARGE_OBJECT_SIZE};
+use canoxide::can::CanFrame;
+use canoxide::canopen::decode::{DecodeContext, SdoBlockTracker};
+use canoxide::canopen::sdo::*;
+use canoxide::session::{download_from_file, upload_to_file, Ctl, Session};
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 
@@ -363,7 +363,7 @@ fn block_timeout_aborts() {
 #[test]
 fn session_block_transfer_with_progress_and_file() {
     let mut s = Session::sim(SimNode::builtin(NODE), false);
-    let dir = std::env::temp_dir().join(format!("cot_block_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("canoxide_block_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("large.bin");
     let mut steps = 0usize;

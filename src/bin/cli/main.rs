@@ -1,4 +1,4 @@
-//! canopen-cli: a command-line CANopen master for scripts and AI agents.
+//! canoxide-cli: a command-line CANopen master for scripts and AI agents.
 //!
 //! Every result is one JSON object on stdout (`monitor`, `watch` and
 //! `shell` write JSON Lines); `--text` gives tables for a human. The
@@ -10,14 +10,14 @@
 mod cmds;
 mod spec;
 
-use canopen_tester::can::pcan::{PcanAdapter, PCAN_USB_CHANNELS};
-use canopen_tester::can::sim::{builtin_dictionary, SimNode, BUILTIN_EDS};
-use canopen_tester::can::Bitrate;
-use canopen_tester::canopen::types::parse_int;
-use canopen_tester::eds::{self, ObjectDictionary};
-use canopen_tester::library::Library;
-use canopen_tester::netinfo::NetworkOverview;
-use canopen_tester::session::Session;
+use canoxide::can::pcan::{PcanAdapter, PCAN_USB_CHANNELS};
+use canoxide::can::sim::{builtin_dictionary, SimNode, BUILTIN_EDS};
+use canoxide::can::Bitrate;
+use canoxide::canopen::types::parse_int;
+use canoxide::eds::{self, ObjectDictionary};
+use canoxide::library::Library;
+use canoxide::netinfo::NetworkOverview;
+use canoxide::session::Session;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Name of this program in the output and the help.
-pub const CLI_NAME: &str = "canopen-cli";
+pub const CLI_NAME: &str = "canoxide-cli";
 
 /// Options without a value.
 const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values"];
@@ -566,7 +566,7 @@ fn run(tokens: &[String], out: &mut dyn Write) -> i32 {
     let (s, rest) = match resolve(&a.pos) {
         Ok(Some(x)) => x,
         Ok(None) => {
-            let _ = out.write_all(spec::usage_text(CLI_NAME, canopen_tester::VERSION).as_bytes());
+            let _ = out.write_all(spec::usage_text(CLI_NAME, canoxide::VERSION).as_bytes());
             return 2;
         }
         Err(e) => return fail(out, "", e),

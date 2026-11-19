@@ -2,22 +2,22 @@
 //! `CliError`; `monitor` and `watch` also write one JSON line per sample.
 
 use super::{parse_node, spec, Args, CliError, CmdResult, Ctx, CLI_NAME};
-use canopen_tester::can::pcan::PcanAdapter;
-use canopen_tester::can::{CanAdapter, CanFrame};
-use canopen_tester::canopen::decode::{DecodeContext, MsgClass, SdoBlockTracker};
-use canopen_tester::canopen::lss::{bit_timing_index, LssCommand, LssError, LssIdentity, LssResult, DEFAULT_LSS_TIMEOUT_MS};
-use canopen_tester::canopen::nmt::{nmt_frame, sync_frame, NmtCommand};
-use canopen_tester::canopen::pdo::{
+use canoxide::can::pcan::PcanAdapter;
+use canoxide::can::{CanAdapter, CanFrame};
+use canoxide::canopen::decode::{DecodeContext, MsgClass, SdoBlockTracker};
+use canoxide::canopen::lss::{bit_timing_index, LssCommand, LssError, LssIdentity, LssResult, DEFAULT_LSS_TIMEOUT_MS};
+use canoxide::canopen::nmt::{nmt_frame, sync_frame, NmtCommand};
+use canoxide::canopen::pdo::{
     configs_from_od, extract_bits, parse_map_entry, parse_pdo_name, plan_change, plan_enable, plan_enable_all, MapEntry, NodePdoConfig, PdoChange,
     PdoConfig, PdoKind, PdoReadOptions, PdoReadTask, DEFAULT_PDO_SCAN_STOP, MAX_PDOS,
 };
-use canopen_tester::canopen::sdo::{SdoError, SdoRequest, StartOptions, TransferMode, MAX_BLOCK_SIZE};
-use canopen_tester::canopen::task::{ReadsTask, SdoStep, SdoTask, StepsReport, StepsTask, TaskResult};
-use canopen_tester::canopen::types::{self, format_value, hex_bytes, le_u64, parse_int, parse_text, DataType, DisplayMode, Value as TValue};
-use canopen_tester::dcf::{readable_objects, DcfCommissioning, DcfCompareTask, DcfRestoreTask, ObjectAction, RestoreOptions};
-use canopen_tester::eds::{self, ObjectDictionary};
-use canopen_tester::netinfo::{heartbeat_steps, NodeInfo, NodeInfoTask};
-use canopen_tester::session::{download_from_file, upload_to_file, Ctl, FileTransferError, SessionError};
+use canoxide::canopen::sdo::{SdoError, SdoRequest, StartOptions, TransferMode, MAX_BLOCK_SIZE};
+use canoxide::canopen::task::{ReadsTask, SdoStep, SdoTask, StepsReport, StepsTask, TaskResult};
+use canoxide::canopen::types::{self, format_value, hex_bytes, le_u64, parse_int, parse_text, DataType, DisplayMode, Value as TValue};
+use canoxide::dcf::{readable_objects, DcfCommissioning, DcfCompareTask, DcfRestoreTask, ObjectAction, RestoreOptions};
+use canoxide::eds::{self, ObjectDictionary};
+use canoxide::netinfo::{heartbeat_steps, NodeInfo, NodeInfoTask};
+use canoxide::session::{download_from_file, upload_to_file, Ctl, FileTransferError, SessionError};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::io::Write;
@@ -360,7 +360,7 @@ pub fn help(rest: &[String], a: &Args, out: &mut dyn Write) -> i32 {
 }
 
 fn help_value(rest: &[String], a: &Args) -> Result<Value, CliError> {
-    let version = canopen_tester::VERSION;
+    let version = canoxide::VERSION;
     if rest.is_empty() {
         return Ok(if a.flag("json") { spec::schema(CLI_NAME, version) } else { Value::String(spec::usage_text(CLI_NAME, version)) });
     }
@@ -385,7 +385,7 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, pos: &[String], a: &Args, out: &mut d
         }
         "version" => {
             max_args(pos, 0)?;
-            Ok(json!({"name": CLI_NAME, "version": canopen_tester::VERSION}))
+            Ok(json!({"name": CLI_NAME, "version": canoxide::VERSION}))
         }
         "adapters" => adapters(ctx, pos),
         "eds info" => eds_info(pos),
@@ -437,7 +437,7 @@ fn adapters(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
         pcan["channels"] = Value::Array(
             ch.iter()
                 .map(|c| {
-                    let usb = canopen_tester::can::pcan::PCAN_USB_CHANNELS.iter().position(|&h| h as u32 == c.handle).map(|i| format!("usb{}", i + 1));
+                    let usb = canoxide::can::pcan::PCAN_USB_CHANNELS.iter().position(|&h| h as u32 == c.handle).map(|i| format!("usb{}", i + 1));
                     json!({"name": usb, "handle": format!("0x{:02X}", c.handle), "label": c.name, "available": c.available})
                 })
                 .collect(),
@@ -1160,12 +1160,12 @@ fn dcf_save(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
         net_number: 0,
         network_name: a.get("network-name").unwrap_or("").to_string(),
     };
-    let task = canopen_tester::dcf::DcfSaveTask::new(node, od, text, comm, file_name);
+    let task = canoxide::dcf::DcfSaveTask::new(node, od, text, comm, file_name);
     let rep = match run_task(ctx, Box::new(task))? {
         TaskResult::DcfSave(r) => r,
         _ => return Err(internal()),
     };
-    canopen_tester::library::write_atomic(Path::new(path), rep.text.as_bytes()).map_err(|e| CliError::new("file", e.to_string()))?;
+    canoxide::library::write_atomic(Path::new(path), rep.text.as_bytes()).map_err(|e| CliError::new("file", e.to_string()))?;
     Ok(json!({
         "node": node,
         "file": path,

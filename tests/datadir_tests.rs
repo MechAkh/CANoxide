@@ -1,9 +1,9 @@
 //! Data folder rule (installed / portable, migration), saved PDO
 //! configurations and the v0.2 settings.
 
-use canopen_tester::canopen::pdo::{MapEntry, NodePdoConfig, PdoConfig, PdoKind};
-use canopen_tester::library::*;
-use canopen_tester::settings::{DataView, Settings, Theme, TimestampFormat};
+use canoxide::canopen::pdo::{MapEntry, NodePdoConfig, PdoConfig, PdoKind};
+use canoxide::library::*;
+use canoxide::settings::{DataView, Settings, Theme, TimestampFormat};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(tag: &str) -> TempDir {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let p = std::env::temp_dir().join(format!("cot_datadir_{tag}_{}_{nanos}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("canoxide_datadir_{tag}_{}_{nanos}", std::process::id()));
         fs::create_dir_all(&p).unwrap();
         TempDir(p)
     }

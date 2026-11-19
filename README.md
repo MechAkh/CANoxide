@@ -1,8 +1,9 @@
-# CANopenTester
+# CANoxide
 
 A small, portable Windows tool to test and debug CANopen devices on a
-bench. It is one exe of about 4 MB, with no installer, and it works with a
-PEAK PCAN-USB adapter.
+bench. The GUI is one exe of about 4 MB, with no installer, and it works
+with a PEAK PCAN-USB adapter. A second exe is a command-line tool for
+scripts and AI agents.
 
 What it is for:
 
@@ -25,8 +26,8 @@ is not affiliated with any commercial CANopen tool.
 
 ## Download
 
-Get `CANopenTester.exe` from the
-[latest release](https://github.com/MechAkh/CANopenTester/releases/latest)
+Get `CANoxide.exe` from the
+[latest release](https://github.com/MechAkh/CANoxide/releases/latest)
 and run it. Windows 10/11, 64 bit.
 
 ## Build
@@ -39,12 +40,12 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
 
-The exe is `target\release\CANopenTester.exe`: one file, static CRT, no
+The exe is `target\release\CANoxide.exe`: one file, static CRT, no
 installer, no console window. Copy it anywhere.
 
 ## Command line
 
-`canopen-cli.exe` (built next to the GUI exe) is a command-line CANopen
+`canoxide-cli.exe` (built next to the GUI exe) is a command-line CANopen
 master for scripts and AI agents, on the same library: scan, node info,
 SDO read/write (block transfer included), OD dump, NMT, SYNC, raw frames,
 a bounded bus monitor, PDO read/enable/set/map, heartbeat, value watch,
@@ -54,10 +55,10 @@ gives tables. The simulator is the default adapter, and `--listen-only`
 refuses every command that transmits.
 
 ```
-canopen-cli help --json
-canopen-cli scan
-canopen-cli sdo read 0x1018:1
-canopen-cli --adapter pcan --listen-only monitor --duration 10
+canoxide-cli help --json
+canoxide-cli scan
+canoxide-cli sdo read 0x1018:1
+canoxide-cli --adapter pcan --listen-only monitor --duration 10
 ```
 
 Exit codes: 0 ok, 1 device/protocol error, 2 usage error, 3 adapter error.
@@ -69,8 +70,8 @@ All state of the GUI lives in one data folder: `settings.json`,
 `devices.json`, `eds\` (copies of the added EDS/DCF files) and the saved
 PDO configurations.
 
-- **Portable (default):** `CANoxide_data\` next to the exe. An old
-  `CANopenTester_data\` folder there is renamed to it on the first start.
+- **Portable (default):** `CANoxide_data\` next to the exe. A data folder
+  of the old name (version 0.1) there is renamed to it on the first start.
 - **Installed:** when a file `CANoxide.installed` is next to the exe, the
   folder is `%APPDATA%\CANoxide`.
 

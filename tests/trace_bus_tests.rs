@@ -1,10 +1,10 @@
-use canopen_tester::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
-use canopen_tester::can::{Bitrate, CanFrame};
-use canopen_tester::canopen::decode::{decode, DecodeContext, MsgClass};
-use canopen_tester::canopen::nmt::NodeState;
-use canopen_tester::canopen::sdo::{SdoError, SdoRequest};
-use canopen_tester::canopen::types::DisplayMode;
-use canopen_tester::trace::{TraceFilter, TraceStore};
+use canoxide::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
+use canoxide::can::{Bitrate, CanFrame};
+use canoxide::canopen::decode::{decode, DecodeContext, MsgClass};
+use canoxide::canopen::nmt::NodeState;
+use canoxide::canopen::sdo::{SdoError, SdoRequest};
+use canoxide::canopen::types::DisplayMode;
+use canoxide::trace::{TraceFilter, TraceStore};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -62,9 +62,9 @@ fn ring_buffer_filter_and_fixed_view() {
 
 #[test]
 fn csv_quotes_fields() {
-    assert_eq!(canopen_tester::trace::csv_field("a,b"), "\"a,b\"");
-    assert_eq!(canopen_tester::trace::csv_field("say \"x\""), "\"say \"\"x\"\"\"");
-    assert_eq!(canopen_tester::trace::csv_field("plain"), "plain");
+    assert_eq!(canoxide::trace::csv_field("a,b"), "\"a,b\"");
+    assert_eq!(canoxide::trace::csv_field("say \"x\""), "\"say \"\"x\"\"\"");
+    assert_eq!(canoxide::trace::csv_field("plain"), "plain");
 }
 
 fn wait_for(bus: &BusHandle, timeout: Duration, mut f: impl FnMut(&BusEvent) -> bool) -> bool {
@@ -97,7 +97,7 @@ fn bus_worker_with_simulator() {
             false
         }
     }));
-    assert_eq!(got.unwrap().unwrap(), b"CANopenTester simulator".to_vec());
+    assert_eq!(got.unwrap().unwrap(), b"CANoxide simulator".to_vec());
     {
         let s = bus.shared.lock().unwrap();
         assert!(s.connected);
@@ -123,7 +123,7 @@ fn listen_only_sends_nothing() {
         while let Some(e) = bus.try_recv() {
             match e {
                 BusEvent::Error(_) => errors += 1,
-                BusEvent::Frames(v) => tx += v.iter().filter(|f| f.dir == canopen_tester::can::Dir::Tx).count(),
+                BusEvent::Frames(v) => tx += v.iter().filter(|f| f.dir == canoxide::can::Dir::Tx).count(),
                 BusEvent::SdoDone { outcome, .. } => sdo_cancelled = outcome.result == Err(SdoError::Cancelled),
                 _ => {}
             }

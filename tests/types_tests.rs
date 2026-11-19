@@ -1,4 +1,4 @@
-use canopen_tester::canopen::types::*;
+use canoxide::canopen::types::*;
 
 fn sample(dt: DataType) -> Vec<Value> {
     use DataType::*;

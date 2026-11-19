@@ -2,14 +2,14 @@
 //! info), transmit list, signals with SDO polling, trace log, LSS, bus load,
 //! listen-only refusal.
 
-use canopen_tester::bus::*;
-use canopen_tester::can::{Bitrate, CanFrame, Dir};
-use canopen_tester::canopen::lss::{LssCommand, LssResult};
-use canopen_tester::canopen::pdo::{PdoKind, PdoReadOptions, PdoReadTask};
-use canopen_tester::canopen::task::TaskResult;
-use canopen_tester::canopen::types::DisplayMode;
-use canopen_tester::signals::{SignalDef, SignalSource};
-use canopen_tester::txlist::{Trigger, TxEntry};
+use canoxide::bus::*;
+use canoxide::can::{Bitrate, CanFrame, Dir};
+use canoxide::canopen::lss::{LssCommand, LssResult};
+use canoxide::canopen::pdo::{PdoKind, PdoReadOptions, PdoReadTask};
+use canoxide::canopen::task::TaskResult;
+use canoxide::canopen::types::DisplayMode;
+use canoxide::signals::{SignalDef, SignalSource};
+use canoxide::txlist::{Trigger, TxEntry};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -88,7 +88,7 @@ fn pdo_read_task_sets_the_worker_decoder_and_node_info_fills_the_overview() {
     let s = bus.shared.lock().unwrap();
     assert!(s.pdo_configs.is_empty());
     let n = s.network.get(NODE).expect("node in overview");
-    assert_eq!(n.device_name.as_deref(), Some("CANopenTester simulator"));
+    assert_eq!(n.device_name.as_deref(), Some("CANoxide simulator"));
     assert!(n.vendor_id.is_some() && n.last_seen_us.is_some());
 }
 
@@ -125,7 +125,7 @@ fn transmit_list_periodic_on_rx_fire_and_stop_on_disconnect() {
     bus.send(BusCommand::TxStart(2));
     bus.send(BusCommand::TxFire(3));
     // The node sends TPDO1 (0x185) every 200 ms once operational.
-    bus.send(BusCommand::Nmt { cmd: canopen_tester::canopen::nmt::NmtCommand::Start, node: NODE });
+    bus.send(BusCommand::Nmt { cmd: canoxide::canopen::nmt::NmtCommand::Start, node: NODE });
     let v = frames_for(&bus, Duration::from_millis(600));
     let n321 = v.iter().filter(|f| f.id == 0x321 && f.dir == Dir::Tx).count();
     assert!((15..=40).contains(&n321), "{n321}");
@@ -142,12 +142,12 @@ fn transmit_list_periodic_on_rx_fire_and_stop_on_disconnect() {
 #[test]
 fn signals_from_pdo_and_sdo_poll_bus_load_and_log() {
     let bus = connect(false);
-    let dir = std::env::temp_dir().join(format!("cot_bus_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("canoxide_bus_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let log = dir.join("trace.csv");
     // The worker decoder needs the EDS of the node for PDO signals.
     let mut nodes = std::collections::HashMap::new();
-    nodes.insert(NODE, Arc::new(canopen_tester::can::sim::builtin_dictionary()));
+    nodes.insert(NODE, Arc::new(canoxide::can::sim::builtin_dictionary()));
     bus.send(BusCommand::SetDecodeNodes(nodes));
     let (pdo_sig, poll_sig);
     {
@@ -161,7 +161,7 @@ fn signals_from_pdo_and_sdo_poll_bus_load_and_log() {
     let v = frames_for(&bus, Duration::from_millis(200));
     assert!(!v.iter().any(|f| f.dir == Dir::Tx));
     bus.send(BusCommand::SetSignalPolling(true));
-    bus.send(BusCommand::Nmt { cmd: canopen_tester::canopen::nmt::NmtCommand::Start, node: NODE });
+    bus.send(BusCommand::Nmt { cmd: canoxide::canopen::nmt::NmtCommand::Start, node: NODE });
     let v = frames_for(&bus, Duration::from_millis(1200));
     let polls = v.iter().filter(|f| f.id == 0x600 + NODE as u32).count();
     assert!((8..=30).contains(&polls), "{polls}");

@@ -1,7 +1,7 @@
-use canopen_tester::can::CanFrame;
-use canopen_tester::canopen::abort_text;
-use canopen_tester::canopen::decode::{classify, decode, emcy_code_text, DecodeContext, MsgClass};
-use canopen_tester::eds;
+use canoxide::can::CanFrame;
+use canoxide::canopen::abort_text;
+use canoxide::canopen::decode::{classify, decode, emcy_code_text, DecodeContext, MsgClass};
+use canoxide::eds;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ fn ctx_with(node: u8, file: &str) -> DecodeContext {
     DecodeContext::new(m)
 }
 
-fn d(id: u32, data: &[u8]) -> canopen_tester::canopen::decode::Decoded {
+fn d(id: u32, data: &[u8]) -> canoxide::canopen::decode::Decoded {
     decode(&CanFrame::new(id, data), &DecodeContext::default())
 }
 

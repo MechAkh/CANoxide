@@ -33,7 +33,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new(name: &str) -> TempDir {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let p = std::env::temp_dir().join(format!("canopentester_uitest_{name}_{}_{nanos}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("canoxide_uitest_{name}_{}_{nanos}", std::process::id()));
         std::fs::create_dir_all(&p).expect("create temp dir");
         TempDir(p)
     }

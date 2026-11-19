@@ -1,4 +1,4 @@
-//! CANopenTester: a portable CANopen bench tool.
+//! CANoxide: a portable CANopen bench tool.
 //!
 //! The non-UI modules carry all logic and all tests; `ui` only draws:
 //! `can` (adapters, simulator), `eds`, `canopen` (types, decode, SDO with
@@ -11,7 +11,7 @@
 #![deny(unsafe_code)]
 
 /// The product name in file info, CSV headers and the CLI.
-pub const PRODUCT_NAME: &str = "CANopenTester";
+pub const PRODUCT_NAME: &str = "CANoxide";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod bus;

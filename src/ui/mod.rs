@@ -29,13 +29,13 @@ pub fn run() -> eframe::Result {
     let size = [boot.settings.window_width, boot.settings.window_height];
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("CANopenTester")
+            .with_title("CANoxide")
             .with_inner_size(size)
             .with_min_inner_size([720.0, 480.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native("CANopenTester", options, Box::new(move |cc| Ok(Box::new(App::new(cc, boot)))))
+    eframe::run_native("CANoxide", options, Box::new(move |cc| Ok(Box::new(App::new(cc, boot)))))
 }
 
 /// What is loaded before the window opens.
@@ -69,7 +69,7 @@ impl Boot {
     }
 
     /// Load settings and library from a given data folder (the UI tests
-    /// use a temporary folder; the app uses `CANopenTester_data`).
+    /// use a temporary folder; the app uses `CANoxide_data`).
     fn load_dir(dir: PathBuf) -> Boot {
         let mut b = Boot { data_dir: None, data_mode: None, data_error: None, settings: Settings::default(), library: None, notes: Vec::new() };
         b.data_dir = Some(dir.clone());

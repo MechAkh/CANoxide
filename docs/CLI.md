@@ -1,13 +1,13 @@
-# canopen-cli: guide for scripts and AI agents
+# canoxide-cli: guide for scripts and AI agents
 
-`canopen-cli.exe` is the command-line twin of the CANopenTester GUI. It
+`canoxide-cli.exe` is the command-line twin of the CANoxide GUI. It
 uses the same library: the same SDO client, PDO planner, DCF and LSS code,
 and the same simulator. It is built for scripts and for AI agents: every
 result is one JSON object, every error has a kind and an exit code, and the
 full command table is machine-readable.
 
 ```
-canopen-cli [global options] <command> [arguments] [options]
+canoxide-cli [global options] <command> [arguments] [options]
 ```
 
 Options may stand anywhere on the line, as `--name value` or
@@ -17,9 +17,9 @@ optional); sub-indexes and other numbers are decimal or `0x` hex.
 Start here:
 
 ```
-canopen-cli help            # usage text
-canopen-cli help --json     # the full schema: commands, options, "sends", outputs, exit codes
-canopen-cli help sdo write  # one command
+canoxide-cli help            # usage text
+canoxide-cli help --json     # the full schema: commands, options, "sends", outputs, exit codes
+canoxide-cli help sdo write  # one command
 ```
 
 ## Safety model
@@ -54,7 +54,7 @@ Develop every script against the simulator, then add `--adapter pcan`
 
 The simulated node: node-ID = `--node` (default 1), boots pre-operational,
 heartbeat every 1000 ms, TPDOs only when operational. Its dictionary
-(`canopen-cli od dump`) has, among others:
+(`canoxide-cli od dump`) has, among others:
 
 | Object | Content |
 |---|---|
@@ -139,15 +139,15 @@ default).
 ### 1. Find the nodes
 
 ```
-> canopen-cli scan --to 5
+> canoxide-cli scan --to 5
 {"command":"scan","errors":[],"found":1,"from":1,"nodes":[{"device_type":"0x00000191","node":1}],"ok":true,"to":5}
 ```
 
 ### 2. Node overview
 
 ```
-> canopen-cli info
-{"command":"info","nodes":[{"device_name":"CANopenTester simulator","device_type":"0x00000191","error_register":"0x00","last_emcy":null,"node":1,"product_code":"0x00000001","read_errors":[],"revision":"0x00010000","serial":"0x12345678","state":"Boot-up","vendor_id":"0x0000069B"}],"ok":true}
+> canoxide-cli info
+{"command":"info","nodes":[{"device_name":"CANoxide simulator","device_type":"0x00000191","error_register":"0x00","last_emcy":null,"node":1,"product_code":"0x00000001","read_errors":[],"revision":"0x00010000","serial":"0x12345678","state":"Boot-up","vendor_id":"0x0000069B"}],"ok":true}
 ```
 
 ### 3. Read an object
@@ -156,38 +156,38 @@ default).
 `string` are the three display forms of the GUI; `raw` is the bytes.
 
 ```
-> canopen-cli sdo read 0x1018:1
+> canoxide-cli sdo read 0x1018:1
 {"command":"sdo read","decimal":"1691","hex":"0x0000069B","index":"0x1018","mode":"auto","name":"Identity object / Vendor ID","node":1,"ok":true,"raw":"9B 06 00 00","size":4,"string":"....","sub":1,"type":"UNSIGNED32","value":1691}
 ```
 
 ### 4. Write an object, and a value outside the EDS limits
 
 ```
-> canopen-cli sdo write 0x2002 250
+> canoxide-cli sdo write 0x2002 250
 {"command":"sdo write","data":"FA 00 00 00","index":"0x2002","mode":"auto","name":"Set point","node":1,"ok":true,"size":4,"sub":0,"type":"INTEGER32","written":true}
 
-> canopen-cli sdo write 0x2002 5000      (exit 2, nothing sent)
+> canoxide-cli sdo write 0x2002 5000      (exit 2, nothing sent)
 {"error":{"abort_code":null,"kind":"usage","message":"value '5000': value 5000 above high limit 1000 (EDS limits)"},"ok":false}
 ```
 
 ### 5. An SDO abort
 
 ```
-> canopen-cli sdo read 0x5000      (exit 1)
+> canoxide-cli sdo read 0x5000      (exit 1)
 {"error":{"abort_code":"0x06020000","kind":"abort","message":"abort 0x06020000: Object does not exist in the object dictionary"},"ok":false}
 ```
 
 ### 6. Listen-only refuses a send
 
 ```
-> canopen-cli --listen-only nmt start      (exit 2)
+> canoxide-cli --listen-only nmt start      (exit 2)
 {"error":{"abort_code":null,"kind":"listen_only","message":"'nmt' transmits on the bus; refused with --listen-only (nothing was opened or sent)"},"ok":false}
 ```
 
 ### 7. Monitor the bus
 
 ```
-> canopen-cli monitor --duration 1.5
+> canoxide-cli monitor --duration 1.5
 {"class":"heartbeat","data":"00","dir":"Rx","dlc":1,"ext":false,"id":"0x701","node":1,"rtr":false,"t":4e-6,"text":"Boot-up","type":"Heartbeat"}
 {"class":"heartbeat","data":"7F","dir":"Rx","dlc":1,"ext":false,"id":"0x701","node":1,"rtr":false,"t":1.001122,"text":"Heartbeat Pre-operational","type":"Heartbeat"}
 {"command":"monitor","duration_s":1.501,"frames":2,"ok":true}
@@ -199,10 +199,10 @@ default).
 ### 8. Read and change a PDO
 
 ```
-> canopen-cli pdo read --only tpdo1
+> canoxide-cli pdo read --only tpdo1
 {"command":"pdo read","complete":true,"errors":[],"node":1,"ok":true,"pdos":[{"cob_id":"0x181","event_timer_ms":200,"extended":false,"inhibit_100us":0,"kind":"TPDO","mapping":[{"bits":8,"index":"0x6000","name":"Read input 8 bit / Inputs 1-8","sub":1},{"bits":8,"index":"0x6000","name":"Read input 8 bit / Inputs 9-16","sub":2}],"name":"tpdo1","number":1,"rtr_allowed":true,"sync_start":null,"trans_type":255,"valid":true}],"read_time":1795047599,"read_time_text":"2026-11-19 00:19:59 UTC"}
 
-> canopen-cli pdo set tpdo1 --event 50
+> canoxide-cli pdo set tpdo1 --event 50
 {"after":{...,"event_timer_ms":50,...},"before":{...,"event_timer_ms":200,...},"changed":true,"command":"pdo set","node":1,"ok":true,"pdo":"tpdo1","steps":{"cancelled":false,"done":[{"abort_code":null,"data":"81 01 00 80","error":null,"index":"0x1800","node":1,"ok":true,"sub":1,"what":"set TPDO1 invalid"},...],"not_run":[],"ok":true}}
 ```
 
@@ -213,10 +213,10 @@ change follows the CiA 301 sequence: PDO invalid, write, valid again.
 ### 9. Save and compare a DCF
 
 ```
-> canopen-cli dcf save node1.dcf
+> canoxide-cli dcf save node1.dcf
 {"cancelled":false,"command":"dcf save","failed":[],"file":"node1.dcf","node":1,"not_stored":[{"index":"0x6000","sub":0},{"index":"0x6000","sub":1},{"index":"0x6000","sub":2},{"index":"0x6200","sub":0},{"index":"0x6200","sub":1},{"index":"0x6200","sub":2}],"ok":true,"values":59}
 
-> canopen-cli dcf compare node1.dcf
+> canoxide-cli dcf compare node1.dcf
 {"cancelled":false,"command":"dcf compare","compared":59,"differences":[],"equal":true,"file":"node1.dcf","node":1,"ok":true}
 ```
 
@@ -236,7 +236,7 @@ exit
 ```
 
 ```
-> canopen-cli shell --script steps.txt
+> canoxide-cli shell --script steps.txt
 {"command":"sdo write","data":"21 00 00 00","index":"0x2002","mode":"auto","name":"Set point","node":1,"ok":true,"size":4,"sub":0,"type":"INTEGER32","written":true}
 {"all":false,"command":"nmt","label":"Start","node":1,"ok":true,"service":"start"}
 {"raw":"21 00 00 00","t":1.001,"value":33}
@@ -254,7 +254,7 @@ read stdin, so a program can keep it open and send one line at a time.
 ### Text output
 
 ```
-> canopen-cli sdo read 0x1017 --text
+> canoxide-cli sdo read 0x1017 --text
 command: sdo read
 decimal: 1000
 hex: 0x03E8
@@ -274,10 +274,10 @@ value: 1000
 ## On a real bus
 
 ```
-canopen-cli adapters --adapter pcan                       # the channels (none opened)
-canopen-cli --adapter pcan --listen-only monitor --duration 10
-canopen-cli --adapter pcan --channel usb1 --bitrate 250k scan
-canopen-cli --adapter pcan --node 5 --eds dev.eds sdo read 0x1008
+canoxide-cli adapters --adapter pcan                       # the channels (none opened)
+canoxide-cli --adapter pcan --listen-only monitor --duration 10
+canoxide-cli --adapter pcan --channel usb1 --bitrate 250k scan
+canoxide-cli --adapter pcan --node 5 --eds dev.eds sdo read 0x1008
 ```
 
 The PEAK driver (`PCANBasic.dll`, 64 bit) must be installed; without it a

@@ -1,8 +1,8 @@
-use canopen_tester::can::sim::SimNode;
-use canopen_tester::can::CanFrame;
-use canopen_tester::canopen::nmt::{nmt_frame, sync_frame, NmtCommand, NodeState};
-use canopen_tester::canopen::sdo::*;
-use canopen_tester::eds;
+use canoxide::can::sim::SimNode;
+use canoxide::can::CanFrame;
+use canoxide::canopen::nmt::{nmt_frame, sync_frame, NmtCommand, NodeState};
+use canoxide::canopen::sdo::*;
+use canoxide::eds;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -61,7 +61,7 @@ fn segmented_upload_and_download_of_100_byte_string() {
     assert_eq!(upload(&mut c, &mut n, 0x2000, 0).unwrap(), s);
     // Default string and an exact multiple of 7.
     let mut n2 = SimNode::builtin(NODE);
-    assert_eq!(upload(&mut c, &mut n2, 0x1008, 0).unwrap(), b"CANopenTester simulator".to_vec());
+    assert_eq!(upload(&mut c, &mut n2, 0x1008, 0).unwrap(), b"CANoxide simulator".to_vec());
     let s14 = b"abcdefghijklmn".to_vec();
     download(&mut c, &mut n2, 0x2003, 0, s14.clone()).unwrap();
     assert_eq!(upload(&mut c, &mut n2, 0x2003, 0).unwrap(), s14);

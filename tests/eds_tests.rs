@@ -1,6 +1,6 @@
-use canopen_tester::canopen::pdo::{configs_from_od, PdoKind};
-use canopen_tester::canopen::types::DataType;
-use canopen_tester::eds::{self, AccessType, ObjectType};
+use canoxide::canopen::pdo::{configs_from_od, PdoKind};
+use canoxide::canopen::types::DataType;
+use canoxide::eds::{self, AccessType, ObjectType};
 use std::path::Path;
 
 fn data(name: &str) -> std::path::PathBuf {
@@ -163,7 +163,7 @@ fn random_bytes_never_panic() {
                 v.push(if x.is_multiple_of(3) { (x >> 8) as u8 } else { alphabet[(x as usize >> 3) % alphabet.len()] });
             }
             let od = eds::parse_bytes(&v);
-            let _ = canopen_tester::canopen::pdo::configs_from_od(&od, 1);
+            let _ = canoxide::canopen::pdo::configs_from_od(&od, 1);
         }
     }
 }

@@ -1,23 +1,23 @@
 [package]
-name = "canopen-tester"
-version = "0.1.0"
+name = "canoxide"
+version = "0.2.0"
 edition = "2021"
 description = "Portable CANopen bench tester: EDS browser, SDO client, NMT, bus trace"
 license = "MIT"
-repository = "https://github.com/MechAkh/CANopenTester"
+repository = "https://github.com/MechAkh/CANoxide"
 publish = false
 autobins = false
 
 [lib]
-name = "canopen_tester"
+name = "canoxide"
 path = "src/lib.rs"
 
 [[bin]]
-name = "CANopenTester"
+name = "CANoxide"
 path = "src/main.rs"
 
 [[bin]]
-name = "canopen-cli"
+name = "canoxide-cli"
 path = "src/bin/cli/main.rs"
 
 [dependencies]

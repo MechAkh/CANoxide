@@ -1,11 +1,11 @@
 //! Signal store (A3), bus load and transmit list (A4).
 
-use canopen_tester::busload::{frame_bits, BusLoad};
-use canopen_tester::can::sim::builtin_dictionary;
-use canopen_tester::can::{CanFrame, Dir};
-use canopen_tester::canopen::decode::DecodeContext;
-use canopen_tester::signals::*;
-use canopen_tester::txlist::{Trigger, TxEntry, TxList};
+use canoxide::busload::{frame_bits, BusLoad};
+use canoxide::can::sim::builtin_dictionary;
+use canoxide::can::{CanFrame, Dir};
+use canoxide::canopen::decode::DecodeContext;
+use canoxide::signals::*;
+use canoxide::txlist::{Trigger, TxEntry, TxList};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ fn rx(id: u32, data: &[u8], t_us: u64) -> CanFrame {
 }
 
 fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("cot_core_{}_{name}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("canoxide_core_{}_{name}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -54,7 +54,7 @@ fn signal_from_a_pdo() {
 
 #[test]
 fn signal_from_a_pdo_of_a_read_config_with_signed_type() {
-    use canopen_tester::canopen::pdo::*;
+    use canoxide::canopen::pdo::*;
     let mut ctx = ctx();
     let cfg = PdoConfig {
         kind: PdoKind::Tpdo,
@@ -250,7 +250,7 @@ fn transmit_list_triggers() {
     assert!(l.due(5000).is_empty());
     // Persist: entries come back stopped.
     let dir = tmp("txlist");
-    let p = dir.join(canopen_tester::txlist::TXLIST_FILE);
+    let p = dir.join(canoxide::txlist::TXLIST_FILE);
     l.save(&p).unwrap();
     let back = TxList::load(&p).unwrap();
     assert_eq!(back.entries.len(), 3);

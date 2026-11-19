@@ -1,14 +1,14 @@
-; Built-in dictionary of the CANopenTester simulator node.
+; Built-in dictionary of the CANoxide simulator node.
 [FileInfo]
 FileName=sim_builtin.eds
 FileVersion=1
 FileRevision=0
 EDSVersion=4.0
-Description=Simulated CANopen node of CANopenTester
-CreatedBy=CANopenTester
+Description=Simulated CANopen node of CANoxide
+CreatedBy=CANoxide
 
 [DeviceInfo]
-VendorName=CANopenTester
+VendorName=CANoxide
 ProductName=Simulator node
 BaudRate_125=1
 BaudRate_250=1
@@ -70,7 +70,7 @@ ParameterName=Manufacturer device name
 ObjectType=0x7
 DataType=0x0009
 AccessType=const
-DefaultValue=CANopenTester simulator
+DefaultValue=CANoxide simulator
 PDOMapping=0
 
 [1009]

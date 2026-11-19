@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const EXE: &str = env!("CARGO_BIN_EXE_canopen-cli");
+const EXE: &str = env!("CARGO_BIN_EXE_canoxide-cli");
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct Run {
@@ -43,7 +43,7 @@ fn run_with(args: &[&str], stdin: Option<&str>) -> Run {
     let mut c = command();
     c.args(args);
     c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
-    let mut child = c.spawn().expect("start canopen-cli");
+    let mut child = c.spawn().expect("start canoxide-cli");
     if let Some(text) = stdin {
         let mut i = child.stdin.take().unwrap();
         i.write_all(text.as_bytes()).unwrap();
@@ -86,7 +86,7 @@ fn temp(name: &str) -> PathBuf {
 fn cli_version_and_help() {
     let v = ok(&["version"]);
     assert_eq!(v["command"], "version");
-    assert_eq!(v["name"], "canopen-cli");
+    assert_eq!(v["name"], "canoxide-cli");
     assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
 
     let r = run(&["help"]);
@@ -163,7 +163,7 @@ fn cli_adapters_and_eds() {
 
     let dir = temp("eds");
     let eds = dir.join("sim.eds");
-    std::fs::write(&eds, canopen_tester::can::sim::BUILTIN_EDS).unwrap();
+    std::fs::write(&eds, canoxide::can::sim::BUILTIN_EDS).unwrap();
     let e = eds.to_str().unwrap();
     let v = ok(&["eds", "info", e]);
     assert!(v["objects"].as_u64().unwrap() > 10);
@@ -243,7 +243,7 @@ fn cli_od_dump_nmt_sync_send() {
     let v = ok(&["od", "dump"]);
     assert!(v["read"].as_u64().unwrap() > 20);
     let o = v["objects"].as_array().unwrap();
-    assert!(o.iter().any(|x| x["index"] == "0x1008" && x["value"] == "CANopenTester simulator"));
+    assert!(o.iter().any(|x| x["index"] == "0x1008" && x["value"] == "CANoxide simulator"));
 
     let v = ok(&["nmt", "start"]);
     assert_eq!(v["node"], 1);

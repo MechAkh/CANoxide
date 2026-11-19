@@ -1,13 +1,13 @@
 //! DCF save / compare / restore (A7) and the LSS master (A6) against the
 //! simulator.
 
-use canopen_tester::can::sim::{builtin_dictionary, SimNode, BUILTIN_EDS};
-use canopen_tester::canopen::lss::{LssCommand, LssError, LssIdentity, LssResult, NODE_ID_UNCONFIGURED};
-use canopen_tester::canopen::nmt::{nmt_frame, NmtCommand};
-use canopen_tester::canopen::task::TaskResult;
-use canopen_tester::dcf::*;
-use canopen_tester::eds;
-use canopen_tester::session::{Ctl, Session};
+use canoxide::can::sim::{builtin_dictionary, SimNode, BUILTIN_EDS};
+use canoxide::canopen::lss::{LssCommand, LssError, LssIdentity, LssResult, NODE_ID_UNCONFIGURED};
+use canoxide::canopen::nmt::{nmt_frame, NmtCommand};
+use canoxide::canopen::task::TaskResult;
+use canoxide::dcf::*;
+use canoxide::eds;
+use canoxide::session::{Ctl, Session};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,7 +40,7 @@ fn restore(s: &mut Session, dcf: &Arc<eds::ObjectDictionary>, opts: RestoreOptio
 }
 
 fn write(s: &mut Session, index: u16, sub: u8, data: Vec<u8>) {
-    use canopen_tester::canopen::sdo::{SdoRequest, StartOptions};
+    use canoxide::canopen::sdo::{SdoRequest, StartOptions};
     s.sdo(NODE, SdoRequest::Download { index, sub, data }, StartOptions::default()).unwrap().result.unwrap();
 }
 

@@ -52,7 +52,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[("json", None, "Print the schema as JSON.")],
         output: "Text, or the schema object.",
-        example: "canopen-cli help --json",
+        example: "canoxide-cli help --json",
     },
     Spec {
         name: "version",
@@ -62,7 +62,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[],
         output: "{name, version}",
-        example: "canopen-cli version",
+        example: "canoxide-cli version",
     },
     Spec {
         name: "adapters",
@@ -72,7 +72,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[],
         output: "{adapters: [{name, channels: [{name, handle, available}]}]}",
-        example: "canopen-cli adapters",
+        example: "canoxide-cli adapters",
     },
     Spec {
         name: "eds info",
@@ -82,7 +82,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[],
         output: "{file, objects, entries, file_info, device_info, is_dcf, node_id, baudrate_kbit, warnings}",
-        example: "canopen-cli eds info io.eds",
+        example: "canoxide-cli eds info io.eds",
     },
     Spec {
         name: "eds objects",
@@ -92,7 +92,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[],
         output: "{objects: [{index, sub, name, type, access, default, pdo_mapping}]}",
-        example: "canopen-cli eds objects io.eds",
+        example: "canoxide-cli eds objects io.eds",
     },
     Spec {
         name: "eds pdos",
@@ -102,7 +102,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[],
         output: "{pdos: [PdoConfig]}",
-        example: "canopen-cli eds pdos io.eds --node 5",
+        example: "canoxide-cli eds pdos io.eds --node 5",
     },
     Spec {
         name: "scan",
@@ -112,7 +112,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[("from", Some("id"), "First node-ID. Default 1."), ("to", Some("id"), "Last node-ID. Default 127."), ("scan-timeout", Some("ms"), "Wait per node. Default 100.")],
         output: "{nodes: [{node, device_type}], errors: [{node, error}]}",
-        example: "canopen-cli scan --to 10",
+        example: "canoxide-cli scan --to 10",
     },
     Spec {
         name: "info",
@@ -122,7 +122,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[NODES, ("all", None, "Scan 1..127 first and read every node found.")],
         output: "{nodes: [{node, state, device_type, error_register, vendor_id, product_code, revision, serial, device_name, last_emcy, read_errors}]}",
-        example: "canopen-cli info --node 5",
+        example: "canoxide-cli info --node 5",
     },
     Spec {
         name: "sdo read",
@@ -132,7 +132,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[TYPE, MODE, BLOCK, ("out", Some("file"), "Write the raw bytes to this file instead of the JSON value.")],
         output: "{node, index, sub, name, type, size, value, hex, decimal, string, raw, mode} or {.., file, size}",
-        example: "canopen-cli sdo read 0x1008",
+        example: "canoxide-cli sdo read 0x1008",
     },
     Spec {
         name: "sdo write",
@@ -142,7 +142,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[TYPE, MODE, BLOCK, ("in", Some("file"), "Write the bytes of this file (no value argument).")],
         output: "{node, index, sub, name, mode, type, size, data, written: true} or {.., file, size, written}",
-        example: "canopen-cli sdo write 0x1017 500 --type u16",
+        example: "canoxide-cli sdo write 0x1017 500 --type u16",
     },
     Spec {
         name: "od dump",
@@ -152,7 +152,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[],
         output: "{node, read, failed, objects: [{index, sub, name, type, value, hex, error, abort_code}]}",
-        example: "canopen-cli od dump",
+        example: "canoxide-cli od dump",
     },
     Spec {
         name: "nmt",
@@ -162,7 +162,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[ALL],
         output: "{service, label, node, all}",
-        example: "canopen-cli nmt start --all",
+        example: "canoxide-cli nmt start --all",
     },
     Spec {
         name: "sync",
@@ -172,7 +172,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[],
         output: "{sent: 1}",
-        example: "canopen-cli sync",
+        example: "canoxide-cli sync",
     },
     Spec {
         name: "send",
@@ -188,7 +188,7 @@ pub const COMMANDS: &[Spec] = &[
             ("count", Some("n"), "Number of frames (needed with --period, at most 100000)."),
         ],
         output: "{id, ext, rtr, data, sent}",
-        example: "canopen-cli send 0x123 \"01 02 03\"",
+        example: "canoxide-cli send 0x123 \"01 02 03\"",
     },
     Spec {
         name: "monitor",
@@ -204,7 +204,7 @@ pub const COMMANDS: &[Spec] = &[
             ("id", Some("lo[-hi]"), "Only identifiers in this range (hex)."),
         ],
         output: "JSON Lines: one {t, dir, id, ext, rtr, dlc, data, type, class, node, text} per frame, then {ok, command, frames, duration_s}",
-        example: "canopen-cli monitor --duration 2",
+        example: "canoxide-cli monitor --duration 2",
     },
     Spec {
         name: "pdo read",
@@ -217,7 +217,7 @@ pub const COMMANDS: &[Spec] = &[
             ("only", Some("pdo"), "Read only this PDO (rpdo1, tpdo3, ...)."),
         ],
         output: "{node, read_time, read_time_text, complete, errors, pdos: [{kind, number, cob_id, valid, extended, rtr_allowed, trans_type, inhibit_100us, event_timer_ms, sync_start, mapping: [{index, sub, bits}]}]}",
-        example: "canopen-cli pdo read",
+        example: "canoxide-cli pdo read",
     },
     Spec {
         name: "pdo enable",
@@ -227,7 +227,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[],
         output: "{steps: {done: [{step, ok, error, abort_code}], not_run, ok}}",
-        example: "canopen-cli pdo enable tpdo1",
+        example: "canoxide-cli pdo enable tpdo1",
     },
     Spec {
         name: "pdo disable",
@@ -237,7 +237,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[],
         output: "{steps: {...}}",
-        example: "canopen-cli pdo disable tpdo1",
+        example: "canoxide-cli pdo disable tpdo1",
     },
     Spec {
         name: "pdo set",
@@ -253,7 +253,7 @@ pub const COMMANDS: &[Spec] = &[
             ("sync-start", Some("0..240"), "SYNC start value."),
         ],
         output: "{before, after, steps: {...}}",
-        example: "canopen-cli pdo set tpdo1 --event 50",
+        example: "canoxide-cli pdo set tpdo1 --event 50",
     },
     Spec {
         name: "pdo map",
@@ -263,7 +263,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[],
         output: "{before, after, steps: {...}}",
-        example: "canopen-cli pdo map tpdo2 0x2001:0:16 0x2002:0:32",
+        example: "canoxide-cli pdo map tpdo2 0x2001:0:16 0x2002:0:32",
     },
     Spec {
         name: "heartbeat set",
@@ -273,7 +273,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[NODES, ("all", None, "Scan 1..127 first and set every node found.")],
         output: "{ms, nodes, steps: {...}}",
-        example: "canopen-cli heartbeat set 1000",
+        example: "canoxide-cli heartbeat set 1000",
     },
     Spec {
         name: "watch",
@@ -283,7 +283,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[DURATION, COUNT, ("period", Some("ms"), "SDO read period. Default 100, minimum 50."), TYPE],
         output: "JSON Lines: one {t, value, raw} per sample, then {ok, command, samples}",
-        example: "canopen-cli watch 0x2002:0 --count 5",
+        example: "canoxide-cli watch 0x2002:0 --count 5",
     },
     Spec {
         name: "lss switch-global",
@@ -293,7 +293,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, done: true}",
-        example: "canopen-cli lss switch-global configuration",
+        example: "canoxide-cli lss switch-global configuration",
     },
     Spec {
         name: "lss switch-selective",
@@ -303,7 +303,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, done: true}",
-        example: "canopen-cli lss switch-selective 0x069B 0x1234 1 42",
+        example: "canoxide-cli lss switch-selective 0x069B 0x1234 1 42",
     },
     Spec {
         name: "lss inquire-identity",
@@ -313,7 +313,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, identity: {vendor, product, revision, serial}}",
-        example: "canopen-cli lss inquire-identity",
+        example: "canoxide-cli lss inquire-identity",
     },
     Spec {
         name: "lss inquire-node-id",
@@ -323,7 +323,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, node_id}",
-        example: "canopen-cli lss inquire-node-id",
+        example: "canoxide-cli lss inquire-node-id",
     },
     Spec {
         name: "lss set-node-id",
@@ -333,7 +333,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, done: true}",
-        example: "canopen-cli lss set-node-id 10",
+        example: "canoxide-cli lss set-node-id 10",
     },
     Spec {
         name: "lss set-bit-timing",
@@ -343,7 +343,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, done: true}",
-        example: "canopen-cli lss set-bit-timing 500",
+        example: "canoxide-cli lss set-bit-timing 500",
     },
     Spec {
         name: "lss activate-bit-timing",
@@ -353,7 +353,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, done: true}",
-        example: "canopen-cli lss activate-bit-timing 100",
+        example: "canoxide-cli lss activate-bit-timing 100",
     },
     Spec {
         name: "lss store",
@@ -363,7 +363,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, done: true}",
-        example: "canopen-cli lss store",
+        example: "canoxide-cli lss store",
     },
     Spec {
         name: "lss fastscan",
@@ -373,7 +373,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, found, identity or null}",
-        example: "canopen-cli lss fastscan",
+        example: "canoxide-cli lss fastscan",
     },
     Spec {
         name: "lss identify",
@@ -383,7 +383,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[LSS_TIMEOUT],
         output: "{service, non_configured}",
-        example: "canopen-cli lss identify",
+        example: "canoxide-cli lss identify",
     },
     Spec {
         name: "dcf save",
@@ -393,7 +393,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[("node-name", Some("text"), "NodeName in [DeviceComissioning]."), ("network-name", Some("text"), "NetworkName in [DeviceComissioning].")],
         output: "{node, file, values, failed, not_stored}",
-        example: "canopen-cli dcf save node5.dcf",
+        example: "canoxide-cli dcf save node5.dcf",
     },
     Spec {
         name: "dcf restore",
@@ -410,7 +410,7 @@ pub const COMMANDS: &[Spec] = &[
             ("default-values", None, "Also restore objects that have only a DefaultValue."),
         ],
         output: "{node, dry_run, ok, written, would_write, unchanged, skipped, failed, objects: [{index, sub, name, dcf_value, node_value, action}], stored}",
-        example: "canopen-cli dcf restore node5.dcf --dry-run",
+        example: "canoxide-cli dcf restore node5.dcf --dry-run",
     },
     Spec {
         name: "dcf compare",
@@ -420,7 +420,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: true,
         options: &[("default-values", None, "Also compare objects that have only a DefaultValue.")],
         output: "{node, compared, equal, differences: [{index, sub, name, dcf_value, node_value, error}]}",
-        example: "canopen-cli dcf compare node5.dcf",
+        example: "canoxide-cli dcf compare node5.dcf",
     },
     Spec {
         name: "shell",
@@ -430,7 +430,7 @@ pub const COMMANDS: &[Spec] = &[
         bus: false,
         options: &[("script", Some("file"), "Read the lines from this file instead of stdin.")],
         output: "JSON Lines: one result object per line ({ok:false, error} for a failed line).",
-        example: "canopen-cli shell --script steps.txt",
+        example: "canoxide-cli shell --script steps.txt",
     },
 ];
 
@@ -453,7 +453,7 @@ pub fn schema(name: &str, version: &str) -> Value {
             "With --listen-only every command with \"sends\": true fails with exit code 2 before the adapter is opened.",
             "monitor and watch are bounded: --duration or --count is required."
         ],
-        "syntax": "canopen-cli [global options] <command> [arguments] [options]  (options may stand anywhere; --name value or --name=value)",
+        "syntax": "canoxide-cli [global options] <command> [arguments] [options]  (options may stand anywhere; --name value or --name=value)",
         "numbers": "Indexes and CAN identifiers are hex (0x prefix optional); sub-indexes and other numbers decimal or 0x hex.",
         "global_options": opts_json(GLOBAL),
         "commands": COMMANDS.iter().map(|s| json!({

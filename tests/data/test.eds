@@ -1,4 +1,4 @@
-; Test EDS for the CANopenTester tests (written for the tests, not a real device).
+; Test EDS for the CANoxide tests (written for the tests, not a real device).
 ; comment line
 [FileInfo]
 FileName=test.eds
