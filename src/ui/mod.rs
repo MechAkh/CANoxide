@@ -58,8 +58,12 @@ pub fn run() -> eframe::Result {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(format!("CANoxide {}", crate::VERSION))
         .with_inner_size(size)
+        .with_maximized(boot.settings.window_maximized)
         .with_min_inner_size([1024.0, 640.0])
         .with_drag_and_drop(true);
+    if let Some([x, y]) = boot.settings.window_pos.filter(|p| p[0] > -16.0 && p[1] > -16.0 && p[0] < 10_000.0 && p[1] < 10_000.0) {
+        viewport = viewport.with_position([x, y]);
+    }
     if let Ok(icon) = app_icon() {
         viewport = viewport.with_icon(Arc::new(icon));
     }
@@ -1162,12 +1166,17 @@ impl eframe::App for App {
         let hovering = ctx.input(|i| !i.raw.hovered_files.is_empty());
 
         // Window size for the next start.
-        if let Some(r) = ctx.input(|i| i.viewport().inner_rect) {
-            if (r.width() - self.settings.window_width).abs() > 2.0 || (r.height() - self.settings.window_height).abs() > 2.0 {
-                self.settings.window_width = r.width();
-                self.settings.window_height = r.height();
-                self.mark_settings();
-            }
+        // Size and position are kept only from the normal (not maximised) window.
+        let vp = ctx.input(|i| i.viewport().clone());
+        let max = vp.maximized.unwrap_or(false);
+        let normal = !max && !vp.minimized.unwrap_or(false) && !vp.fullscreen.unwrap_or(false);
+        let size = vp.inner_rect.filter(|_| normal).map_or([self.settings.window_width, self.settings.window_height], |r| [r.width(), r.height()]);
+        let pos = vp.outer_rect.filter(|_| normal).map_or(self.settings.window_pos, |r| Some([r.min.x.round(), r.min.y.round()]));
+        let moved = (size[0] - self.settings.window_width).abs() > 2.0 || (size[1] - self.settings.window_height).abs() > 2.0 || pos != self.settings.window_pos;
+        if moved || (max != self.settings.window_maximized && !vp.minimized.unwrap_or(false)) {
+            (self.settings.window_width, self.settings.window_height) = (size[0], size[1]);
+            (self.settings.window_pos, self.settings.window_maximized) = (pos, max);
+            self.mark_settings();
         }
 
         let p = if self.is_dark() { &theme::DARK } else { &theme::LIGHT };

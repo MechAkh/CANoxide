@@ -88,6 +88,10 @@ pub struct Settings {
     pub trace_display: DisplayMode,
     pub window_width: f32,
     pub window_height: f32,
+    /// The window was maximised at the last close; width, height and position
+    /// are then those of the window before it was maximised.
+    pub window_maximized: bool,
+    pub window_pos: Option<[f32; 2]>,
     pub active_device: Option<String>,
     pub saved_frames: Vec<SavedFrame>,
     // ---- v0.2 ----
@@ -207,6 +211,8 @@ impl Default for Settings {
             trace_display: DisplayMode::Hex,
             window_width: 1280.0,
             window_height: 800.0,
+            window_maximized: false,
+            window_pos: None,
             active_device: None,
             saved_frames: Vec::new(),
             theme: Theme::System,
