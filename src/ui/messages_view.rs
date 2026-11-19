@@ -7,6 +7,7 @@
 
 use super::{analysis_view, graph, theme, App};
 use crate::analysis::BitRef;
+use crate::can::CanFrame;
 use crate::usersig::{fmt_value, UserSignal};
 use crate::canopen::pdo::MapEntry;
 use crate::msgstats::{tint_strength, Change, MsgKey};
@@ -276,6 +277,7 @@ impl App {
         let selected = self.msgv.selected;
         let msgs = &self.msgs;
         let order = &self.msgv.order;
+        let dctx = &self.decode_ctx;
         // A click on a cell selects the row (a selectable label would take
         // the click for text selection).
         ui.style_mut().interaction.selectable_labels = false;
@@ -297,7 +299,8 @@ impl App {
         for _ in 0..8 {
             tb = tb.column(Column::exact(32.0));
         }
-        tb.column(Column::remainder().at_least(50.0))
+        tb.column(Column::initial(64.0).at_least(50.0))
+            .column(Column::remainder().at_least(80.0).clip(true))
             .min_scrolled_height(0.0)
             .header(row_h, |mut h| {
                 for t in ["COB-ID", "Type", "Node", "Count", "Cycle", "DLC"] {
@@ -312,6 +315,9 @@ impl App {
                 }
                 h.col(|ui| {
                     ui.strong("Age");
+                });
+                h.col(|ui| {
+                    ui.strong("Decoded");
                 });
             })
             .body(|body| {
@@ -372,6 +378,11 @@ impl App {
                     }
                     row.col(|ui| {
                         ui.monospace(age_text(now.saturating_sub(e.last_us)));
+                    });
+                    // Decoded text of the newest frame (visible rows only).
+                    row.col(|ui| {
+                        let f = CanFrame { id: e.key.id, extended: e.key.extended, rtr: e.rtr, dlc: e.dlc, data: e.data, timestamp_us: e.last_us, dir: e.dir };
+                        ui.add(egui::Label::new(crate::canopen::decode::decode(&f, dctx).text).truncate());
                     });
                     if row.response().clicked() {
                         clicked = Some(e.key);

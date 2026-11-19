@@ -233,7 +233,7 @@ fn common_cols(row: &mut TableRow<'_, '_>, e: &TraceEntry, look: Look) {
     });
     row.col(|ui| {
         let t = if look.colour == TraceColour::ChipsAndTint { egui::RichText::new(&e.decoded.text).color(fg) } else { egui::RichText::new(&e.decoded.text) };
-        ui.add(egui::Label::new(t).truncate()).on_hover_text(&e.decoded.text);
+        ui.add(egui::Label::new(t).truncate());
     });
 }
 
