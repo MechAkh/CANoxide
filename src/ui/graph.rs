@@ -227,6 +227,8 @@ impl App {
     pub(crate) fn graph_tab(&mut self, ui: &mut egui::Ui) {
         let p = theme::pal(ui);
         let view_h = ui.available_height();
+        // Zoom factor of a toolbar button for this frame (> 1 zooms in).
+        let mut zoom: Option<f32> = None;
         if !self.graph.started {
             self.graph.started = true;
             self.graph.follow = true;
@@ -256,7 +258,16 @@ impl App {
             if theme::icon_toggle(ui, &mut paused, icon::PAUSE, "Pause", "Freeze the picture; the signals keep recording").changed() {
                 self.graph.paused_at = if paused { Some(now) } else { None };
             }
-            theme::icon_toggle(ui, &mut self.graph.follow, icon::ARROW_LINE_RIGHT, "Follow", "Follow the newest points (off: drag and zoom)");
+            theme::icon_toggle(ui, &mut self.graph.follow, icon::ARROW_LINE_RIGHT, "Follow", "Follow the newest points (off: drag and zoom; a click, drag or scroll in the plot switches it off)");
+            if theme::icon_button(ui, true, icon::MAGNIFYING_GLASS_PLUS, "Zoom in", "Zoom in (also Ctrl + scroll in the plot); switches Follow off").clicked() {
+                zoom = Some(1.25);
+            }
+            if theme::icon_button(ui, true, icon::MAGNIFYING_GLASS_MINUS, "Zoom out", "Zoom out (also Ctrl + scroll in the plot); switches Follow off").clicked() {
+                zoom = Some(0.8);
+            }
+            if zoom.is_some() {
+                self.graph.follow = false;
+            }
             ui.separator();
             ui.label(icon::CLOCK).on_hover_text("Time window");
             if ui.add(egui::DragValue::new(&mut self.settings.graph_window_s).range(1.0..=3600.0).speed(0.5).suffix(" s")).on_hover_text("Time window").changed() {
@@ -361,6 +372,10 @@ impl App {
             if follow {
                 pui.set_plot_bounds(PlotBounds::from_min_max([t0, ymin - pad], [t_end, ymax + pad]));
             }
+            if let Some(z) = zoom {
+                let c = pui.plot_bounds().center();
+                pui.zoom_bounds(egui::Vec2::splat(z), c);
+            }
             for (i, s) in series.iter().enumerate() {
                 if self.graph.hidden.contains(&s.id) {
                     continue;
@@ -368,6 +383,13 @@ impl App {
                 pui.line(Line::new(PlotPoints::from(s.pts.clone())).name(&s.name).color(theme::series_colour(p, i)).width(width));
             }
         });
+        // A press, drag or scroll in the plot means the user wants to move
+        // the view: Follow goes off, and the plot takes the drag from the
+        // next frame on.
+        let r = &shown.response;
+        if follow && (r.is_pointer_button_down_on() || r.dragged() || (r.hovered() && ui.input(|i| i.smooth_scroll_delta != egui::Vec2::ZERO || i.zoom_delta() != 1.0))) {
+            self.graph.follow = false;
+        }
         let b = shown.transform.bounds();
         self.graph.visible = (b.min()[0], b.max()[0]);
 
