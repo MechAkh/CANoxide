@@ -152,6 +152,8 @@ pub struct Settings {
     /// Messages view: no tint on a byte that changes in nearly every frame
     /// (for example a counter).
     pub msg_mute_noisy: bool,
+    /// Messages view: data bytes in decimal (off: hex).
+    pub msg_decimal: bool,
     /// The log file of the replay adapter.
     pub replay_file: String,
     /// Seconds shown by the sparkline of a signal value, 1..120.
@@ -245,6 +247,7 @@ impl Default for Settings {
             confirm_dcf_restore: true,
             msg_fade_s: 2.0,
             msg_mute_noisy: false,
+            msg_decimal: false,
             replay_file: String::new(),
             sparkline_s: 10.0,
         }

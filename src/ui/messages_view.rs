@@ -147,6 +147,15 @@ const HEX: [u8; 512] = {
     t
 };
 
+/// A data byte as text: two hex digits, or decimal.
+fn byte_text(b: u8, dec: bool) -> String {
+    if dec {
+        b.to_string()
+    } else {
+        hex2(b).to_string()
+    }
+}
+
 fn hex2(b: u8) -> &'static str {
     let i = b as usize * 2;
     std::str::from_utf8(&HEX[i..i + 2]).unwrap_or("??")
@@ -218,6 +227,13 @@ impl App {
                 self.msgv.dirty = true;
             }
             ui.separator();
+            let mut dec = self.settings.msg_decimal;
+            let hex = ui.selectable_value(&mut dec, false, "Hex").on_hover_text("Data bytes in hex");
+            let d = ui.selectable_value(&mut dec, true, "Decimal").on_hover_text("Data bytes in decimal");
+            if hex.changed() || d.changed() {
+                self.settings.msg_decimal = dec;
+                self.mark_settings();
+            }
             let mut mute = self.settings.msg_mute_noisy;
             if ui.checkbox(&mut mute, "Mute noisy bytes").on_hover_text("No tint on a byte that changes in nearly every frame (for example a counter)").changed() {
                 self.settings.msg_mute_noisy = mute;
@@ -273,6 +289,7 @@ impl App {
         }
         let row_h = self.settings.row_density.row_height();
         let mute = self.settings.msg_mute_noisy;
+        let dec = self.settings.msg_decimal;
         let reduce = self.settings.reduce_colour;
         let zebra = self.settings.zebra;
         let mut clicked: Option<MsgKey> = None;
@@ -372,7 +389,7 @@ impl App {
                                 fading = true;
                                 ui.painter().rect_filled(ui.max_rect(), 0.0, theme::mix(row_bg, theme::change_tint(p, up), k));
                             }
-                            ui.label(egui::RichText::new(hex2(e.data[b])).monospace().color(p.text_primary));
+                            ui.label(egui::RichText::new(byte_text(e.data[b], dec)).monospace().color(p.text_primary));
                             if reduce && k > 0.0 {
                                 ui.label(egui::RichText::new(if up { icon::CARET_UP } else { icon::CARET_DOWN }).small().color(p.text_primary));
                             }
@@ -462,7 +479,7 @@ impl App {
         let usr: Vec<(usize, Vec<u32>, egui::Color32)> = self.an.usigs.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended)).map(|(i, s)| (i, s.bit_list(), analysis_view::colour32(s.colour))).collect();
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.add(egui::Button::new(icon::X).frame(false)).on_hover_text("Close the bit view (also: click the selected row again)").clicked() {
+            if ui.button(format!("{}  Close", icon::X)).on_hover_text("Close the bit view (also: click the selected row again)").clicked() {
                 action = Some(DetailAction::Close);
             }
             let node = e.node.map(|n| format!(" node {n}")).unwrap_or_default();
@@ -519,7 +536,7 @@ impl App {
                     for t in BIT_HEAD {
                         ui.add_sized(egui::vec2(cell.x, 16.0), egui::Label::new(egui::RichText::new(t).small().color(p.text_secondary)));
                     }
-                    ui.add_sized(egui::vec2(40.0, 16.0), egui::Label::new(egui::RichText::new("Hex").small().color(p.text_secondary)));
+                    ui.add_sized(egui::vec2(40.0, 16.0), egui::Label::new(egui::RichText::new(if self.settings.msg_decimal { "Dec" } else { "Hex" }).small().color(p.text_secondary)));
                 });
                 for b in 0..n {
                     ui.horizontal(|ui| {
@@ -581,7 +598,7 @@ impl App {
                         if kt > 0.0 {
                             ui.painter().rect_filled(r.shrink(1.0), 2.0, theme::mix(p.bg_panel, theme::change_tint(p, s.dir == Some(Change::Up)), kt));
                         }
-                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, hex2(e.data[b]), egui::FontId::monospace(12.0), p.text_primary);
+                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, byte_text(e.data[b], self.settings.msg_decimal), egui::FontId::monospace(12.0), p.text_primary);
                         // The names of the user signals in this byte.
                         for (i, _, c) in usr.iter().filter(|(_, bits, _)| bits.iter().any(|k| *k / 8 == b as u32)) {
                             ui.label(egui::RichText::new(&usigs[*i].name).small().color(*c));
