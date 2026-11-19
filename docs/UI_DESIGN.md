@@ -589,6 +589,39 @@ unless noted.
 - Empty: icon `list-dashes`, "No frames yet", "Connect to an adapter to
   start the trace.", button `Connect`. When paused with new frames
   arriving: banner info "Paused — 1 204 new frames. Resume" .
+- Autoscroll (v0.3): on = the view follows the newest row; a user scroll up
+  (wheel, drag, Arrow/Page Up, Home with the pointer over the table)
+  leaves the bottom, a scroll back to the end (or End) follows again. Off =
+  the top visible row stays anchored by its sequence number, also while
+  the ring buffer drops old rows.
+
+### 8.4a Messages (v0.3)
+
+- Dock tab `Messages` (`table` icon), opened beside a trace tab; one row
+  per COB-ID (11-bit and 29-bit apart, at most 2048 IDs).
+- Toolbar: filter box (hint `Filter: COB-ID, type, node`), `Sort by`
+  combo (`COB-ID | Count | Age`), checkbox `Mute noisy bytes` (a byte that
+  changes on more than 90 % of at least 10 frames gets no tint), `Reset
+  all statistics`, ID counter `3 IDs` small.
+- Columns: COB-ID (mono), Type (chip, 3.5), Node, Count, Cycle (mean
+  period, ms), DLC, B0..B7 (mono hex), Age (s since the last frame).
+- Change tint: a changed byte cell gets `change_tint` (value up = blue,
+  value down = red), mixed into the row background and fading to it over
+  the fade time (Settings, default 2 s). Text keeps AA contrast at every
+  step. With `Reduce colour`, a caret up / down mark is drawn instead.
+  Repaint at 30 Hz only while a tint fades.
+- Detail pane under the table for the selected row: header `181 TPDO1
+  node 1`, frame counts, `Reset statistics` (row; keeps the last data),
+  selection text `Selected: bit s, l bit`, `Add to Graph` (adds a Raw-bits
+  signal, Intel, unsigned; status message, no tab switch).
+- Bit grid: rows `Byte 0..7` (button selects the whole byte), columns bit
+  7..0 and Hex; cell fill `bit_heat` by toggle rate; outline in the series
+  colour of each mapped PDO signal, accent outline for the selection;
+  click selects one bit, Shift-click extends; tooltip = bit number, value,
+  toggle count.
+- Mapped list right of the grid: one line per mapped object with swatch,
+  index:sub, name and the decoded value.
+- Empty: "No frames yet. Connect to see one row per COB-ID."
 
 ### 8.5 Graph
 
@@ -605,10 +638,13 @@ unless noted.
   (80, mono right), Min (72, mono.small right), Max (72, mono.small
   right), Unit (40, small), remove `x` ghost (24). Clicking a row toggles
   bold line (2.5 pt) for that series.
-- Add-signal dialog (modal 480 × 420): segmented `PDO signal | SDO poll |
-  Raw bits`;
+- Add-signal dialog (window 480 × 420 over a scrim, movable by its title
+  bar, kept inside the app window; Escape or `x` closes it): segmented
+  `PDO signal | SDO poll | Raw bits`;
   - PDO signal: device combo, list of mapped objects with search
-    (Name, Index:Sub, Type), scale (DragValue, default 1), offset, unit.
+    (Name, Index:Sub, Type; TPDOs first, then RPDOs, each entry prefixed
+    `TPDOn` / `RPDOn`), scale (DragValue, default 1), offset, unit. The
+    name is filled from the entry until the user edits it.
   - SDO poll: node, index/sub, type, poll period (ms, default 100), scale,
     unit; note in small secondary "Each poll adds 2 frames to the bus".
   - Raw bits: COB-ID (mono), start bit (0–63), length (1–64), byte order

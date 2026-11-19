@@ -96,8 +96,11 @@ CANoxide is younger and has had far less use on real networks.
 ## User interface
 
 The window has a menu bar, a connection bar (adapter, channel, bitrate,
-listen-only, Connect, bus state and load) and a status bar. The views are
-dock tabs; open and close them from the **View** menu:
+listen-only, Connect, **Scan nodes**, bus state and load) and a status bar.
+**Scan nodes** starts the node scan of the Network view and opens that
+view; while the scan runs, the bar shows its progress and a **Cancel scan**
+button. The views are dock tabs; open and close them from the **View**
+menu:
 
 - **Devices** and **EDS library**: the named devices and the EDS/DCF files.
 - **Object dictionary**: the object tree of the active device, read and
@@ -105,9 +108,21 @@ dock tabs; open and close them from the **View** menu:
 - **Network**: NMT for one node or all, SYNC, node scan, heartbeat, and an
   overview of the nodes heard on the bus.
 - **Trace 1..4**: up to four trace tabs on one shared buffer, each with its
-  own filter, display mode and pause; save as CSV.
-- **Graph**: plot PDO signals, SDO-polled values or raw frame bits; export
-  as CSV. SDO polling runs only while you start it.
+  own filter, display mode and pause; save as CSV. With **Autoscroll** on,
+  the view follows the newest frame; scroll up (wheel, Page Up, Home) and
+  it stops; scroll back to the end (or End) and it follows again. With
+  Autoscroll off, the visible rows stay in place while new frames arrive.
+- **Messages**: one row per COB-ID with count, cycle time, DLC, the data
+  bytes and the age. A byte that changed is tinted blue (value up) or red
+  (value down) and fades out (fade time in Settings); **Mute noisy bytes**
+  hides the tint of bytes that change on almost every frame. Select a row
+  to see its bits (how often each bit toggles), the mapped PDO signals and
+  their values; select bits and click **Add to Graph** to plot them as raw
+  bits. Statistics reset for one row or for all.
+- **Graph**: plot PDO signals (TPDOs and RPDOs of the device), SDO-polled
+  values or raw frame bits; export as CSV. SDO polling runs only while you
+  start it. The **Add signal** window can be moved, so that the plot stays
+  visible.
 - **PDO configuration**: read the PDOs of a node, edit, enable or disable
   them, save and load them from the library.
 - **Transmit list**: saved raw frames, sent once, periodically or on
