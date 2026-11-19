@@ -2,14 +2,90 @@
 //! node, and restore a DCF (with a dry run first). Each one is an SDO task
 //! that starts only when the user presses its button.
 
-use super::{theme, App, TaskOwner};
+use super::theme::{self, Tone};
+use super::{App, TaskOwner};
 use crate::bus::BusCommand;
 use crate::dcf::{DcfCommissioning, DcfCompareReport, DcfCompareTask, DcfRestoreReport, DcfRestoreTask, DcfSaveTask, ObjectAction, RestoreOptions};
 use crate::eds::ObjectDictionary;
 use crate::canopen::task::TaskResult;
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Result class of a table row (the filter chips of spec 8.9).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RowKind {
+    Written,
+    WouldWrite,
+    Unchanged,
+    Skipped,
+    Failed,
+    NotRun,
+    Different,
+}
+
+impl RowKind {
+    fn label(self) -> &'static str {
+        match self {
+            RowKind::Written => "Written",
+            RowKind::WouldWrite => "Would write",
+            RowKind::Unchanged => "Unchanged",
+            RowKind::Skipped => "Skipped",
+            RowKind::Failed => "Failed",
+            RowKind::NotRun => "Not run",
+            RowKind::Different => "Different",
+        }
+    }
+
+    fn tone(self) -> Tone {
+        match self {
+            RowKind::Written => Tone::Success,
+            RowKind::WouldWrite | RowKind::Different => Tone::Warning,
+            RowKind::Unchanged | RowKind::NotRun => Tone::Neutral,
+            RowKind::Skipped => Tone::Info,
+            RowKind::Failed => Tone::Error,
+        }
+    }
+}
+
+/// One row of the result table (spec 8.9).
+struct ResultRow<'a> {
+    index: u16,
+    sub: u8,
+    name: &'a str,
+    kind: RowKind,
+    file: &'a str,
+    device: &'a str,
+    detail: &'a str,
+}
+
+fn restore_rows(rep: &DcfRestoreReport) -> Vec<ResultRow<'_>> {
+    rep.objects
+        .iter()
+        .map(|o| {
+            let (kind, detail) = match &o.action {
+                ObjectAction::Written => (RowKind::Written, ""),
+                ObjectAction::WouldWrite => (RowKind::WouldWrite, "dry run"),
+                ObjectAction::Unchanged => (RowKind::Unchanged, ""),
+                ObjectAction::Skipped { reason } => (RowKind::Skipped, reason.as_str()),
+                ObjectAction::Failed { error, .. } => (RowKind::Failed, error.as_str()),
+                ObjectAction::NotRun => (RowKind::NotRun, "not run after a stop"),
+            };
+            ResultRow { index: o.index, sub: o.sub, name: &o.name, kind, file: o.dcf_value.as_deref().unwrap_or(""), device: o.node_value.as_deref().unwrap_or(""), detail }
+        })
+        .collect()
+}
+
+fn compare_rows(rep: &DcfCompareReport) -> Vec<ResultRow<'_>> {
+    rep.differences
+        .iter()
+        .map(|d| {
+            let kind = if d.error.is_some() { RowKind::Failed } else { RowKind::Different };
+            ResultRow { index: d.index, sub: d.sub, name: &d.name, kind, file: &d.dcf_value, device: d.node_value.as_deref().unwrap_or(""), detail: d.error.as_deref().unwrap_or("") }
+        })
+        .collect()
+}
 
 #[derive(Default)]
 pub(crate) struct DcfView {
@@ -24,6 +100,8 @@ pub(crate) struct DcfView {
     pub compare: Option<DcfCompareReport>,
     pub restore: Option<DcfRestoreReport>,
     pub last: Option<String>,
+    /// Result filter chip (None = All).
+    pub filter: Option<RowKind>,
 }
 
 impl App {
@@ -120,6 +198,8 @@ impl App {
                 let t = format!("Compared {} object(s): {} difference(s){}", rep.compared, rep.differences.len(), if rep.cancelled { ", cancelled" } else { "" });
                 self.set_status(t.clone(), false);
                 self.dcfv.last = Some(t);
+                self.dcfv.filter = None;
+                self.dcfv.restore = None;
                 self.dcfv.compare = Some(rep);
             }
             (TaskOwner::DcfRestore, TaskResult::DcfRestore(rep)) => {
@@ -128,6 +208,9 @@ impl App {
                 let t = if rep.dry_run { format!("Dry run: {w} object(s) would be written, nothing sent as a write") } else { format!("Restore {}: {w} written, {f} failed{}", if rep.ok { "done" } else { "not complete" }, if rep.stored == Some(true) { ", stored" } else { "" }) };
                 self.set_status(t.clone(), !rep.ok);
                 self.dcfv.last = Some(t);
+                // After a run with failures the table shows the failed rows.
+                self.dcfv.filter = (f > 0).then_some(RowKind::Failed);
+                self.dcfv.compare = None;
                 self.dcfv.restore = Some(rep);
             }
             _ => {}
@@ -185,7 +268,7 @@ impl App {
                 if self.send_button(ui, have && !busy, "Dry run").on_hover_text("Read the node and list what a restore would write").clicked() {
                     self.dcf_restore(true);
                 }
-                if self.send_button(ui, have && !busy, "Restore").clicked() {
+                if self.styled_send_button(ui, have && !busy, false, "Restore", "Write the values of the DCF into the node (asks first)").clicked() {
                     self.dcf_restore(false);
                 }
             });
@@ -203,58 +286,107 @@ impl App {
             if let Some(t) = &self.dcfv.last {
                 ui.label(egui::RichText::new(t).color(p.text_secondary));
             }
+            let outlined = self.settings.reduce_colour;
             if let Some(rep) = &self.dcfv.compare {
                 ui.separator();
                 ui.strong(format!("Compare: {} object(s), {} difference(s)", rep.compared, rep.differences.len()));
                 if rep.differences.is_empty() {
-                    theme::pill(ui, "no difference", p.success, p.success_tint, self.settings.reduce_colour);
+                    theme::pill(ui, "no difference", p.success, p.success_tint, outlined);
+                } else {
+                    let rows = compare_rows(rep);
+                    let same = rep.compared.saturating_sub(rep.differences.len());
+                    ui.label(egui::RichText::new(format!("{same} object(s) are the same (not listed)")).small().color(p.text_secondary));
+                    result_view(ui, &mut self.dcfv.filter, &rows, &[RowKind::Different, RowKind::Failed], self.settings.zebra, outlined);
                 }
-                egui::Grid::new("dcf_diff").num_columns(4).striped(self.settings.zebra).show(ui, |ui| {
-                    if !rep.differences.is_empty() {
-                        for h in ["Object", "Name", "DCF", "Node"] {
-                            ui.strong(h);
-                        }
-                        ui.end_row();
-                    }
-                    for d in &rep.differences {
-                        ui.monospace(format!("{:04X}:{:02X}", d.index, d.sub));
-                        ui.label(&d.name);
-                        ui.monospace(&d.dcf_value);
-                        match (&d.node_value, &d.error) {
-                            (_, Some(e)) => ui.colored_label(p.error, e),
-                            (Some(v), None) => ui.monospace(v),
-                            (None, None) => ui.label("-"),
-                        };
-                        ui.end_row();
-                    }
-                });
             }
             if let Some(rep) = &self.dcfv.restore {
                 ui.separator();
                 ui.strong(if rep.dry_run { "Dry run" } else { "Restore" });
-                egui::Grid::new("dcf_restore").num_columns(5).striped(self.settings.zebra).show(ui, |ui| {
-                    for h in ["Object", "Name", "DCF", "Node", "Action"] {
-                        ui.strong(h);
-                    }
-                    ui.end_row();
-                    for o in rep.objects.iter().filter(|o| !matches!(o.action, ObjectAction::Unchanged)) {
-                        ui.monospace(format!("{:04X}:{:02X}", o.index, o.sub));
-                        ui.label(&o.name);
-                        ui.monospace(o.dcf_value.clone().unwrap_or_default());
-                        ui.monospace(o.node_value.clone().unwrap_or_default());
-                        match &o.action {
-                            ObjectAction::Written => ui.colored_label(p.success, "written"),
-                            ObjectAction::WouldWrite => ui.colored_label(p.warning, "would write"),
-                            ObjectAction::Unchanged => ui.label("unchanged"),
-                            ObjectAction::Skipped { reason } => ui.label(format!("skipped: {reason}")),
-                            ObjectAction::Failed { error, .. } => ui.colored_label(p.error, error),
-                            ObjectAction::NotRun => ui.label("not run"),
-                        };
-                        ui.end_row();
-                    }
-                });
-                ui.label(egui::RichText::new(format!("{} unchanged object(s) not listed", rep.count(|a| matches!(a, ObjectAction::Unchanged)))).color(p.text_secondary));
+                let rows = restore_rows(rep);
+                let kinds: &[RowKind] = if rep.dry_run {
+                    &[RowKind::WouldWrite, RowKind::Unchanged, RowKind::Skipped, RowKind::Failed, RowKind::NotRun]
+                } else {
+                    &[RowKind::Written, RowKind::Unchanged, RowKind::Skipped, RowKind::Failed, RowKind::NotRun]
+                };
+                result_view(ui, &mut self.dcfv.filter, &rows, kinds, self.settings.zebra, outlined);
             }
         });
     }
+}
+
+/// Filter chips (`label count`, toggle style) and the result table of
+/// spec 8.9: Index, Sub, Name, Result (pill), Value in file, Value on
+/// device, Detail.
+fn result_view(ui: &mut egui::Ui, filter: &mut Option<RowKind>, rows: &[ResultRow<'_>], kinds: &[RowKind], zebra: bool, outlined: bool) {
+    let p = theme::pal(ui);
+    ui.horizontal_wrapped(|ui| {
+        if ui.selectable_label(filter.is_none(), format!("All {}", rows.len())).clicked() {
+            *filter = None;
+        }
+        for k in kinds {
+            let n = rows.iter().filter(|r| r.kind == *k).count();
+            if n == 0 && *k == RowKind::NotRun {
+                continue;
+            }
+            if ui.selectable_label(*filter == Some(*k), format!("{} {n}", k.label())).clicked() {
+                *filter = if *filter == Some(*k) { None } else { Some(*k) };
+            }
+        }
+    });
+    let shown: Vec<&ResultRow<'_>> = rows.iter().filter(|r| filter.is_none_or(|f| r.kind == f)).collect();
+    if shown.is_empty() {
+        ui.label(egui::RichText::new("No row in this filter.").color(p.text_secondary));
+        return;
+    }
+    let row_h = ui.spacing().interact_size.y;
+    egui::ScrollArea::horizontal().id_salt("dcf_result_h").show(ui, |ui| {
+        TableBuilder::new(ui)
+            .id_salt("dcf_result")
+            .striped(zebra)
+            .vscroll(false)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .column(Column::exact(64.0))
+            .column(Column::exact(40.0))
+            .column(Column::remainder().at_least(180.0).clip(true))
+            .column(Column::exact(110.0))
+            .column(Column::exact(130.0).clip(true))
+            .column(Column::exact(130.0).clip(true))
+            .column(Column::exact(220.0).clip(true))
+            .header(row_h, |mut h| {
+                for t in ["Index", "Sub", "Name", "Result", "Value in file", "Value on device", "Detail"] {
+                    h.col(|ui| {
+                        ui.strong(t);
+                    });
+                }
+            })
+            .body(|body| {
+                body.rows(row_h, shown.len(), |mut row| {
+                    let r = shown[row.index()];
+                    row.col(|ui| {
+                        ui.monospace(format!("{:04X}", r.index));
+                    });
+                    row.col(|ui| {
+                        ui.monospace(format!("{:02X}", r.sub));
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(r.name).truncate()).on_hover_text(r.name);
+                    });
+                    row.col(|ui| {
+                        theme::tone_pill(ui, r.kind.tone(), r.kind.label(), outlined);
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(r.file).monospace()).truncate());
+                    });
+                    row.col(|ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(r.device).monospace()).truncate());
+                    });
+                    row.col(|ui| {
+                        let c = if r.kind == RowKind::Failed { p.error } else { p.text_secondary };
+                        if !r.detail.is_empty() {
+                            ui.add(egui::Label::new(egui::RichText::new(r.detail).color(c)).truncate()).on_hover_text(r.detail);
+                        }
+                    });
+                });
+            });
+    });
 }

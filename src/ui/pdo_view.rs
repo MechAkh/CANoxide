@@ -31,6 +31,24 @@ pub(crate) struct PdoView {
     /// Report of the last apply with failures (shown in a dialog).
     report: Option<StepsReport>,
     pub last: Option<String>,
+    /// PDOs that a failed apply left disabled on the device: node, the
+    /// communication indexes, the error text (spec 8.5 error banner).
+    pub(crate) left_disabled: Option<(u8, Vec<u16>, String)>,
+}
+
+/// The PDOs (communication indexes) that a failed step sequence left
+/// disabled: the last successful write of the COB-ID entry set bit 31,
+/// and the PDO was enabled before.
+fn left_disabled(rep: &StepsReport, before: &[PdoConfig]) -> Vec<u16> {
+    let mut last: BTreeMap<u16, u32> = BTreeMap::new();
+    for r in rep.done.iter().filter(|r| r.ok) {
+        let s = &r.step;
+        let comm = (0x1400..=0x15FF).contains(&s.index) || (0x1800..=0x19FF).contains(&s.index);
+        if comm && s.sub == 1 && s.data.len() == 4 {
+            last.insert(s.index, u32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]));
+        }
+    }
+    last.into_iter().filter(|(i, v)| v & 0x8000_0000 != 0 && before.iter().any(|c| c.comm_index() == *i && c.valid)).map(|(i, _)| i).collect()
 }
 
 impl PdoView {
@@ -148,6 +166,9 @@ impl App {
                 let text = format!("Node {}: {} PDO(s) read{}{}", c.node, c.pdos.len(), if c.complete { "" } else { ", incomplete" }, if c.errors.is_empty() { String::new() } else { format!(", {} error(s)", c.errors.len()) });
                 self.set_status(text.clone(), !c.errors.is_empty() || !c.complete);
                 self.pdo.last = Some(text);
+                if self.pdo.left_disabled.as_ref().is_some_and(|l| l.0 == c.node) {
+                    self.pdo.left_disabled = None;
+                }
                 self.pdo.configs.insert(c.node, c);
                 self.rebuild_decode();
             }
@@ -175,6 +196,20 @@ impl App {
                         self.bus.send(BusCommand::SetNodePdos(cfg));
                     }
                 } else {
+                    // A PDO left disabled on the device: banner and row mark,
+                    // and the stored state follows the device.
+                    if let Some((node, _)) = applying {
+                        if let Some(cfg) = self.pdo.configs.get_mut(&node) {
+                            let idx = left_disabled(&rep, &cfg.pdos);
+                            if !idx.is_empty() {
+                                for c in cfg.pdos.iter_mut().filter(|c| idx.contains(&c.comm_index())) {
+                                    c.valid = false;
+                                }
+                                let err = rep.first_error().and_then(|r| r.error.clone()).unwrap_or_else(|| "cancelled".to_string());
+                                self.pdo.left_disabled = Some((node, idx, err));
+                            }
+                        }
+                    }
                     self.pdo.report = Some(rep);
                 }
             }
@@ -240,6 +275,21 @@ impl App {
         if let Some(t) = &self.pdo.last {
             ui.label(egui::RichText::new(t).color(p.text_secondary));
         }
+        let marked: Vec<u16> = match self.pdo.left_disabled.clone() {
+            Some((n, idx, err)) if n == node => {
+                let names: Vec<String> = self.pdo.configs.get(&node).map(|c| c.pdos.iter().filter(|c| idx.contains(&c.comm_index())).map(|c| c.label()).collect()).unwrap_or_default();
+                let text = format!("{} {} left disabled on the device after a failed step: {err}", names.join(", "), if names.len() == 1 { "was" } else { "were" });
+                if theme::banner(ui, true, &text, Some("Read PDOs")) {
+                    if self.can_send() && !busy {
+                        self.read_pdos(node);
+                    } else {
+                        self.set_status(format!("PDOs not read: {}", if busy { "a PDO task runs" } else { self.send_hint() }), true);
+                    }
+                }
+                idx
+            }
+            _ => Vec::new(),
+        };
         ui.separator();
         let Some(cfg) = self.pdo.configs.get(&node).cloned() else {
             ui.add_space(12.0);
@@ -288,12 +338,17 @@ impl App {
                         row.col(|ui| {
                             let sel = editing == Some((node, c.kind, c.number));
                             ui.label(egui::RichText::new(c.label()).strong().color(if sel { p.text_accent } else { p.text_primary }));
+                            if marked.contains(&c.comm_index()) {
+                                ui.label(egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE).color(p.error)).on_hover_text("Left disabled on the device after a failed step");
+                            }
                         });
                         row.col(|ui| {
                             ui.monospace(format!("{}{:X}", if c.extended { "x" } else { "" }, c.cob_id));
                         });
                         row.col(|ui| {
-                            if c.valid {
+                            if marked.contains(&c.comm_index()) {
+                                theme::pill(ui, "left disabled", p.error, p.error_tint, self.settings.reduce_colour);
+                            } else if c.valid {
                                 theme::pill(ui, "enabled", p.success, p.success_tint, self.settings.reduce_colour);
                             } else {
                                 theme::pill(ui, "disabled", p.text_secondary, p.bg_button, self.settings.reduce_colour);

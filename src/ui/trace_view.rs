@@ -15,7 +15,7 @@ pub(crate) struct TraceView {
     pub(crate) view: ViewId,
     autoscroll: bool,
     fixed: bool,
-    delta: bool,
+    pub(crate) delta: bool,
     mode: DisplayMode,
     filter: TraceFilter,
     node_text: String,
@@ -46,6 +46,93 @@ fn parse_hex(s: &str) -> Option<u32> {
     let t = s.trim();
     let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
     u32::from_str_radix(t, 16).ok()
+}
+
+/// A small combo box without a side label: `name` is its accessible name
+/// and the tooltip says what it sets.
+pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: impl std::hash::Hash, name: &str, tip: &str, value: &mut T, options: &[(T, &str)], width: f32) {
+    let current = options.iter().find(|(v, _)| v == value).map(|(_, l)| *l).unwrap_or("");
+    let ir = egui::ComboBox::from_id_salt(salt).width(width).selected_text(current).show_ui(ui, |ui| {
+        for (v, l) in options {
+            if ui.selectable_value(value, *v, *l).clicked() {
+                // Also closes the list after a keyboard or screen reader choice.
+                ui.memory_mut(|m| m.close_popup());
+            }
+        }
+    });
+    let r = ir.response.on_hover_text(tip);
+    let name = name.to_string();
+    let enabled = ui.is_enabled();
+    r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, enabled, &name));
+}
+
+/// Number of filters that differ from "show everything".
+fn active_filters(tv: &TraceView) -> usize {
+    let all_types = MsgClass::ALL.iter().all(|c| tv.filter.class_enabled(*c));
+    [!tv.node_text.trim().is_empty(), !tv.id_min_text.trim().is_empty() || !tv.id_max_text.trim().is_empty(), !all_types, !tv.filter.text.trim().is_empty()]
+        .iter()
+        .filter(|b| **b)
+        .count()
+}
+
+/// The `Filters` button with its count badge and popup (spec 8.4): node,
+/// COB-ID range, message types, text, reset.
+fn filters_button(ui: &mut egui::Ui, tv: &mut TraceView, n: u8) {
+    let count = active_filters(tv);
+    let r = ui.button(format!("{}  Filters", egui_phosphor::regular::FUNNEL)).on_hover_text("Filter the rows of this trace tab");
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Filters"));
+    theme::count_badge(ui, r.rect, count);
+    let id = ui.make_persistent_id(("trace_filters", n));
+    if r.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(id));
+    }
+    egui::popup_below_widget(ui, id, &r, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_min_width(300.0);
+        egui::Grid::new(("trace_filter_grid", n)).num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Node ID");
+            ui.add(egui::TextEdit::singleline(&mut tv.node_text).desired_width(48.0).hint_text("all"));
+            ui.end_row();
+            ui.label("COB-ID 0x");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut tv.id_min_text).desired_width(70.0).hint_text("min"));
+                ui.label("..");
+                ui.add(egui::TextEdit::singleline(&mut tv.id_max_text).desired_width(70.0).hint_text("max"));
+            });
+            ui.end_row();
+            ui.label("Text");
+            ui.add(egui::TextEdit::singleline(&mut tv.filter.text).desired_width(180.0));
+            ui.end_row();
+        });
+        ui.separator();
+        let n_on = MsgClass::ALL.iter().filter(|c| tv.filter.class_enabled(**c)).count();
+        ui.horizontal(|ui| {
+            ui.label(format!("Types ({n_on}/{})", MsgClass::ALL.len()));
+            if ui.small_button("All").clicked() {
+                tv.filter.classes = 0xFFFF;
+            }
+            if ui.small_button("None").clicked() {
+                tv.filter.classes = 0;
+            }
+        });
+        egui::Grid::new(("trace_type_grid", n)).num_columns(3).show(ui, |ui| {
+            for (i, c) in MsgClass::ALL.into_iter().enumerate() {
+                let mut on = tv.filter.class_enabled(c);
+                if ui.checkbox(&mut on, c.label()).changed() {
+                    tv.filter.set_class(c, on);
+                }
+                if i % 3 == 2 {
+                    ui.end_row();
+                }
+            }
+        });
+        ui.separator();
+        if ui.button("Reset filters").clicked() {
+            tv.filter = TraceFilter::default();
+            tv.node_text.clear();
+            tv.id_min_text.clear();
+            tv.id_max_text.clear();
+        }
+    });
 }
 
 #[derive(Clone, Copy)]
@@ -92,75 +179,71 @@ impl App {
         self.traces.insert(n, tv);
     }
 
-    fn trace_body(&mut self, ui: &mut egui::Ui, tv: &mut TraceView, _n: u8) {
+    fn trace_body(&mut self, ui: &mut egui::Ui, tv: &mut TraceView, n: u8) {
+        use egui_phosphor::regular as icon;
         let p = theme::pal(ui);
         let mut paused = self.trace.view_paused(tv.view);
-        // Toolbar.
+        let counts = format!(
+            "{} shown, {} in buffer (max {}), {} received",
+            if tv.fixed { self.trace.fixed_rows_of(tv.view).len() } else { self.trace.view_len_of(tv.view) },
+            self.trace.len(),
+            self.trace.capacity(),
+            self.trace.total()
+        );
+        let skipped = self.trace.total().saturating_sub(tv.paused_at);
+        let skipped_text = (paused && skipped > 0).then(|| format!("paused, {skipped} frame(s) not recorded"));
+        // Toolbar: one row (spec 8.4); the counters go to its right end, or
+        // to a second row when there is no room.
+        let mut counts_placed = false;
         ui.horizontal_wrapped(|ui| {
-            if ui.checkbox(&mut paused, "Pause").on_hover_text("Stop adding rows to this trace tab").changed() {
+            let (g, name) = if paused { (icon::PLAY, "Pause") } else { (icon::PAUSE, "Pause") };
+            if theme::icon_toggle(ui, &mut paused, g, name, "Pause: stop adding rows to this trace tab").changed() {
                 self.trace.set_view_paused(tv.view, paused);
                 tv.paused_at = self.trace.total();
             }
-            ui.checkbox(&mut tv.autoscroll, "Auto-scroll");
+            theme::icon_toggle(ui, &mut tv.autoscroll, icon::ARROW_LINE_DOWN, "Auto-scroll", "Auto-scroll to the newest row");
             ui.separator();
-            ui.selectable_value(&mut tv.fixed, false, "Chronological");
-            ui.selectable_value(&mut tv.fixed, true, "Fixed");
+            combo(ui, ("trace_mode", n), "Display mode", "Scroll: one row per frame; Fixed: one row per COB-ID", &mut tv.fixed, &[(false, "Scroll"), (true, "Fixed")], 64.0);
+            combo(ui, ("trace_time", n), "Time format", "Time column: absolute or delta to the previous row", &mut tv.delta, &[(false, "Absolute"), (true, "Delta")], 76.0);
+            let modes: Vec<(DisplayMode, &str)> = DisplayMode::ALL.iter().map(|m| (*m, m.label())).collect();
+            combo(ui, ("trace_data", n), "Data format", "Data column format", &mut tv.mode, &modes, 70.0);
             ui.separator();
-            ui.selectable_value(&mut tv.delta, false, "Abs time");
-            ui.selectable_value(&mut tv.delta, true, "Delta time");
-            ui.separator();
-            for m in DisplayMode::ALL {
-                ui.selectable_value(&mut tv.mode, m, m.label());
-            }
-            ui.separator();
-            if ui.button("Clear").on_hover_text("Clear the buffer of every trace tab").clicked() {
+            if theme::icon_button(ui, true, icon::TRASH, "Clear", "Clear the buffer of every trace tab").clicked() {
                 self.trace.clear();
                 tv.paused_at = self.trace.total();
             }
-            if ui.button("Save CSV...").clicked() {
+            if theme::icon_button(ui, true, icon::FLOPPY_DISK, "Save CSV...", "Save the rows of this tab as CSV").clicked() {
                 self.save_view_csv(tv.view, tv.mode);
             }
             // This tab is taken out of `traces` while it is drawn.
             let open = self.traces.len() + 1;
-            if ui.add_enabled(open < super::dock::MAX_TRACES as usize, egui::Button::new(egui_phosphor::regular::PLUS)).on_hover_text("New trace tab").clicked() {
+            if theme::icon_button(ui, open < super::dock::MAX_TRACES as usize, icon::PLUS, "New trace tab", "New trace tab (at most 4)").clicked() {
                 self.new_trace_tab();
             }
-        });
-        // Filters.
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Node");
-            ui.add(egui::TextEdit::singleline(&mut tv.node_text).desired_width(36.0).hint_text("all"));
-            ui.label("COB-ID 0x");
-            ui.add(egui::TextEdit::singleline(&mut tv.id_min_text).desired_width(70.0).hint_text("min"));
-            ui.label("..");
-            ui.add(egui::TextEdit::singleline(&mut tv.id_max_text).desired_width(70.0).hint_text("max"));
-            let n_on = MsgClass::ALL.iter().filter(|c| tv.filter.class_enabled(**c)).count();
-            ui.menu_button(format!("Types ({n_on}/{})", MsgClass::ALL.len()), |ui| {
-                for c in MsgClass::ALL {
-                    let mut on = tv.filter.class_enabled(c);
-                    if ui.checkbox(&mut on, c.label()).changed() {
-                        tv.filter.set_class(c, on);
-                    }
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("All").clicked() {
-                        tv.filter.classes = 0xFFFF;
-                    }
-                    if ui.button("None").clicked() {
-                        tv.filter.classes = 0;
+            ui.separator();
+            filters_button(ui, tv, n);
+            // Counters at the right end when they fit.
+            let font = egui::TextStyle::Small.resolve(ui.style());
+            let w = ui.fonts(|f| f.layout_no_wrap(counts.clone(), font, p.text_secondary).size().x) + 8.0;
+            let extra = skipped_text.as_ref().map(|_| 200.0).unwrap_or(0.0);
+            if ui.available_width() >= w + extra {
+                counts_placed = true;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(&counts).small().color(p.text_secondary));
+                    if let Some(s) = &skipped_text {
+                        ui.label(egui::RichText::new(s).small().color(p.warning));
                     }
                 });
-            });
-            ui.label("Text");
-            ui.add(egui::TextEdit::singleline(&mut tv.filter.text).desired_width(140.0));
-            if ui.button("Reset filters").clicked() {
-                tv.filter = TraceFilter::default();
-                tv.node_text.clear();
-                tv.id_min_text.clear();
-                tv.id_max_text.clear();
             }
         });
+        if !counts_placed {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&counts).small().color(p.text_secondary));
+                if let Some(s) = &skipped_text {
+                    ui.label(egui::RichText::new(s).small().color(p.warning));
+                }
+            });
+        }
 
         // Apply the filter (recomputed only when it changed).
         let mut f = tv.filter.clone();
@@ -168,21 +251,6 @@ impl App {
         f.id_min = parse_hex(&tv.id_min_text).unwrap_or(0);
         f.id_max = parse_hex(&tv.id_max_text).unwrap_or(0x1FFF_FFFF);
         self.trace.set_view_filter(tv.view, f);
-
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!(
-                "{} shown, {} in buffer (max {}), {} received",
-                if tv.fixed { self.trace.fixed_rows_of(tv.view).len() } else { self.trace.view_len_of(tv.view) },
-                self.trace.len(),
-                self.trace.capacity(),
-                self.trace.total()
-            ))
-            .color(p.text_secondary));
-            let skipped = self.trace.total().saturating_sub(tv.paused_at);
-            if paused && skipped > 0 {
-                ui.colored_label(p.warning, format!("paused, {skipped} frame(s) not recorded"));
-            }
-        });
         ui.separator();
 
         let look = Look { mode: tv.mode, colour: self.settings.trace_colour, outlined: self.settings.reduce_colour, p };

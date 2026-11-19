@@ -202,6 +202,116 @@ pub(crate) fn pill(ui: &mut egui::Ui, text: impl Into<String>, fg: Color32, fill
         .inner
 }
 
+/// Semantic tone of a result pill.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tone {
+    Success,
+    Neutral,
+    Info,
+    Warning,
+    Error,
+}
+
+/// A result pill (spec 5.6) in a semantic tone.
+pub(crate) fn tone_pill(ui: &mut egui::Ui, tone: Tone, text: impl Into<String>, outlined: bool) -> egui::Response {
+    let p = pal(ui);
+    let (fg, bg) = match tone {
+        Tone::Success => (p.success, p.success_tint),
+        Tone::Neutral => (p.text_secondary, p.bg_button),
+        Tone::Info => (p.info, p.info_tint),
+        Tone::Warning => (p.warning, p.warning_tint),
+        Tone::Error => (p.error, p.error_tint),
+    };
+    pill(ui, text, fg, bg, outlined)
+}
+
+/// A caution note under a control (spec 8.8): small, warning colour, with
+/// the warning glyph.
+pub(crate) fn caution_note(ui: &mut egui::Ui, text: &str) {
+    let p = pal(ui);
+    ui.label(egui::RichText::new(format!("{}  {text}", egui_phosphor::regular::WARNING)).small().color(p.warning));
+}
+
+/// Ghost icon button (spec 5.1): the glyph only, the action as tooltip and
+/// as the accessible name (`name`).
+pub(crate) fn icon_button(ui: &mut egui::Ui, enabled: bool, glyph: &str, name: &str, tip: &str) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::SelectableLabel::new(false, egui::RichText::new(glyph).size(16.0))).on_hover_text(tip).on_disabled_hover_text(tip);
+    let name = name.to_string();
+    r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
+    r
+}
+
+/// Toggle icon button (spec 5.1: Pause, Autoscroll): ON has the accent
+/// tint. Accessible as a check box named `name`.
+pub(crate) fn icon_toggle(ui: &mut egui::Ui, on: &mut bool, glyph: &str, name: &str, tip: &str) -> egui::Response {
+    let mut r = ui.add(egui::SelectableLabel::new(*on, egui::RichText::new(glyph).size(16.0))).on_hover_text(tip);
+    if r.clicked() {
+        *on = !*on;
+        r.mark_changed();
+    }
+    let (v, name) = (*on, name.to_string());
+    r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, v, &name));
+    r
+}
+
+/// Caution button (spec 5.1: actions that can take a device off the bus):
+/// warning tint, warning border, a leading warning glyph.
+pub(crate) fn caution_button(ui: &mut egui::Ui, enabled: bool, text: &str) -> egui::Response {
+    let p = pal(ui);
+    let (fill, border) = if p.dark { (c(0x393326), c(0x745E33)) } else { (c(0xF1EAE0), c(0xCAB28C)) };
+    let label = format!("{}  {text}", egui_phosphor::regular::WARNING);
+    let b = if enabled {
+        egui::Button::new(egui::RichText::new(label).color(p.warning)).fill(fill).stroke(Stroke::new(1.0_f32, border))
+    } else {
+        egui::Button::new(label)
+    };
+    let r = ui.add_enabled(enabled, b);
+    let name = text.to_string();
+    r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
+    r
+}
+
+/// Danger button (spec 5.1: NMT all, LSS Activate bit timing).
+pub(crate) fn danger_button(ui: &mut egui::Ui, enabled: bool, glyph: &str, text: &str) -> egui::Response {
+    let p = pal(ui);
+    let label = format!("{glyph}  {text}");
+    let b = if enabled { egui::Button::new(egui::RichText::new(label).color(Color32::WHITE)).fill(p.danger_fill) } else { egui::Button::new(label) };
+    let r = ui.add_enabled(enabled, b);
+    let name = text.to_string();
+    r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
+    r
+}
+
+/// A count badge (spec 5.6) painted at the top right of a widget.
+pub(crate) fn count_badge(ui: &egui::Ui, rect: egui::Rect, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let p = pal(ui);
+    let c = egui::pos2(rect.right() - 3.0, rect.top() + 3.0);
+    ui.painter().circle_filled(c, 7.0, p.accent_fill);
+    ui.painter().text(c, egui::Align2::CENTER_CENTER, n.to_string(), FontId::proportional(10.0), p.on_accent);
+}
+
+/// A full-width banner (spec 5.8) with a semantic tint; returns true when
+/// its action button (if any) was clicked.
+pub(crate) fn banner(ui: &mut egui::Ui, error: bool, text: &str, action: Option<&str>) -> bool {
+    let p = pal(ui);
+    let (fill, fg, glyph) = if error { (p.error_tint, p.error, egui_phosphor::regular::WARNING_CIRCLE) } else { (p.warning_tint, p.warning, egui_phosphor::regular::WARNING) };
+    let mut clicked = false;
+    egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(8, 4)).corner_radius(CornerRadius::same(4)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(glyph).color(fg));
+            ui.label(egui::RichText::new(text).color(p.text_primary));
+            if let Some(a) = action {
+                clicked = ui.button(a).clicked();
+            }
+        });
+    });
+    clicked
+}
+
 /// Fonts: Inter for text, JetBrains Mono for data, Phosphor icons as a
 /// fallback of both (spec section 1). The two text fonts in assets/fonts
 /// have their Private Use Area code points (U+E000..U+F8FF) removed:

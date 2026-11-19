@@ -37,6 +37,25 @@ pub(crate) struct SettingsDlg {
     pub current: usize,
 }
 
+/// A navigation item (spec section 9): full width, icon then label,
+/// left-aligned; the selected item has the selection fill.
+fn nav_item(ui: &mut egui::Ui, selected: bool, glyph: &str, name: &str) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(168.0, 32.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let v = ui.style().interact_selectable(&r, selected);
+        if selected || r.hovered() {
+            ui.painter().rect_filled(rect, 4.0, v.weak_bg_fill);
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let x = rect.left() + 10.0;
+        ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, glyph, font.clone(), v.text_color());
+        ui.painter().text(egui::pos2(x + 26.0, rect.center().y), egui::Align2::LEFT_CENTER, name, font, v.text_color());
+    }
+    let label = format!("{glyph}  {name}");
+    r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &label));
+    r
+}
+
 /// One setting row: label and help on the left, the control on the right,
 /// and a reset icon when the value is not the default. Returns true when
 /// the reset icon was clicked. Hidden (false) when the search does not match.
@@ -144,7 +163,7 @@ impl App {
                     ui.set_min_height(height - 70.0);
                     ui.vertical(|ui| {
                         for (i, (name, ic)) in SECTIONS.iter().enumerate() {
-                            let r = ui.add_sized([168.0, 32.0], egui::SelectableLabel::new(dlg.current == i, format!("{ic}  {name}")));
+                            let r = nav_item(ui, dlg.current == i, ic, name);
                             if r.clicked() {
                                 dlg.goto = Some(i);
                                 dlg.current = i;

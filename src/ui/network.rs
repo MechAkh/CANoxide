@@ -67,46 +67,50 @@ impl App {
                 ui.colored_label(p.warning, if self.listen_only_active { "Listen only: every send control is disabled." } else { "Not connected: send controls are disabled." });
             }
             ui.label(egui::RichText::new("NMT").strong());
-            egui::Grid::new("nmt").num_columns(6).show(ui, |ui| {
-                ui.label(format!("Node {node}"));
+            // Each group wraps onto rows that fit the width of the view.
+            ui.horizontal_wrapped(|ui| {
+                ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new(format!("Node {node}")));
                 for c in NmtCommand::ALL {
                     if self.send_button(ui, true, c.label()).clicked() {
                         self.bus.send(BusCommand::Nmt { cmd: c, node });
                         self.set_status(format!("NMT {} node {node} sent", c.label()), false);
                     }
                 }
-                ui.end_row();
-                ui.label("All nodes");
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new("All nodes"));
                 for c in NmtCommand::ALL {
                     if self.send_button(ui, true, c.label()).clicked() {
                         self.nmt_all(c);
                     }
                 }
-                ui.end_row();
             });
-            ui.horizontal(|ui| {
-                if self.send_button(ui, true, "Send SYNC").clicked() {
-                    self.bus.send(BusCommand::Sync);
-                    self.set_status("SYNC sent", false);
-                }
-                if self.settings.adapter == AdapterKind::Simulator {
-                    ui.separator();
-                    ui.label("Simulator EMCY code 0x");
-                    ui.add(egui::TextEdit::singleline(&mut self.net.emcy_code).desired_width(48.0));
-                    ui.label("reg 0x");
-                    ui.add(egui::TextEdit::singleline(&mut self.net.emcy_reg).desired_width(28.0));
-                    let code = parse_hex_u32(&self.net.emcy_code).and_then(|v| u16::try_from(v).ok());
-                    let reg = parse_hex_u32(&self.net.emcy_reg).and_then(|v| u8::try_from(v).ok());
-                    if ui.add_enabled(self.connected && code.is_some() && reg.is_some(), egui::Button::new("Trigger EMCY")).on_hover_text("The simulated node sends an EMCY").clicked() {
-                        if let (Some(code), Some(reg)) = (code, reg) {
-                            self.bus.send(BusCommand::SimEmcy { code, reg });
+            // Rarely used controls.
+            egui::CollapsingHeader::new("More").id_salt("net_more").default_open(false).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if self.send_button(ui, true, "Send SYNC").clicked() {
+                        self.bus.send(BusCommand::Sync);
+                        self.set_status("SYNC sent", false);
+                    }
+                    if self.settings.adapter == AdapterKind::Simulator {
+                        ui.separator();
+                        ui.label("Simulator EMCY code 0x");
+                        ui.add(egui::TextEdit::singleline(&mut self.net.emcy_code).desired_width(48.0));
+                        ui.label("reg 0x");
+                        ui.add(egui::TextEdit::singleline(&mut self.net.emcy_reg).desired_width(28.0));
+                        let code = parse_hex_u32(&self.net.emcy_code).and_then(|v| u16::try_from(v).ok());
+                        let reg = parse_hex_u32(&self.net.emcy_reg).and_then(|v| u8::try_from(v).ok());
+                        if ui.add_enabled(self.connected && code.is_some() && reg.is_some(), egui::Button::new("Trigger EMCY")).on_hover_text("The simulated node sends an EMCY").clicked() {
+                            if let (Some(code), Some(reg)) = (code, reg) {
+                                self.bus.send(BusCommand::SimEmcy { code, reg });
+                            }
                         }
                     }
-                }
+                });
             });
 
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new("Network overview").strong());
                 ui.separator();
                 let busy = self.net.task.is_some();
@@ -136,7 +140,8 @@ impl App {
                     }
                 }
             });
-            self.node_table(ui);
+            // The table scrolls sideways in a narrow view.
+            egui::ScrollArea::horizontal().id_salt("nodes_h").show(ui, |ui| self.node_table(ui));
 
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Scan nodes").strong());
@@ -236,7 +241,7 @@ impl App {
 
     fn scan_section(&mut self, ui: &mut egui::Ui) {
         let progress = self.bus.shared.lock().map(|s| s.scan).unwrap_or(None);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let (a, b) = (self.settings.scan_first, self.settings.scan_last);
             ui.label(format!("SDO read of 0x1000 on nodes {a}..{b}, one at a time, timeout"));
             if ui.add(egui::DragValue::new(&mut self.settings.scan_timeout_ms).range(20..=2000).suffix(" ms")).changed() {

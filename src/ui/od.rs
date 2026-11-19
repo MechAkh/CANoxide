@@ -9,6 +9,7 @@ use crate::canopen::types::{check_limits, format_value, parse_int, parse_text, t
 use crate::eds::{eval_int, OdEntry, ObjectDictionary};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+use egui_phosphor::regular as icon;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -249,29 +250,18 @@ impl App {
                 Some(i) => format!("Read all 0x{i:04X}"),
                 None => "Read all (select an object)".to_string(),
             };
-            if ui.add_enabled(can_send && sel.is_some() && od.is_some(), egui::Button::new(label)).clicked() {
+            if theme::icon_button(ui, can_send && sel.is_some() && od.is_some(), icon::DOWNLOAD_SIMPLE, &label, &label).clicked() {
                 if let (Some(i), Some(od)) = (sel, &od) {
                     self.read_all(od, node, i);
                 }
             }
-            if ui.button("Expand all").clicked() {
+            if theme::icon_button(ui, od.is_some(), icon::CARET_DOUBLE_DOWN, "Expand all", "Expand all objects").clicked() {
                 if let Some(od) = &od {
                     self.od.expanded = od.objects.keys().copied().collect();
                 }
             }
-            if ui.button("Collapse all").clicked() {
+            if theme::icon_button(ui, od.is_some(), icon::CARET_DOUBLE_UP, "Collapse all", "Collapse all objects").clicked() {
                 self.od.expanded.clear();
-            }
-            ui.separator();
-            ui.label("Transfer");
-            let before = self.settings.sdo_transfer_mode;
-            egui::ComboBox::from_id_salt("od_mode").width(100.0).selected_text(self.settings.sdo_transfer_mode.label()).show_ui(ui, |ui| {
-                for m in TransferMode::ALL {
-                    ui.selectable_value(&mut self.settings.sdo_transfer_mode, m, m.label());
-                }
-            });
-            if before != self.settings.sdo_transfer_mode {
-                self.mark_settings();
             }
             if !can_send {
                 ui.colored_label(p.warning, if self.listen_only_active { "listen only: SDO disabled" } else { "not connected" });
@@ -353,6 +343,16 @@ impl App {
                     }
                 }
                 ui.separator();
+                ui.label("Transfer");
+                let before = self.settings.sdo_transfer_mode;
+                egui::ComboBox::from_id_salt("od_mode").width(100.0).selected_text(self.settings.sdo_transfer_mode.label()).show_ui(ui, |ui| {
+                    for m in TransferMode::ALL {
+                        ui.selectable_value(&mut self.settings.sdo_transfer_mode, m, m.label());
+                    }
+                });
+                if before != self.settings.sdo_transfer_mode {
+                    self.mark_settings();
+                }
                 if ui.add_enabled(can_send && ok.is_some(), egui::Button::new("Upload to file...")).on_hover_text("Read the object (any size) into a file").clicked() {
                     if let Some((index, sub)) = ok {
                         if let Some(path) = rfd::FileDialog::new().set_file_name(format!("{index:04X}_{sub:02X}.bin")).save_file() {
@@ -445,20 +445,28 @@ impl App {
         let mut toggle: Option<u16> = None;
         let mut select: Option<u16> = None;
 
+        let dis_c = theme::pal(ui).text_disabled;
+        // Column widths from the width of the view (spec 8.2): the actions
+        // column has a fixed width and is always inside the view; Name
+        // takes the rest.
+        const ACTIONS: f32 = 64.0;
+        let gap = ui.spacing().item_spacing.x;
+        let fixed = 76.0 + 30.0 + 48.0 + ACTIONS + gap * 9.0;
+        let rest = (ui.available_width() - fixed).max(420.0);
+        let w = |f: f32, min: f32| (rest * f).max(min);
         TableBuilder::new(ui)
             .id_salt("od_table")
             .striped(zebra)
-            .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::initial(70.0).at_least(50.0))
-            .column(Column::initial(36.0).at_least(28.0))
-            .column(Column::initial(220.0).at_least(80.0).clip(true))
-            .column(Column::initial(100.0).at_least(50.0).clip(true))
-            .column(Column::initial(44.0).at_least(36.0))
-            .column(Column::initial(150.0).at_least(60.0).clip(true))
-            .column(Column::initial(100.0).at_least(40.0).clip(true))
-            .column(Column::initial(120.0).at_least(60.0))
-            .column(Column::remainder().at_least(110.0))
+            .column(Column::exact(76.0))
+            .column(Column::exact(30.0))
+            .column(Column::remainder().at_least(80.0).clip(true))
+            .column(Column::exact(w(0.13, 56.0)).clip(true))
+            .column(Column::exact(48.0))
+            .column(Column::exact(w(0.22, 70.0)).clip(true))
+            .column(Column::exact(w(0.13, 50.0)).clip(true))
+            .column(Column::exact(w(0.18, 64.0)).clip(true))
+            .column(Column::exact(ACTIONS))
             .min_scrolled_height(0.0)
             .header(row_h, |mut h| {
                 for t in ["Index", "Sub", "Name", "Type", "Access", "Value", "Default", "New value", ""] {
@@ -477,8 +485,10 @@ impl App {
                             let sel = self.od.selected == Some(index);
                             row.set_selected(sel);
                             row.col(|ui| {
-                                let arrow = if open { "v" } else { ">" };
-                                if ui.small_button(arrow).clicked() {
+                                let (arrow, name) = if open { (icon::CARET_DOWN, "Collapse") } else { (icon::CARET_RIGHT, "Expand") };
+                                let r = ui.add(egui::Button::new(arrow).frame(false).small());
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+                                if r.clicked() {
                                     toggle = Some(index);
                                 }
                                 if ui.selectable_label(sel, format!("{index:04X}")).clicked() {
@@ -499,7 +509,7 @@ impl App {
                             row.col(|_| {});
                             row.col(|_| {});
                             row.col(|ui| {
-                                if ui.add_enabled(can_send, egui::Button::new("Read all")).clicked() {
+                                if theme::icon_button(ui, can_send, icon::DOWNLOAD_SIMPLE, "Read all", "Read all sub-objects from the device").clicked() {
                                     read_all = Some(index);
                                 }
                             });
@@ -542,7 +552,9 @@ impl App {
                                 Some(RowValue::Busy) => {
                                     ui.weak("...");
                                 }
-                                None => {}
+                                None => {
+                                    ui.label(egui::RichText::new("\u{2014}").color(dis_c)).on_hover_text("not read yet");
+                                }
                             });
                             row.col(|ui| {
                                 let d = e.effective_text().unwrap_or("");
@@ -555,10 +567,10 @@ impl App {
                                 }
                             });
                             row.col(|ui| {
-                                if ui.add_enabled(can_send && e.access.readable(), egui::Button::new("Read")).clicked() {
+                                if theme::icon_button(ui, can_send && e.access.readable(), icon::DOWNLOAD_SIMPLE, "Read", "Read from the device").clicked() {
                                     reads.push((index, sub));
                                 }
-                                if ui.add_enabled(can_send && e.access.writable(), egui::Button::new("Write")).clicked() {
+                                if theme::icon_button(ui, can_send && e.access.writable(), icon::UPLOAD_SIMPLE, "Write", "Write the new value to the device").clicked() {
                                     writes.push((index, sub));
                                 }
                             });

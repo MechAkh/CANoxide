@@ -211,6 +211,7 @@ impl App {
 
     pub(crate) fn graph_tab(&mut self, ui: &mut egui::Ui) {
         let p = theme::pal(ui);
+        let view_h = ui.available_height();
         if !self.graph.started {
             self.graph.started = true;
             self.graph.follow = true;
@@ -218,33 +219,41 @@ impl App {
         let (now, polling_on) = self.bus.shared.lock().map(|s| (s.now_us as f64 / 1e6, s.signal_polling)).unwrap_or((0.0, false));
         self.graph.polling = polling_on;
         let has_polls = self.bus.signals.lock().map(|s| s.has_polls()).unwrap_or(false);
-        // Toolbar.
+        // Toolbar: one row (icon buttons with tooltips; Add signal keeps its label).
+        use egui_phosphor::regular as icon;
         ui.horizontal_wrapped(|ui| {
-            if ui.button(format!("{} Add signal...", egui_phosphor::regular::PLUS)).clicked() {
+            if ui.button(format!("{} Add signal...", icon::PLUS)).clicked() {
                 self.graph.add = Some(AddDraft { node: self.active_node(), ..AddDraft::default() });
             }
+            ui.separator();
             if polling_on {
-                if ui.button(format!("{} Stop polling", egui_phosphor::regular::STOP)).clicked() {
+                if theme::icon_button(ui, true, icon::STOP, "Stop polling", "Stop polling the SDO signals").clicked() {
                     self.bus.send(BusCommand::SetSignalPolling(false));
                 }
-            } else if self.send_button(ui, has_polls, format!("{} Start polling", egui_phosphor::regular::PLAY)).on_hover_text("Read the SDO signals periodically").clicked() {
-                self.bus.send(BusCommand::SetSignalPolling(true));
+            } else {
+                let can = self.can_send();
+                let tip = if can { "Start polling: read the SDO signals periodically" } else { self.send_hint() };
+                if theme::icon_button(ui, can && has_polls, icon::PLAY, "Start polling", tip).clicked() {
+                    self.bus.send(BusCommand::SetSignalPolling(true));
+                }
             }
-            let paused = self.graph.paused_at.is_some();
-            if ui.selectable_label(paused, format!("{} Pause", egui_phosphor::regular::PAUSE)).on_hover_text("Freeze the picture; the signals keep recording").clicked() {
-                self.graph.paused_at = if paused { None } else { Some(now) };
+            let mut paused = self.graph.paused_at.is_some();
+            if theme::icon_toggle(ui, &mut paused, icon::PAUSE, "Pause", "Freeze the picture; the signals keep recording").changed() {
+                self.graph.paused_at = if paused { Some(now) } else { None };
             }
-            ui.checkbox(&mut self.graph.follow, "Follow");
-            ui.label("Window");
-            if ui.add(egui::DragValue::new(&mut self.settings.graph_window_s).range(1.0..=3600.0).speed(0.5).suffix(" s")).changed() {
+            theme::icon_toggle(ui, &mut self.graph.follow, icon::ARROW_LINE_RIGHT, "Follow", "Follow the newest points (off: drag and zoom)");
+            ui.separator();
+            ui.label(icon::CLOCK).on_hover_text("Time window");
+            if ui.add(egui::DragValue::new(&mut self.settings.graph_window_s).range(1.0..=3600.0).speed(0.5).suffix(" s")).on_hover_text("Time window").changed() {
                 self.mark_settings();
             }
-            if ui.button("Clear").on_hover_text("Delete the recorded points").clicked() {
+            ui.separator();
+            if theme::icon_button(ui, true, icon::TRASH, "Clear", "Delete the recorded points").clicked() {
                 if let Ok(mut s) = self.bus.signals.lock() {
                     s.clear();
                 }
             }
-            if ui.button("Export CSV...").clicked() {
+            if theme::icon_button(ui, true, icon::FLOPPY_DISK, "Export CSV...", "Export the points as CSV").clicked() {
                 if let Some(path) = rfd::FileDialog::new().set_file_name("signals.csv").add_filter("CSV", &["csv"]).save_file() {
                     match self.write_graph_csv(&path) {
                         Ok(n) => self.set_status(format!("Saved {n} points to {}", path.display()), false),
@@ -306,8 +315,11 @@ impl App {
             return;
         }
 
+        // The plot gets at least 60 % of the height; the legend scrolls in
+        // the rest.
+        let avail = ui.available_height();
         let legend_h = (series.len() as f32 + 1.0) * 24.0 + 12.0;
-        let plot_h = (ui.available_height() - legend_h.min(220.0)).max(120.0);
+        let plot_h = (avail - legend_h.min(220.0)).max(view_h * 0.6).min(avail - 40.0).max(120.0);
         let (mut ymin, mut ymax) = (f64::INFINITY, f64::NEG_INFINITY);
         for s in &series {
             for p in &s.pts {
@@ -341,7 +353,7 @@ impl App {
 
         // Legend table.
         let mut remove = None;
-        egui::ScrollArea::vertical().id_salt("graph_legend").show(ui, |ui| {
+        egui::ScrollArea::both().id_salt("graph_legend").max_height(ui.available_height()).auto_shrink([false, true]).show(ui, |ui| {
             egui::Grid::new("graph_legend_grid").num_columns(9).striped(self.settings.zebra).show(ui, |ui| {
                 for h in ["", "Show", "Signal", "Source", "Last", "Min", "Max", "Points", ""] {
                     ui.strong(h);

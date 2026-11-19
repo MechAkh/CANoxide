@@ -317,6 +317,18 @@ impl App {
         }
     }
 
+    /// A send button in the caution style (or danger with `danger`, spec
+    /// 5.1): disabled (with the reason) unless the bus may be used and `ok`.
+    pub(crate) fn styled_send_button(&self, ui: &mut egui::Ui, ok: bool, danger: bool, text: &str, tip: &str) -> egui::Response {
+        let can = self.can_send();
+        let r = if danger { theme::danger_button(ui, can && ok, egui_phosphor::regular::LIGHTNING, text) } else { theme::caution_button(ui, can && ok, text) };
+        if can {
+            r.on_hover_text(tip)
+        } else {
+            r.on_disabled_hover_text(self.send_hint())
+        }
+    }
+
     pub(crate) fn tag(&mut self) -> u64 {
         self.next_tag += 1;
         self.next_tag
@@ -443,6 +455,11 @@ impl App {
 
     pub(crate) fn trace_paused(&self, n: u8) -> bool {
         self.traces.get(&n).is_some_and(|t| self.trace.view_paused(t.view))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trace_delta(&self, n: u8) -> bool {
+        self.traces.get(&n).is_some_and(|t| t.delta)
     }
 
     pub(crate) fn close_trace(&mut self, n: u8) {

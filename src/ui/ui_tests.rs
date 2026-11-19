@@ -341,6 +341,44 @@ fn buttons(h: &H, label: &str) -> Vec<NodeId> {
     h.query_all_by_role_and_label(Role::Button, label).map(|n| n.id()).collect()
 }
 
+/// Choose `option` in the (topmost) combo box named `combo` that starts
+/// between `x0` and `x1`.
+#[track_caller]
+fn pick_in(h: &mut H, combo: &str, option: &str, x0: f64, x1: f64) {
+    let before = buttons(h, option);
+    let id = top_in(h, combo, Some(Role::ComboBox), x0, x1);
+    click_id(h, id);
+    click_new_button(h, option, &before);
+}
+
+#[track_caller]
+fn pick(h: &mut H, combo: &str, option: &str) {
+    pick_in(h, combo, option, f64::MIN, f64::MAX);
+}
+
+/// Open the Filters popup of the trace tab that starts between `x0` and `x1`.
+#[track_caller]
+fn open_filters_in(h: &mut H, x0: f64, x1: f64) {
+    let id = top_in(h, "Filters", Some(Role::Button), x0, x1);
+    click_id(h, id);
+    assert!(has_exact(h, "Reset filters"), "filter popup did not open\nUI:\n{}", dump(h));
+}
+
+/// Open the "More" row of the Network view (SYNC, simulator EMCY).
+#[track_caller]
+fn open_more(h: &mut H) {
+    if !has_exact(h, "Send SYNC") {
+        click(h, "More");
+    }
+}
+
+#[track_caller]
+fn open_filters(h: &mut H) {
+    if !has_exact(h, "Reset filters") {
+        open_filters_in(h, f64::MIN, f64::MAX);
+    }
+}
+
 /// Replace the text of a text field.
 #[track_caller]
 fn set_text(h: &mut H, id: NodeId, text: &str) {
@@ -495,6 +533,7 @@ fn s1_start_not_connected() {
     // Network.
     only(&mut h, vec![Tab::Network]);
     assert!(has_exact(&h, "Not connected: send controls are disabled."));
+    open_more(&mut h);
     for l in ["Start", "Stop", "Enter pre-operational", "Reset node", "Reset communication", "Send SYNC", "Scan nodes", "Trigger EMCY", "Refresh node info", "Set heartbeat"] {
         all_disabled(&h, l);
     }
@@ -575,18 +614,18 @@ fn s3_trace() {
     assert_eq!(cell_text(&h, row, "Dir"), tx_glyph());
     assert_eq!(cell_text(&h, row, "DLC"), "2");
     assert_eq!(cell_text(&h, row, "Data"), "41 42");
-    click(&mut h, "Decimal");
+    pick(&mut h, "Data format", "Decimal");
     let row = last_row(&h, "123").unwrap();
     assert_eq!(cell_text(&h, row, "Data"), "65 66");
-    click(&mut h, "String");
+    pick(&mut h, "Data format", "String");
     let row = last_row(&h, "123").unwrap();
     assert_eq!(cell_text(&h, row, "Data"), "AB");
-    click(&mut h, "Hex");
+    pick(&mut h, "Data format", "Hex");
     let row = last_row(&h, "123").unwrap();
     assert_eq!(cell_text(&h, row, "Data"), "41 42");
 
     // Fixed: one row per COB-ID, the count rises.
-    click(&mut h, "Fixed");
+    pick(&mut h, "Display mode", "Fixed");
     let count = |h: &H| last_row(h, "701").map(|r| cell_text(h, r, "Count").parse::<u64>().unwrap_or(0)).unwrap_or(0);
     wait_for(&mut h, "two heartbeats in the fixed view", |h| count(h) >= 2);
     assert_eq!(count_exact(&h, "701"), 1, "fixed view: one row for 0x701\nUI:\n{}", dump(&h));
@@ -594,11 +633,13 @@ fn s3_trace() {
     let c0 = count(&h);
     wait_for(&mut h, "fixed count rises", |h| count(h) > c0);
     assert_eq!(count_exact(&h, "701"), 1, "fixed view: still one row for 0x701");
-    click(&mut h, "Chronological");
+    pick(&mut h, "Display mode", "Scroll");
 
-    // Node filter: node 1 hides the Tx frame (no node), node 5 hides all.
+    // Node filter in the Filters popup: node 1 hides the Tx frame (no
+    // node), node 5 hides all.
     let (all, _, _) = trace_counts(&h);
-    let node_f = right_of(&h, "Node", Role::TextInput);
+    open_filters(&mut h);
+    let node_f = right_of(&h, "Node ID", Role::TextInput);
     set_text(&mut h, node_f, "1");
     let (n1, _, _) = trace_counts(&h);
     assert!(n1 < all, "node filter 1: {n1} of {all} rows");
@@ -609,7 +650,8 @@ fn s3_trace() {
     assert!(trace_counts(&h).0 >= all, "Reset filters");
 
     // Type filter: no heartbeat rows.
-    click(&mut h, "Types (11/11)");
+    open_filters(&mut h);
+    assert!(has_exact(&h, "Types (11/11)"), "type count\nUI:\n{}", dump(&h));
     click_role(&mut h, Role::CheckBox, "Heartbeat");
     assert!(has_exact(&h, "Types (10/11)"), "type count\nUI:\n{}", dump(&h));
     let (shown, buf, _) = trace_counts(&h);
@@ -665,6 +707,7 @@ fn s4_network() {
     assert!(has_exact(&h, "Scan nodes"));
 
     // SYNC.
+    open_more(&mut h);
     click(&mut h, "Send SYNC");
     assert!(has_exact(&h, "SYNC sent"));
     only(&mut h, vec![Tab::Trace(1)]);
@@ -720,7 +763,7 @@ fn s5_eds_device_od() {
     let id = button_on_row(&h, row, "Read");
     click_id(&mut h, id);
     let v = |h: &H| cell_text(h, top_by_label(h, "1008", Some(Role::Button)), "Value");
-    wait_for(&mut h, "0x1008 value", |h| !v(h).is_empty() && v(h) != "...");
+    wait_for(&mut h, "0x1008 value", |h| !v(h).is_empty() && v(h) != "..." && v(h) != "\u{2014}");
     assert_eq!(v(&h), "54 65 73 74 20 49 4F 20 6D 6F 64 75 6C 65", "hex view of a VISIBLE_STRING");
     click(&mut h, "String");
     assert_eq!(v(&h), "Test IO module");
@@ -766,6 +809,7 @@ fn s5_eds_device_od() {
 
     // Trace: SDO rows carry object names.
     only(&mut h, vec![Tab::Trace(1)]);
+    open_filters(&mut h);
     let text = right_of(&h, "Text", Role::TextInput);
     set_text(&mut h, text, "device type");
     assert!(has(&h, "SDO upload req 0x1000:00 (Device type)"), "\nUI:\n{}", dump(&h));
@@ -828,6 +872,7 @@ fn s7_listen_only_every_view() {
     only(&mut h, vec![Tab::Network]);
     assert!(has_exact(&h, "Listen only: every send control is disabled."));
     // (Trigger EMCY stays enabled: the simulated node sends it, not this tool.)
+    open_more(&mut h);
     for l in ["Start", "Stop", "Enter pre-operational", "Reset node", "Reset communication", "Send SYNC", "Scan nodes", "Refresh node info", "Set heartbeat"] {
         all_disabled(&h, l);
     }
@@ -1083,6 +1128,7 @@ fn s14_second_trace_tab_own_filter() {
     wait_for(&mut h, "rows in both tabs", |h| trace_counts_at(h, true).0 > 1 && trace_counts_at(h, false).0 > 1);
     // Trace 2 shows only COB-ID 0x123 (not on this bus); trace 1 shows all.
     let mid = 800.0;
+    open_filters_in(&mut h, mid, f64::MAX);
     let cob = right_of_in(&h, "COB-ID 0x", Role::TextInput, mid, f64::MAX);
     let cob_max = right_of_in(&h, "..", Role::TextInput, mid, f64::MAX);
     set_text(&mut h, cob, "123");
@@ -1095,11 +1141,13 @@ fn s14_second_trace_tab_own_filter() {
     let left_rows = h.query_all_by_label("701").filter(|n| rect_of(n).x0 < mid).count();
     let right_rows = h.query_all_by_label("701").filter(|n| rect_of(n).x0 >= mid).count();
     assert!(left_rows > 0 && right_rows == 0, "rows {left_rows} / {right_rows}");
-    let cob1 = right_of_in(&h, "COB-ID 0x", Role::TextInput, f64::MIN, mid);
-    assert_eq!(node(&h, cob1).value().unwrap_or_default(), "", "trace 1 filter changed");
     set_text(&mut h, cob, "701");
     set_text(&mut h, cob_max, "701");
     wait_for(&mut h, "trace 2 rows of 0x701", |h| trace_counts_at(h, false).0 > 1);
+    // The popup of trace 1 shows its own, empty range.
+    open_filters_in(&mut h, f64::MIN, mid);
+    let cob1 = right_of_in(&h, "COB-ID 0x", Role::TextInput, f64::MIN, mid);
+    assert_eq!(node(&h, cob1).value().unwrap_or_default(), "", "trace 1 filter changed");
     // Pause trace 2 only.
     let pause2 = top_in(&h, "Pause", Some(Role::CheckBox), mid, f64::MAX);
     click_id(&mut h, pause2);
@@ -1180,6 +1228,47 @@ fn s16_pdo_read_disable_apply() {
     assert!(last_row(&h, "281").is_some() || trace_counts(&h).0 > 0);
 }
 
+/// PDO: an apply that fails part-way (an object the node cannot map) leaves
+/// TPDO1 disabled: an error banner with Read PDOs, and the row is marked.
+#[test]
+fn s22_pdo_failed_apply_banner() {
+    let tmp = TempDir::new("s22");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Pdo");
+    connect(&mut h);
+    only(&mut h, vec![Tab::Pdo]);
+    click_containing(&mut h, "Read PDOs");
+    wait_for(&mut h, "PDOs read", |h| has(h, "PDO(s) read"));
+    let t1 = top_by_label(&h, "TPDO1", Some(Role::Label));
+    assert_eq!(cell_text(&h, t1, "State"), "enabled");
+    let edit = button_on_row(&h, t1, "Edit");
+    click_id(&mut h, edit);
+    // The entry field left of "Add entry": 0x1000 (device type) is not mappable.
+    let add = rect_id(&h, top_by_label(&h, "Add entry", Some(Role::Button)));
+    let field = h
+        .query_all_by_role(Role::TextInput)
+        .filter(|n| (cy(&rect_of(n)) - cy(&add)).abs() < 8.0 && rect_of(n).x1 <= add.x0 + 1.0)
+        .max_by(|a, b| rect_of(a).x0.total_cmp(&rect_of(b).x0))
+        .map(|n| n.id())
+        .expect("entry field");
+    set_text(&mut h, field, "1000:0:8");
+    click_role(&mut h, Role::Button, "Add entry");
+    let before = buttons(&h, "Apply");
+    let before_close = buttons(&h, "Close");
+    click_role(&mut h, Role::Button, "Apply");
+    click_new_button(&mut h, "Apply", &before);
+    wait_for(&mut h, "apply failed", |h| has(h, "PDO change failed"));
+    click_new_button(&mut h, "Close", &before_close);
+    assert!(has(&h, "TPDO1 was left disabled on the device after a failed step: "), "banner\nUI:\n{}", dump(&h));
+    let t1 = top_by_label(&h, "TPDO1", Some(Role::Label));
+    assert_eq!(cell_text(&h, t1, "State"), "left disabled");
+    // The banner action reads the PDOs again; the banner goes.
+    click_role(&mut h, Role::Button, "Read PDOs");
+    wait_for(&mut h, "read again", |h| !has(h, "left disabled on the device"));
+    let t1 = top_by_label(&h, "TPDO1", Some(Role::Label));
+    assert_eq!(cell_text(&h, t1, "State"), "disabled");
+}
+
 /// Transmit list: a manual send appears in the trace; a periodic entry runs
 /// only while started.
 #[test]
@@ -1240,8 +1329,25 @@ fn s18_lss_inquire() {
     wait_for(&mut h, "identity", |h| has(h, "vendor 0x0000069B"));
     assert!(has(&h, "product 0x00000001"), "\nUI:\n{}", dump(&h));
     assert!(has_exact(&h, "Use last identity"));
+    // The identity fields are filled, as 8 hex digits with 0x.
+    let field = |h: &H, l: &str| node(h, right_of(h, l, Role::TextInput)).value().unwrap_or_default();
+    assert_eq!(field(&h, "Vendor ID"), "0x0000069B");
+    assert_eq!(field(&h, "Product code"), "0x00000001");
+    assert!(field(&h, "Revision").starts_with("0x") && field(&h, "Serial").len() == 10, "\nUI:\n{}", dump(&h));
+    let current = |h: &H| text_of(&node(h, right_of(h, "Current node-ID", Role::Label)));
+    assert_eq!(current(&h), "\u{2014}");
     click(&mut h, "Inquire node-ID");
     wait_for(&mut h, "node-ID", |h| has(h, ": node-ID 1"));
+    assert_eq!(current(&h), "1");
+    // The log table: service and result pill.
+    assert!(has_exact(&h, "Inquire identity") && has_exact(&h, "OK"), "\nUI:\n{}", dump(&h));
+    // Caution / danger buttons.
+    for l in ["Configure node-ID", "Configure bit timing", "Activate bit timing"] {
+        assert!(h.query_all_by_role_and_label(Role::Button, l).any(|n| !n.is_disabled()), "{l}\nUI:\n{}", dump(&h));
+    }
+    click(&mut h, "Configure node-ID");
+    assert!(has(&h, "It may leave this network."), "question\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Cancel");
     // A changing service asks first.
     click(&mut h, "Store configuration");
     assert!(has(&h, "non-volatile memory"), "question\nUI:\n{}", dump(&h));
@@ -1311,7 +1417,7 @@ fn s20_settings_change_save_reload() {
     assert_eq!(h.state().settings.theme, Theme::Light);
     assert!(!h.ctx.style().visuals.dark_mode);
     only(&mut h, vec![Tab::Trace(1)]);
-    assert!(toggled(&h, top_by_label(&h, "Delta time", Some(Role::Button))), "new trace tab uses the Delta default\nUI:\n{}", dump(&h));
+    assert!(h.state().trace_delta(1), "new trace tab uses the Delta default\nUI:\n{}", dump(&h));
 }
 
 /// A write asks first; Cancel sends nothing, Write sends it.

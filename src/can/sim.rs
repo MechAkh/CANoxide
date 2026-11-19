@@ -32,7 +32,12 @@ pub const LARGE_OBJECT: u16 = 0x2100;
 pub const DEFAULT_TPDO_PERIOD_MS: u64 = 100;
 
 pub fn builtin_dictionary() -> ObjectDictionary {
-    eds::parse_str(BUILTIN_EDS)
+    let mut od = eds::parse_str(BUILTIN_EDS);
+    // 0x100A (software version) of the simulator node is the version of this program.
+    if let Some(e) = od.objects.get_mut(&0x100A).and_then(|o| o.subs.get_mut(&0)) {
+        e.default = Some(env!("CARGO_PKG_VERSION").to_string());
+    }
+    od
 }
 
 /// The default content of 0x2100: a byte pattern that is easy to check.
