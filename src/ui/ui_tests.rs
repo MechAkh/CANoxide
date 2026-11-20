@@ -10,9 +10,10 @@
 //! dock tabs do not get in the way; the layout tests check the default
 //! layouts themselves.
 //!
-//! No test selects the PEAK adapter, so no test loads the PCAN driver, opens
-//! a channel or reads the channel list: `build` refuses settings that name
-//! the PEAK adapter before the app (and its first `ListChannels`) starts.
+//! No test selects the PEAK or the CANfox adapter, so no test loads the PCAN
+//! or the Sontheim driver, opens a channel or reads the channel list: `build`
+//! refuses settings that name a hardware adapter before the app (and its
+//! first `ListChannels`) starts, and the picker test only opens the list.
 //!
 //! The ignored test `screenshots` renders PNG files with wgpu (offscreen,
 //! no window) to `target\screens\`.
@@ -77,7 +78,7 @@ fn build(dir: &Path) -> H {
 
 fn build_sized(dir: &Path, w: f32, h: f32) -> H {
     let boot = Boot::load_dir(dir.to_path_buf());
-    assert_eq!(boot.settings.adapter, AdapterKind::Simulator, "a UI test must never use the PEAK adapter");
+    assert_eq!(boot.settings.adapter, AdapterKind::Simulator, "a UI test must never use the PEAK or the CANfox adapter");
     Harness::builder().with_size(egui::Vec2::new(w, h)).build_eframe(move |cc| App::new(cc, boot))
 }
 
@@ -573,6 +574,29 @@ fn s2_connect_disconnect_reconnect() {
 }
 
 /// Scenario 3: trace rows, counter, Pause, Clear, data view, Fixed, filters.
+/// The adapter picker offers the CANfox. The list is only opened and closed
+/// again: choosing an entry would ask its driver for the channel list.
+#[test]
+fn s2_adapter_picker_offers_canfox() {
+    let tmp = TempDir::new("s2_canfox");
+    let mut h = build(&tmp.data());
+    let before_canfox = buttons(&h, "CANfox");
+    let before_peak = buttons(&h, "PEAK PCAN");
+    let combo = right_of(&h, "Adapter", Role::ComboBox);
+    click_id(&mut h, combo);
+    let canfox: Vec<NodeId> = buttons(&h, "CANfox").into_iter().filter(|id| !before_canfox.contains(id)).collect();
+    let peak: Vec<NodeId> = buttons(&h, "PEAK PCAN").into_iter().filter(|id| !before_peak.contains(id)).collect();
+    assert_eq!(canfox.len(), 1, "no CANfox entry in the adapter list\nUI:\n{}", dump(&h));
+    assert_eq!(peak.len(), 1, "no PEAK entry in the adapter list\nUI:\n{}", dump(&h));
+    assert!(!buttons(&h, "Log file (replay)").is_empty(), "replay entry\nUI:\n{}", dump(&h));
+    // Close the list without a choice.
+    h.input_mut().events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    assert!(buttons(&h, "CANfox").iter().all(|id| before_canfox.contains(id)), "the list did not close\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().settings.adapter, AdapterKind::Simulator);
+    assert_eq!(AdapterKind::Canfox.label(), "CANfox");
+}
+
 #[test]
 fn s3_trace() {
     let tmp = TempDir::new("s3");
@@ -2511,7 +2535,7 @@ fn s33_app_icon() {
     click(&mut h, "About CANoxide");
     assert!(has_exact(&h, "CANoxide icon"), "About icon\nUI:\n{}", dump(&h));
     assert!(has_exact(&h, &format!("Version {}", crate::VERSION)));
-    assert_eq!(crate::VERSION, "0.3.3");
+    assert_eq!(crate::VERSION, "0.4.0");
 }
 
 // ------------------------------------------------------------ 0.3 replay

@@ -3,6 +3,7 @@
 
 use super::{parse_node, spec, Args, CliError, CmdResult, Ctx, CLI_NAME};
 use canoxide::can::pcan::PcanAdapter;
+use canoxide::can::sontheim::SontheimAdapter;
 use canoxide::can::{CanAdapter, CanFrame};
 use canoxide::canopen::decode::{DecodeContext, MsgClass, SdoBlockTracker};
 use canoxide::canopen::lss::{bit_timing_index, LssCommand, LssError, LssIdentity, LssResult, DEFAULT_LSS_TIMEOUT_MS};
@@ -431,7 +432,8 @@ fn adapters(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
         "name": "pcan",
         "description": "PEAK PCAN-USB through PCANBasic.dll. Channels are listed with --adapter pcan (the driver is asked; no channel is opened).",
     });
-    if !ctx.is_sim() {
+    let canfox_asked = ctx.g.adapter == "canfox";
+    if !ctx.is_sim() && !canfox_asked {
         let mut a = PcanAdapter::load().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
         let ch = a.list_channels().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
         pcan["channels"] = Value::Array(
@@ -444,6 +446,16 @@ fn adapters(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
         );
     }
     list.push(pcan);
+    let mut canfox = json!({
+        "name": "canfox",
+        "description": "ifm CANfox through the Sontheim MT-API (SIECA164.DLL). --channel is the net number (default 105). Nets are listed with --adapter canfox (the driver is asked; no net is opened).",
+    });
+    if canfox_asked {
+        let mut a = SontheimAdapter::load().map_err(|e| CliError::new("adapter", format!("CANfox driver: {e}")))?;
+        let ch = a.list_channels().map_err(|e| CliError::new("adapter", format!("CANfox driver: {e}")))?;
+        canfox["channels"] = Value::Array(ch.iter().map(|c| json!({"net": c.handle, "label": c.name, "available": c.available})).collect());
+    }
+    list.push(canfox);
     Ok(json!({ "adapters": list }))
 }
 

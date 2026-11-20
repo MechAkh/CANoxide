@@ -15,6 +15,7 @@
 use crate::busload::{BusLoad, BusLoadStats};
 use crate::can::pcan::PcanAdapter;
 use crate::can::sim::{SimAdapter, SimNode};
+use crate::can::sontheim::SontheimAdapter;
 use crate::can::{Bitrate, CanAdapter, CanFrame, ChannelInfo, Dir};
 use crate::canopen::decode::{DecodeContext, Decoded, SdoBlockTracker};
 use crate::canopen::lss::{LssCommand, LssError, LssMaster, LssOutput, LssResult};
@@ -41,6 +42,8 @@ use std::time::{Duration, Instant};
 
 pub enum AdapterChoice {
     Peak,
+    /// ifm CANfox (Sontheim MT-API); the channel is the net number.
+    Canfox,
     Sim { node_id: u8, od: Option<Arc<ObjectDictionary>> },
     /// Play a log file back (listen-only, never transmits). `tail` is the
     /// trace capacity (the newest decoded frames sent after a seek); `ctx`
@@ -346,6 +349,9 @@ struct Worker {
     load: BusLoad,
     batch: Vec<CanFrame>,
     rx_count: u64,
+    /// The last receive error, so that a lasting fault (a dead driver) is
+    /// reported once and not in every service round.
+    rx_error: Option<String>,
     fps_t: Instant,
     status_t: Instant,
     shutdown: bool,
@@ -382,6 +388,7 @@ impl Worker {
             load: BusLoad::new(250),
             batch: Vec::new(),
             rx_count: 0,
+            rx_error: None,
             fps_t: Instant::now(),
             status_t: Instant::now(),
             shutdown: false,
@@ -462,6 +469,7 @@ impl Worker {
                     AdapterKind::Simulator => Ok(vec![ChannelInfo { handle: 0, name: "Virtual bus".to_string(), available: true }]),
                     AdapterKind::Peak => PcanAdapter::load().and_then(|mut a| a.list_channels()).map_err(|e| e.to_string()),
                     AdapterKind::Replay => Ok(Vec::new()),
+                    AdapterKind::Canfox => SontheimAdapter::load().and_then(|mut a| a.list_channels()).map_err(|e| e.to_string()),
                 };
                 self.emit(BusEvent::Channels { kind, result });
             }
@@ -476,6 +484,13 @@ impl Worker {
                         Ok(a) => Box::new(a),
                         Err(e) => {
                             self.emit(BusEvent::Error(format!("PEAK: {e}")));
+                            return;
+                        }
+                    },
+                    AdapterChoice::Canfox => match SontheimAdapter::load() {
+                        Ok(a) => Box::new(a),
+                        Err(e) => {
+                            self.emit(BusEvent::Error(format!("CANfox: {e}")));
                             return;
                         }
                     },
@@ -494,6 +509,7 @@ impl Worker {
                 self.t0 = Instant::now();
                 self.fps_t = self.t0;
                 self.rx_count = 0;
+                self.rx_error = None;
                 self.listen_only = listen_only;
                 self.load = BusLoad::new(bitrate.kbit());
                 self.block.reset();
@@ -1276,9 +1292,18 @@ impl Worker {
                         }
                     }
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    self.rx_error = None;
+                    break;
+                }
                 Err(e) => {
-                    self.emit(BusEvent::Error(format!("receive: {e}")));
+                    let text = format!("receive: {e}");
+                    if self.rx_error.as_deref() != Some(text.as_str()) {
+                        self.emit(BusEvent::Error(text.clone()));
+                        self.rx_error = Some(text);
+                    }
+                    // A lasting fault returns at once: do not spin.
+                    std::thread::sleep(Duration::from_millis(10));
                     break;
                 }
             }

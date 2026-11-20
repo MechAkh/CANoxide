@@ -12,14 +12,20 @@ pub enum AdapterKind {
     Peak,
     /// A log file played back (never transmits).
     Replay,
+    /// ifm CANfox through the Sontheim MT-API.
+    Canfox,
 }
 
 impl AdapterKind {
+    /// In the order of the adapter picker.
+    pub const ALL: [AdapterKind; 4] = [AdapterKind::Simulator, AdapterKind::Peak, AdapterKind::Canfox, AdapterKind::Replay];
+
     pub fn label(self) -> &'static str {
         match self {
             AdapterKind::Simulator => "Simulator",
             AdapterKind::Peak => "PEAK PCAN",
             AdapterKind::Replay => "Log file (replay)",
+            AdapterKind::Canfox => "CANfox",
         }
     }
 }
@@ -158,6 +164,8 @@ pub struct Settings {
     pub replay_file: String,
     /// Seconds shown by the sparkline of a signal value, 1..120.
     pub sparkline_s: f32,
+    /// The net number of the CANfox adapter (`channel` is the PCAN channel).
+    pub canfox_net: u32,
 }
 
 /// Table row height.
@@ -250,6 +258,7 @@ impl Default for Settings {
             msg_decimal: false,
             replay_file: String::new(),
             sparkline_s: 10.0,
+            canfox_net: crate::can::sontheim::CANFOX_NET,
         }
     }
 }

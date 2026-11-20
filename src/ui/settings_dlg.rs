@@ -233,7 +233,7 @@ impl App {
                     sec(ui, 1);
                     if row(ui, &search, "Default adapter", "Used by Connect.", d.adapter != def.adapter, |ui| {
                         egui::ComboBox::from_id_salt("set_adapter").selected_text(d.adapter.label()).show_ui(ui, |ui| {
-                            for a in [AdapterKind::Simulator, AdapterKind::Peak, AdapterKind::Replay] {
+                            for a in AdapterKind::ALL {
                                 ui.selectable_value(&mut d.adapter, a, a.label());
                             }
                         });

@@ -150,6 +150,11 @@ fn cli_listen_only_refuses_sending_commands() {
     }
     // --adapter pcan with --listen-only: refused before the driver is loaded.
     fails(&["--adapter", "pcan", "--listen-only", "nmt", "start"], 2, "listen_only");
+    // The same for --adapter canfox (the Sontheim driver is not loaded).
+    fails(&["--adapter", "canfox", "--listen-only", "nmt", "start"], 2, "listen_only");
+    // A bad net number is a usage error (`version` never opens an adapter).
+    let v = fails(&["--adapter", "canfox", "--channel", "usb1", "version"], 2, "usage");
+    assert!(v["error"]["message"].as_str().unwrap().contains("net number"), "{v}");
     // A receive-only command runs.
     let v = ok(&["--listen-only", "monitor", "--count", "1"]);
     assert_eq!(v["frames"], 1);
@@ -159,7 +164,7 @@ fn cli_listen_only_refuses_sending_commands() {
 fn cli_adapters_and_eds() {
     let v = ok(&["adapters"]);
     let names: Vec<_> = v["adapters"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["sim", "pcan"]);
+    assert_eq!(names, ["sim", "pcan", "canfox"]);
 
     let dir = temp("eds");
     let eds = dir.join("sim.eds");

@@ -26,7 +26,7 @@ mod tx_view;
 mod ui_tests;
 
 use crate::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
-use crate::can::{pcan, Bitrate, ChannelInfo};
+use crate::can::{pcan, sontheim, Bitrate, ChannelInfo};
 use crate::canopen::decode::{decode, DecodeContext};
 use crate::canopen::sdo::SdoRequest;
 use crate::canopen::task::TaskResult;
@@ -575,6 +575,7 @@ impl App {
         let bitrate = Bitrate::from_kbit(self.settings.bitrate_kbit).unwrap_or(Bitrate::K250);
         let (adapter, channel) = match self.settings.adapter {
             AdapterKind::Peak => (AdapterChoice::Peak, self.settings.channel),
+            AdapterKind::Canfox => (AdapterChoice::Canfox, self.settings.canfox_net),
             AdapterKind::Replay => {
                 if self.settings.replay_file.trim().is_empty() {
                     self.set_status("Choose a log file first (Browse...)", true);
@@ -964,9 +965,9 @@ impl App {
             let before = self.settings.adapter;
             ui.add_enabled_ui(!locked, |ui| {
                 egui::ComboBox::from_id_salt("adapter").width(150.0).selected_text(self.settings.adapter.label()).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.settings.adapter, AdapterKind::Simulator, AdapterKind::Simulator.label());
-                    ui.selectable_value(&mut self.settings.adapter, AdapterKind::Peak, AdapterKind::Peak.label());
-                    ui.selectable_value(&mut self.settings.adapter, AdapterKind::Replay, AdapterKind::Replay.label());
+                    for a in AdapterKind::ALL {
+                        ui.selectable_value(&mut self.settings.adapter, a, a.label());
+                    }
                 });
             });
             if self.settings.adapter != before {
@@ -1001,6 +1002,30 @@ impl App {
                     }
                 });
                 if self.settings.channel != ch {
+                    self.mark_settings();
+                }
+                if let Some(n) = &self.channel_note {
+                    ui.colored_label(p.warning, n);
+                }
+            } else if self.settings.adapter == AdapterKind::Canfox {
+                let net = self.settings.canfox_net;
+                ui.add_enabled_ui(!locked, |ui| {
+                    egui::ComboBox::from_id_salt("canfox_net").width(150.0).selected_text(format!("CANfox net {net}")).show_ui(ui, |ui| {
+                        if self.channels.is_empty() {
+                            ui.label("No device list reported");
+                        }
+                        for c in &self.channels {
+                            ui.selectable_value(&mut self.settings.canfox_net, c.handle, c.name.clone());
+                        }
+                        ui.separator();
+                        ui.label("Manual choice");
+                        ui.selectable_value(&mut self.settings.canfox_net, sontheim::CANFOX_NET, format!("CANfox net {}", sontheim::CANFOX_NET));
+                    });
+                    if ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Ask the driver which CANfox nets are connected (opens no net, sends nothing)").clicked() {
+                        self.bus.send(BusCommand::ListChannels(AdapterKind::Canfox));
+                    }
+                });
+                if self.settings.canfox_net != net {
                     self.mark_settings();
                 }
                 if let Some(n) = &self.channel_note {
@@ -1114,6 +1139,7 @@ impl App {
             } else if self.connected {
                 let ch = match self.settings.adapter {
                     AdapterKind::Simulator => "virtual bus".to_string(),
+                    AdapterKind::Canfox => format!("net {}", self.settings.canfox_net),
                     _ => pcan::channel_name(self.settings.channel as u16),
                 };
                 let br = Bitrate::from_kbit(self.settings.bitrate_kbit).map(|b| b.label()).unwrap_or_default();

@@ -24,9 +24,9 @@ canoxide-cli help sdo write  # one command
 
 ## Safety model
 
-Read this before you use `--adapter pcan`.
+Read this before you use `--adapter pcan` or `--adapter canfox`.
 
-1. **The simulator is the default.** Without `--adapter pcan` every command
+1. **The simulator is the default.** Without `--adapter pcan` or `canfox` every command
    runs against the built-in simulated node. Nothing touches hardware.
 2. **Nothing is sent unless a command transmits.** The schema marks each
    command with `"sends": true` or `false`. `monitor`, `eds ...`, `help`,
@@ -49,7 +49,7 @@ before you write, and know what an NMT command does to a running machine.
 
 ## Simulator-first workflow
 
-Develop every script against the simulator, then add `--adapter pcan`
+Develop every script against the simulator, then add `--adapter pcan` (or `canfox`)
 (and `--channel`, `--bitrate`, `--node`) only when the script is right.
 
 The simulated node: node-ID = `--node` (default 1), boots pre-operational,
@@ -113,8 +113,8 @@ A `shell` run returns the code of the last failed line, else 0.
 
 `help --json` has the options and the output fields of each command.
 
-Global options: `--adapter sim|pcan|replay`, `--file log`,
-`--speed max|factor`, `--channel usb1..usb8`,
+Global options: `--adapter sim|pcan|canfox|replay`, `--file log`,
+`--speed max|factor`, `--channel usb1..usb8` (PCAN) or a net number (CANfox, default 105),
 `--bitrate 10k..1M`, `--node 1..127`, `--eds file`, `--listen-only`,
 `--timeout ms` (SDO), `--data-dir dir`, `--device name`, `--text`.
 
@@ -283,6 +283,24 @@ canoxide-cli --adapter pcan --node 5 --eds dev.eds sdo read 0x1008
 
 The PEAK driver (`PCANBasic.dll`, 64 bit) must be installed; without it a
 command with `--adapter pcan` ends with exit code 3, kind `adapter`.
+
+The ifm CANfox works through the Sontheim / ifm CANfox driver (`SIECA164.DLL`,
+64 bit, found through `CANOXIDE_SIECA_DLL`, the Windows search, or the
+Sontheim folder under Program Files). `--channel` is the net number; a
+CANfox is net 105. Tested so far on one CANfox at 500 kbit/s: the net
+list, reception and one SDO read.
+
+```
+canoxide-cli adapters --adapter canfox                         # the nets (none opened)
+canoxide-cli --adapter canfox --channel 105 --bitrate 250k --listen-only monitor --duration 10
+```
+
+Without the driver a command with `--adapter canfox` ends with exit code 3,
+kind `adapter`. When the driver does not answer (seen after a failed
+CANfox firmware update) the command ends after about 3 s with the same exit
+code; close CoDeSys and restart the PC. `open` never forces the bitrate:
+when another program (for example CoDeSys) owns the net and the bitrate
+cannot be set, the command fails and says so.
 
 ## Replay of a log file
 

@@ -3,7 +3,7 @@
 //! Every result is one JSON object on stdout (`monitor`, `watch` and
 //! `shell` write JSON Lines); `--text` gives tables for a human. The
 //! default adapter is the built-in simulator, so nothing touches hardware
-//! unless `--adapter pcan` is given, and nothing is sent unless the command
+//! unless `--adapter pcan` or `--adapter canfox` is given, and nothing is sent unless the command
 //! transmits. With `--listen-only` a transmitting command fails before the
 //! adapter is opened. `help --json` prints the full command schema.
 
@@ -12,6 +12,7 @@ mod spec;
 
 use canoxide::can::pcan::{PcanAdapter, PCAN_USB_CHANNELS};
 use canoxide::can::sim::{builtin_dictionary, SimNode, BUILTIN_EDS};
+use canoxide::can::sontheim::SontheimAdapter;
 use canoxide::can::Bitrate;
 use canoxide::canopen::types::parse_int;
 use canoxide::eds::{self, ObjectDictionary};
@@ -192,13 +193,22 @@ fn parse_channel(s: &str) -> Result<u32, CliError> {
     }
 }
 
+/// The net number of `--adapter canfox` (CANfox: 105).
+fn parse_net(s: &str) -> Result<u32, CliError> {
+    match parse_int(s.trim(), false) {
+        Some(n) if (0..=0xFFFF).contains(&n) => Ok(n as u32),
+        _ => Err(CliError::usage(format!("--channel: '{s}' is not a net number (CANfox: 105)"))),
+    }
+}
+
 impl Global {
     fn from_args(a: &Args) -> Result<Global, CliError> {
         let adapter = a.get("adapter").unwrap_or("sim").to_ascii_lowercase();
-        if adapter != "sim" && adapter != "pcan" && adapter != "replay" {
-            return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim, pcan or replay")));
+        if !["sim", "pcan", "canfox", "replay"].contains(&adapter.as_str()) {
+            return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim, pcan, canfox or replay")));
         }
         let replay = adapter == "replay";
+        let canfox = adapter == "canfox";
         let file = a.get("file").map(PathBuf::from);
         if replay && file.is_none() {
             return Err(CliError::usage("--adapter replay needs --file <log> (a trace CSV of CANoxide or a candump log)"));
@@ -220,7 +230,11 @@ impl Global {
             // A replay sends nothing.
             listen_only: a.flag("listen-only") || replay,
             adapter,
-            channel: parse_channel(a.get("channel").unwrap_or("usb1"))?,
+            channel: if canfox {
+                parse_net(a.get("channel").unwrap_or("105"))?
+            } else {
+                parse_channel(a.get("channel").unwrap_or("usb1"))?
+            },
             bitrate: parse_bitrate(a.get("bitrate").unwrap_or("250k"))?,
             node: match a.get("node") {
                 Some(n) => parse_node(n, "--node")?,
@@ -336,6 +350,9 @@ impl Ctx {
                     eprintln!("{CLI_NAME}: {}: {} bad line(s) skipped{first}", path.display(), log.bad_lines);
                 }
                 Session::open(Box::new(a), 0, self.g.bitrate, true).map_err(|e| CliError::new("adapter", format!("replay: {e}")))?
+            } else if self.g.adapter == "canfox" {
+                let a = SontheimAdapter::load().map_err(|e| CliError::new("adapter", format!("CANfox driver: {e}")))?;
+                Session::open(Box::new(a), self.g.channel, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open net: {e}")))?
             } else {
                 let a = PcanAdapter::load().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
                 Session::open(Box::new(a), self.g.channel, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open channel: {e}")))?

@@ -1,9 +1,11 @@
 //! CAN frame model and the adapter trait. Classic CAN only (no CAN FD).
 
-// `unsafe` code is only in the PCAN FFI module and in the Win32 queries of ui::diag.
+// `unsafe` code is only in the PCAN and Sontheim FFI modules and in the Win32 queries of ui::diag.
 #[allow(unsafe_code)]
 pub mod pcan;
 pub mod sim;
+#[allow(unsafe_code)]
+pub mod sontheim;
 
 use std::fmt;
 use std::time::Duration;
@@ -146,7 +148,7 @@ impl Bitrate {
 /// A channel that an adapter offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChannelInfo {
-    /// Adapter specific handle (PCAN: the TPCANHandle).
+    /// Adapter specific handle (PCAN: the TPCANHandle; CANfox: the net number).
     pub handle: u32,
     pub name: String,
     pub available: bool,

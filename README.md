@@ -1,8 +1,8 @@
 # CANoxide
 
 A small, free Windows tool to test, configure and debug CANopen devices
-on a bench. It works with a PEAK PCAN-USB adapter, or with no hardware at
-all through a built-in simulated node.
+on a bench. It works with a PEAK PCAN-USB adapter, an ifm CANfox, or with no hardware at all through a built-in
+simulated node.
 
 - **GUI** (`CANoxide.exe`): one portable exe of about 6 MB, or a standard
   Windows installer.
@@ -89,7 +89,7 @@ CANoxide is younger and has had far less use on real networks.
 | CAN FD / CANopen FD | Yes | No |
 | CiA 447 and other application profiles | Yes | No |
 | Error frame display | Yes | No |
-| CAN interfaces | PEAK, Kvaser and others | PEAK PCAN-USB only |
+| CAN interfaces | PEAK, Kvaser and others | PEAK PCAN-USB, ifm CANfox |
 | Portable single exe | No (installer) | Yes, plus an installer |
 | Vendor support, long field history | Yes | No |
 
@@ -212,7 +212,8 @@ See [docs/CLI.md](docs/CLI.md) for the safety model and worked examples.
 ## Safety
 
 Nothing is sent unless you press a button or give a command. Connect only
-opens the channel. "Listen only" opens the PCAN channel in listen-only
+opens the channel. "Listen only" opens the PCAN channel (or the CANfox
+net, with the silent flag of the Sontheim driver) in listen-only
 mode and disables every send control. The node scan sends one SDO request
 at a time.
 
@@ -221,7 +222,8 @@ device off the bus, and a failed PDO change leaves that PDO disabled until
 it is written again. The tool asks before these actions (see the Safety
 settings).
 
-The PEAK adapter has had only light use on real hardware. Try listen-only
+The PEAK adapter has had only light use on real hardware; the CANfox
+adapter was tested on one unit only. Try listen-only
 mode on a bench bus before you rely on the tool on a live system.
 
 ## Data folder
@@ -247,6 +249,21 @@ The PEAK adapter needs the PEAK driver with `PCANBasic.dll` (64 bit),
 loaded at run time from `System32` or from the exe folder. Without it the
 app still works (EDS browser, library, simulator) and the PEAK channel list
 shows "driver not found". Channels: PCAN-USB 1..8.
+
+## CANfox driver
+
+The CANfox adapter needs the Sontheim / ifm CANfox driver installed (the
+64-bit `SIECA164.DLL` of the Sontheim MT-API). It is looked for in the
+path of the environment variable `CANOXIDE_SIECA_DLL`, then by name (the
+Windows search), then in `Sontheim\MT_Api` under Program Files (x86) and
+Program Files. Without it the app still works and the CANfox net list shows
+the error. A `channel` is a net number: a CANfox is net 105. The adapter
+never forces the bitrate of a net that another program (for example
+CoDeSys) owns; when the driver does not answer, it stops after about 3 s
+and asks you to close CoDeSys and restart the PC. Tested so far, on
+one CANfox at 500 kbit/s: the net list, reception and one SDO read. It
+is not known whether a CANfox in listen-only mode still
+acknowledges frames.
 
 ## Build
 
@@ -279,7 +296,7 @@ cargo build --release
 - Firmware download (CiA 302-3) as a guided function (a block download of
   a file to an object is possible).
 - Gauges, error frame display, application profiles such as CiA 447.
-- Adapters other than PEAK and the simulator (the `CanAdapter` trait
+- Adapters other than PEAK, the CANfox and the simulator (the `CanAdapter` trait
   allows more backends later).
 
 ## Licence

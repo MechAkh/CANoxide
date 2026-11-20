@@ -108,6 +108,18 @@ fn settings_round_trip_and_defaults() {
     let (s4, _) = Settings::load(&t.0);
     assert_eq!(s4.sdo_timeout_ms, 10, "clamped");
     assert_eq!(s4.trace_capacity, 100_000, "missing keys get defaults");
+    // A settings file of v0.3.3 (no CANfox fields) loads; the CANfox kind
+    // round-trips with its own net number.
+    fs::write(t.0.join("settings.json"), "{\"adapter\": \"Peak\", \"channel\": 82}").unwrap();
+    let (s5, w) = Settings::load(&t.0);
+    assert!(w.is_none());
+    assert_eq!((s5.adapter, s5.channel, s5.canfox_net), (AdapterKind::Peak, 82, 105));
+    let mut s6 = s5.clone();
+    s6.adapter = AdapterKind::Canfox;
+    s6.canfox_net = 106;
+    s6.save(&t.0).unwrap();
+    let (s7, _) = Settings::load(&t.0);
+    assert_eq!((s7.adapter, s7.channel, s7.canfox_net), (AdapterKind::Canfox, 82, 106));
 }
 
 #[test]
