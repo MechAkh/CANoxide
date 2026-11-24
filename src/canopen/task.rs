@@ -8,6 +8,7 @@ use super::abort_text;
 use super::pdo::NodePdoConfig;
 use super::sdo::{SdoError, SdoOutcome, SdoRequest, TransferMode};
 use crate::dcf::{DcfCompareReport, DcfRestoreReport, DcfSaveReport};
+use crate::edscheck::EdsCheckReport;
 use crate::netinfo::NodeInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -30,6 +31,7 @@ pub enum TaskResult {
     DcfSave(DcfSaveReport),
     DcfRestore(DcfRestoreReport),
     DcfCompare(DcfCompareReport),
+    EdsCheck(EdsCheckReport),
 }
 
 /// A multi-step SDO job. The driver loop: `next()` gives a request (or
@@ -276,6 +278,93 @@ impl SdoTask for ReadsTask {
 
     fn progress(&self) -> (usize, Option<usize>) {
         (self.report.reads.len(), Some(self.total))
+    }
+
+    fn cancel(&mut self) {
+        self.stopped = true;
+        self.report.cancelled = true;
+        if let Some(c) = self.current.take() {
+            self.report.not_read.push(c);
+        }
+    }
+
+    fn into_result(self: Box<Self>) -> TaskResult {
+        TaskResult::Reads(self.into_report())
+    }
+}
+
+/// Reads ARRAY objects: sub 0 (the number of entries) of each index, then
+/// subs 1..=n. A failed sub 0 is recorded and the next index follows
+/// (error history 0x1003, store / restore 0x1010 / 0x1011).
+pub struct ArrayReadTask {
+    label: String,
+    node: u8,
+    indexes: VecDeque<u16>,
+    /// Subs still to read of the current index.
+    subs: VecDeque<(u16, u8)>,
+    current: Option<(u16, u8)>,
+    report: ReadsReport,
+    stopped: bool,
+}
+
+impl ArrayReadTask {
+    pub fn new(label: impl Into<String>, node: u8, indexes: Vec<u16>) -> ArrayReadTask {
+        ArrayReadTask {
+            label: label.into(),
+            node,
+            indexes: indexes.into(),
+            subs: VecDeque::new(),
+            current: None,
+            report: ReadsReport { node, ..Default::default() },
+            stopped: false,
+        }
+    }
+
+    pub fn into_report(mut self) -> ReadsReport {
+        self.report.not_read.extend(self.subs.drain(..));
+        self.report.not_read.extend(self.indexes.drain(..).map(|i| (i, 0)));
+        self.report
+    }
+}
+
+impl SdoTask for ArrayReadTask {
+    fn label(&self) -> String {
+        self.label.clone()
+    }
+
+    fn next(&mut self) -> Option<SdoCall> {
+        if self.stopped {
+            return None;
+        }
+        let (index, sub) = match self.subs.pop_front() {
+            Some(x) => x,
+            None => (self.indexes.pop_front()?, 0),
+        };
+        self.current = Some((index, sub));
+        Some(SdoCall { node: self.node, req: SdoRequest::Upload { index, sub }, mode: TransferMode::Auto })
+    }
+
+    fn on_outcome(&mut self, o: &SdoOutcome) {
+        let Some((index, sub)) = self.current.take() else { return };
+        match &o.result {
+            Ok(d) => {
+                if sub == 0 {
+                    let n = d.first().copied().unwrap_or(0);
+                    self.subs = (1..=n).map(|s| (index, s)).collect();
+                }
+                self.report.reads.push(ReadResult { index, sub, data: Some(d.clone()), error: None, abort_code: None });
+            }
+            Err(SdoError::Cancelled) => {
+                self.stopped = true;
+                self.report.cancelled = true;
+                self.report.not_read.push((index, sub));
+            }
+            Err(e) => self.report.reads.push(ReadResult { index, sub, data: None, error: Some(error_text(e)), abort_code: e.abort_code() }),
+        }
+    }
+
+    fn progress(&self) -> (usize, Option<usize>) {
+        (self.report.reads.len(), None)
     }
 
     fn cancel(&mut self) {

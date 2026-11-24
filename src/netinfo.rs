@@ -10,6 +10,7 @@ use crate::canopen::nmt::NodeState;
 use crate::canopen::sdo::{SdoError, SdoOutcome, SdoRequest, TransferMode};
 use crate::canopen::task::{SdoCall, SdoStep, SdoTask, TaskResult};
 use crate::canopen::types::{ascii, le_u64};
+use crate::emcy::EmcyHistory;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -56,6 +57,8 @@ impl NodeInfo {
 #[derive(Clone, Debug, Default)]
 pub struct NetworkOverview {
     nodes: BTreeMap<u8, NodeInfo>,
+    /// Every received EMCY (bounded), for the Emergencies view.
+    pub emcy: EmcyHistory,
 }
 
 impl NetworkOverview {
@@ -65,6 +68,7 @@ impl NetworkOverview {
 
     pub fn clear(&mut self) {
         self.nodes.clear();
+        self.emcy.clear();
     }
 
     /// Add a node (found by a scan) when it is not known yet.
@@ -112,6 +116,7 @@ impl NetworkOverview {
                 });
                 n.error_register = Some(d[2]);
                 n.last_seen_us = Some(f.timestamp_us);
+                self.emcy.on_frame(f);
             }
             0x580 | 0x180 | 0x280 | 0x380 | 0x480 => {
                 if let Some(n) = self.nodes.get_mut(&node) {

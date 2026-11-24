@@ -6,7 +6,8 @@ use super::{theme, App, Dialog, TaskOwner};
 use crate::bus::BusCommand;
 use crate::library::Device;
 use crate::canopen::nmt::NmtCommand;
-use crate::canopen::task::TaskResult;
+use crate::canopen::task::{StepsTask, TaskResult};
+use crate::params::{caps, query_task, restore_defaults, store_parameters, sub_name, ParamCaps};
 use crate::settings::AdapterKind;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -19,13 +20,35 @@ pub(crate) struct NetView {
     hb_ms: u16,
     /// Tag of a running node info / heartbeat task.
     pub(crate) task: Option<u64>,
+    /// Parameters group: the sub of 0x1010 / 0x1011 (1 = all parameters).
+    pub(crate) param_sub: u8,
+    /// The last query of 0x1010 / 0x1011: (node, what it supports).
+    pub(crate) param_caps: Option<(u8, ParamCaps)>,
+    /// The result of the last store / restore.
+    pub(crate) param_note: Option<(String, bool)>,
+    /// Tag of a running store / restore / query task.
+    pub(crate) param_task: Option<u64>,
 }
 
 impl Default for NetView {
     fn default() -> Self {
-        NetView { scanning: false, scan_results: Vec::new(), emcy_code: "8130".to_string(), emcy_reg: "11".to_string(), hb_ms: 1000, task: None }
+        NetView {
+            scanning: false,
+            scan_results: Vec::new(),
+            emcy_code: "8130".to_string(),
+            emcy_reg: "11".to_string(),
+            hb_ms: 1000,
+            task: None,
+            param_sub: 1,
+            param_caps: None,
+            param_note: None,
+            param_task: None,
+        }
     }
 }
+
+/// The note after a successful restore of the defaults.
+pub(crate) const RESTORE_NOTE: &str = "The defaults are active after a reset node or a power cycle.";
 
 fn parse_hex_u32(s: &str) -> Option<u32> {
     let t = s.trim();
@@ -48,6 +71,119 @@ impl App {
                 self.set_status(msg, !r.ok);
             }
             _ => {}
+        }
+    }
+
+    pub(crate) fn on_param_task(&mut self, owner: TaskOwner, result: TaskResult) {
+        self.net.param_task = None;
+        match (owner, result) {
+            (TaskOwner::ParamQuery, TaskResult::Reads(r)) => {
+                let c = caps(&r);
+                let err = c.store.error.is_some() && c.restore.error.is_some();
+                self.set_status(format!("Store / restore parameters of node {}: {} store sub(s), {} restore sub(s)", r.node, c.store.subs.len(), c.restore.subs.len()), err);
+                self.net.param_caps = Some((r.node, c));
+            }
+            (owner @ (TaskOwner::ParamStore(_) | TaskOwner::ParamRestore(_)), TaskResult::Steps(r)) => {
+                let restore = matches!(owner, TaskOwner::ParamRestore(_));
+                let sub = match owner {
+                    TaskOwner::ParamStore(s) | TaskOwner::ParamRestore(s) => s,
+                    _ => 0,
+                };
+                let node = r.done.first().map(|s| s.step.node).unwrap_or(0);
+                let what = if restore { "Restore defaults" } else { "Store parameters" };
+                let t = match r.done.first() {
+                    Some(s) if s.ok => format!("{what} (0x{:04X}:{sub:02}, {}) on node {node} done", if restore { 0x1011 } else { 0x1010 }, sub_name(sub)),
+                    Some(s) => format!("{what} on node {node} failed: {}", s.error.clone().unwrap_or_default()),
+                    None => format!("{what} cancelled"),
+                };
+                self.set_status(t.clone(), !r.ok);
+                let t = if r.ok && restore { format!("{t}. {RESTORE_NOTE}") } else { t };
+                self.net.param_note = Some((t, !r.ok));
+            }
+            _ => {}
+        }
+    }
+
+    fn start_param(&mut self, owner: TaskOwner, task: Box<dyn crate::canopen::task::SdoTask>) {
+        self.net.param_note = None;
+        let tag = self.start_task(owner, task);
+        self.net.param_task = Some(tag);
+    }
+
+    pub(crate) fn store_params(&mut self, node: u8, sub: u8) {
+        let ask = self.settings.confirm_before_write;
+        self.confirm_then(ask, "Store parameters", format!("Write \"save\" to 0x1010:{sub:02} ({}) of node {node}? The node saves its parameters to its non-volatile memory.", sub_name(sub)), "Store", false, move |app| {
+            app.start_param(TaskOwner::ParamStore(sub), Box::new(StepsTask::new("store parameters", vec![store_parameters(node, sub)], true)));
+        });
+    }
+
+    pub(crate) fn restore_params(&mut self, node: u8, sub: u8) {
+        // Always asks: the saved parameters of the node are lost.
+        self.confirm_then(true, "Restore default parameters", format!("Write \"load\" to 0x1011:{sub:02} ({}) of node {node}? The saved parameters are lost. {RESTORE_NOTE}", sub_name(sub)), "Restore defaults", true, move |app| {
+            app.start_param(TaskOwner::ParamRestore(sub), Box::new(StepsTask::new("restore default parameters", vec![restore_defaults(node, sub)], true)));
+        });
+    }
+
+    fn params_section(&mut self, ui: &mut egui::Ui, node: u8) {
+        let p = theme::pal(ui);
+        let busy = self.net.param_task.is_some();
+        // The subs to offer: those the node reported, else 1..3.
+        let subs: Vec<u8> = match &self.net.param_caps {
+            Some((n, c)) if *n == node && !c.store.subs.is_empty() => {
+                let mut v: Vec<u8> = c.store.subs.iter().chain(c.restore.subs.iter()).map(|s| s.sub).collect();
+                v.sort_unstable();
+                v.dedup();
+                v
+            }
+            _ => vec![1, 2, 3],
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new(format!("Node {node}")));
+            egui::ComboBox::from_id_salt("param_sub").selected_text(sub_name(self.net.param_sub)).width(190.0).show_ui(ui, |ui| {
+                for s in &subs {
+                    ui.selectable_value(&mut self.net.param_sub, *s, format!("{} (sub {s})", sub_name(*s)));
+                }
+            });
+            let sub = self.net.param_sub;
+            if self.styled_send_button(ui, !busy, false, "Store (0x1010)", "Write \"save\" to 0x1010 of the node").clicked() {
+                self.store_params(node, sub);
+            }
+            if self.styled_send_button(ui, !busy, true, "Restore defaults (0x1011)", "Write \"load\" to 0x1011 of the node (asks first)").clicked() {
+                self.restore_params(node, sub);
+            }
+            if self.send_button(ui, !busy, "Read supported").on_hover_text("Read 0x1010 and 0x1011 (sub 0 and each sub) by SDO").clicked() {
+                self.start_param(TaskOwner::ParamQuery, Box::new(query_task(node)));
+            }
+        });
+        if let Some((n, c)) = &self.net.param_caps {
+            if *n == node {
+                let line = |o: &crate::params::ParamObject| match &o.error {
+                    Some(e) => e.clone(),
+                    None => o
+                        .subs
+                        .iter()
+                        .map(|s| match (s.value, &s.error) {
+                            (Some(v), _) => {
+                                let how = match (s.on_command(), s.autonomous()) {
+                                    (true, true) => "on command + autonomous".to_string(),
+                                    (true, false) => "on command".to_string(),
+                                    (false, true) => "autonomous".to_string(),
+                                    (false, false) => format!("not supported (0x{v:08X})"),
+                                };
+                                format!("{} {how}", s.sub)
+                            }
+                            (None, Some(e)) => format!("{} {e}", s.sub),
+                            (None, None) => format!("{} ?", s.sub),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                };
+                ui.label(egui::RichText::new(format!("0x1010: {}", line(&c.store))).small().color(p.text_secondary));
+                ui.label(egui::RichText::new(format!("0x1011: {}", line(&c.restore))).small().color(p.text_secondary));
+            }
+        }
+        if let Some((t, err)) = &self.net.param_note {
+            ui.colored_label(if *err { p.error } else { p.text_secondary }, t.as_str());
         }
     }
 
@@ -109,6 +245,10 @@ impl App {
                     }
                 });
             });
+
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Parameters").strong());
+            self.params_section(ui, node);
 
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {

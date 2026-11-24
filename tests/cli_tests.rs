@@ -506,3 +506,69 @@ fn cli_replay_of_a_log_file() {
     fails(&["--adapter", "replay", "--file", dir.join("missing.log").to_str().unwrap(), "monitor"], 2, "file");
     let _ = std::fs::remove_dir_all(dir);
 }
+#[test]
+fn cli_check_against_the_simulator() {
+    let dir = temp("check");
+    let junit = dir.join("check.xml");
+    let v = ok(&["check", "--junit", junit.to_str().unwrap()]);
+    assert_eq!(v["passed"], true, "{v}");
+    assert_eq!(v["failed"], 0, "{v}");
+    assert_eq!(v["eds_file"], "sim_builtin.eds");
+    assert!(v["checked"].as_u64().unwrap() > 20, "{v}");
+    assert!(v["summary"].as_str().unwrap().contains("0 failed"), "{v}");
+    let x = std::fs::read_to_string(&junit).unwrap();
+    assert!(x.starts_with("<?xml") && x.contains("<testsuite") && x.contains("</testsuite>"), "{x}");
+    // --all lists the ok entries too; a range limits the entries.
+    let all = ok(&["check", "--all", "--from", "1000", "--to", "1018"]);
+    let e = all["entries"].as_array().unwrap();
+    assert!(!e.is_empty() && e.iter().all(|x| x["index"].as_str().unwrap() <= "0x1018"), "{all}");
+    assert!(e.iter().any(|x| x["kind"] == "ok"), "{all}");
+    // --text prints the summary.
+    let r = run(&["check", "--text"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("summary:"), "{}", r.out);
+    fails(&["check", "--from", "2000", "--to", "1000"], 2, "usage");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_emcy_history_and_clear() {
+    let v = ok(&["emcy", "history", "--node", "4"]);
+    assert_eq!(v["node"], 4);
+    assert_eq!(v["count"], 2, "{v}");
+    assert_eq!(v["entries"][0]["code"], "0x8130", "{v}");
+    assert_eq!(v["entries"][0]["text"], "Life guard or heartbeat error", "{v}");
+    assert_eq!(v["entries"][0]["info"], "0x0011", "{v}");
+    assert_eq!(v["entries"][1]["code"], "0x5000", "{v}");
+    // In one process the clear empties the history.
+    let r = run_with(&["shell"], Some("emcy clear\nemcy history\nexit\n"));
+    assert_eq!(r.code, 0, "{}", r.out);
+    let l = r.lines();
+    assert_eq!(l[0]["cleared"], true, "{}", l[0]);
+    assert_eq!(l[1]["count"], 0, "{}", l[1]);
+}
+
+#[test]
+fn cli_store_and_restore_defaults() {
+    let v = ok(&["store"]);
+    assert_eq!((v["index"].clone(), v["sub"].clone(), v["stored"].clone()), (serde_json::json!("0x1010"), serde_json::json!(1), serde_json::json!(true)), "{v}");
+    assert_eq!(v["name"], "All parameters");
+    let v = ok(&["restore-defaults", "--sub", "2"]);
+    assert_eq!(v["index"], "0x1011");
+    assert_eq!(v["restored"], true);
+    assert_eq!(v["name"], "Communication parameters");
+    assert!(v["note"].as_str().unwrap().contains("reset node"), "{v}");
+    // The simulator has subs 1..3 only.
+    fails(&["store", "--sub", "9"], 1, "abort");
+    fails(&["store", "--sub", "0"], 2, "usage");
+}
+
+#[test]
+fn cli_new_writing_commands_refused_listen_only() {
+    for args in [&["check"][..], &["emcy", "history"], &["emcy", "clear"], &["store"], &["restore-defaults"]] {
+        let mut a = vec!["--listen-only"];
+        a.extend_from_slice(args);
+        let v = fails(&a, 2, "listen_only");
+        assert!(v["error"]["message"].as_str().unwrap().contains("nothing was opened"), "{v}");
+    }
+}

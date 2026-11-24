@@ -22,7 +22,14 @@ What it is for:
   over time.
 - **Configure a device.** Read and change its PDO configuration, set its
   node-ID and bit rate by LSS, save its configuration to a DCF, compare
-  and restore it.
+  and restore it. Store its parameters (0x1010) or restore its defaults
+  (0x1011).
+- **Check a device against its EDS.** Read every entry of the EDS from the
+  node and list what does not match: missing objects, wrong access, wrong
+  size, constant values that differ. Read only; CSV and JUnit XML export.
+- **Follow its emergencies.** A history of every EMCY on the bus with the
+  CiA 301 code text and the error register bits, and the error history
+  0x1003 of a node (read and clear).
 - **Control the network.** NMT start / stop / reset, node scan, network
   overview, SYNC, heartbeat set-up, and a transmit list of raw frames
   (manual, periodic or on reception).
@@ -76,6 +83,8 @@ CANoxide is younger and has had far less use on real networks.
 | Graphical display of process data over time | Yes | Yes |
 | Process data gauges and instrument panels | Yes | No |
 | Network overview (state, identity, last emergency) | Yes | Yes |
+| Emergency history | not stated | Yes (EMCY list with code texts, 0x1003 read and clear) |
+| Check of a node against its EDS | not stated | Yes (read only, CSV and JUnit XML) |
 | NMT, node scan, heartbeat set-up | Yes | Yes |
 | Bus load display | Yes | Yes |
 | Transmit list (manual, periodic, on reception) | Yes | Yes (no keyboard triggers) |
@@ -106,7 +115,16 @@ menu:
 - **Object dictionary**: the object tree of the active device, read and
   write by SDO, the manual SDO box, upload and download of large objects.
 - **Network**: NMT for one node or all, SYNC, node scan, heartbeat, and an
-  overview of the nodes heard on the bus.
+  overview of the nodes heard on the bus. The **Parameters** group stores
+  the parameters of the node (0x1010, "save") or restores its defaults
+  (0x1011, "load", always asks first; the defaults are active after a
+  reset node or a power cycle).
+- **Emergencies**: every EMCY received, newest first: time, node and
+  device name, code with its CiA 301 text, error register with its bits,
+  manufacturer bytes. Node filter, **Clear**, **Export CSV...**. **Read
+  error history (0x1003)** lists the error field of the node; **Clear error
+  history** writes 0 to 0x1003:00. On the simulator, **Raise EMCY** and
+  **Reset EMCY** make the simulated node send one.
 - **Trace 1..4**: up to four trace tabs on one shared buffer, each with its
   own filter, display mode and pause; save as CSV. With **Autoscroll** on,
   the view follows the newest frame; scroll up (wheel, Page Up, Home) and
@@ -131,6 +149,12 @@ menu:
   timing.
 - **DCF save / restore**: save a node to a DCF, compare a DCF with a node,
   dry run and restore.
+- **EDS check**: read each entry of the active device's EDS (on the
+  simulator without a device: its built-in EDS) from the node and compare:
+  ok, missing, write-only ok, access, size, value, abort, time-out. Options
+  (skip DOMAIN, index range, stop after time-outs), a progress bar with
+  Cancel, the summary line and the result table (**show ok entries**),
+  **Export CSV...** and **Export JUnit XML...**. Nothing is written.
 
 **Log replay.** Choose **Log file (replay)** as the adapter and pick a
 CANoxide trace CSV or a candump log (`(1700000000.123456) can0 181#0102`).
@@ -194,7 +218,9 @@ Changes apply on **Save**; **Cancel** keeps the saved values.
 agents, on the same library: scan, node info, SDO read/write (block
 transfer included), OD dump, NMT, SYNC, raw frames, a bounded bus monitor,
 PDO read/enable/set/map, heartbeat, value watch, LSS, DCF
-save/restore/compare, and a `shell` that keeps one session open. Output is
+save/restore/compare, the EDS check (`check`, JUnit XML for CI), the
+error history (`emcy history`, `emcy clear`), `store` and
+`restore-defaults`, and a `shell` that keeps one session open. Output is
 JSON (JSON Lines for `monitor`, `watch` and `shell`); `--text` gives
 tables. The simulator is the default adapter, and `--listen-only` refuses
 every command that transmits.
@@ -303,7 +329,8 @@ cargo build --release
 
 MIT. See [LICENSE](LICENSE). The embedded fonts (Inter, JetBrains Mono)
 are under the SIL Open Font License, see `licenses\`. The icons are
-Phosphor icons (MIT).
+Phosphor icons (MIT). The licences of the Rust crates and fonts in the
+exes are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
 
 No driver file of PEAK or Sontheim is part of CANoxide. Product and company
 names in this file are trademarks of their owners and are used only to

@@ -37,12 +37,15 @@ ISCC.exe /DAppVersion=0.4.0 [/DExeDir=..\target\release] installer\CANoxide.iss
 `AppVersion` is required; `ExeDir` is relative to the script and defaults to
 `..\target\release`. A `licenses\` folder at the repository root (third-party
 licence texts) is included when it exists at build time.
+`THIRD-PARTY-NOTICES.txt` at the repository root is required: regenerate it
+with `py -3 tools\make_notices.py` after a dependency change (`--check` tells
+whether it is up to date).
 
 ## What it installs
 
 | Item | Where |
 |---|---|
-| `CANoxide.exe`, `canoxide-cli.exe`, `LICENSE`, `README.md`, `docs\CLI.md`, `licenses\` | the install folder |
+| `CANoxide.exe`, `canoxide-cli.exe`, `LICENSE`, `THIRD-PARTY-NOTICES.txt`, `README.md`, `docs\CLI.md`, `licenses\` | the install folder |
 | `CANoxide.installed` (marker file) | the install folder |
 | Start menu: CANoxide, Uninstall CANoxide | the Start menu group |
 | Desktop shortcut | only with the `desktopicon` task (off by default) |

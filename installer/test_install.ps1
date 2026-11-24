@@ -111,7 +111,7 @@ try {
             "/DIR=`"$appDir`"", '/TASKS="addtopath"', "/LOG=`"$log`"")
         $installed = $true
         Check ($code -eq 0) "install $round exit code 0 (got $code)"
-        foreach ($f in 'CANoxide.exe', 'canoxide-cli.exe', 'CANoxide.installed', 'LICENSE', 'README.md', 'docs\CLI.md') {
+        foreach ($f in 'CANoxide.exe', 'canoxide-cli.exe', 'CANoxide.installed', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'docs\CLI.md') {
             Check (Test-Path -LiteralPath (Join-Path $appDir $f) -PathType Leaf) "install ${round}: $f exists"
         }
         $reg = Get-ItemProperty -LiteralPath $UninstKey -ErrorAction SilentlyContinue
@@ -143,7 +143,7 @@ try {
     $gone = Wait-Until { -not (Test-Path -LiteralPath $UninstKey) -and -not (Test-Path -LiteralPath $uninst) } 60
     Check $gone 'uninstall finished within 60 s'
     if ($gone) { $installed = $false }
-    foreach ($f in 'CANoxide.exe', 'canoxide-cli.exe', 'CANoxide.installed', 'LICENSE', 'README.md', 'docs\CLI.md', 'unins000.exe') {
+    foreach ($f in 'CANoxide.exe', 'canoxide-cli.exe', 'CANoxide.installed', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'docs\CLI.md', 'unins000.exe') {
         Check (-not (Test-Path -LiteralPath (Join-Path $appDir $f))) "uninstall: $f gone"
     }
     Check (-not (Test-Path -LiteralPath $UninstKey)) 'uninstall: HKCU uninstall entry gone'

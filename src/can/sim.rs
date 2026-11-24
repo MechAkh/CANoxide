@@ -16,6 +16,7 @@ use crate::canopen::pdo::{configs_with, extract_bits, insert_bits, MapEntry, Pdo
 use crate::canopen::sdo::crc16_ccitt;
 use crate::canopen::types::{self, le_u64, DataType};
 use crate::canopen::{COB_EMCY, COB_HEARTBEAT, COB_LSS_MASTER, COB_LSS_SLAVE, COB_NMT, COB_SDO_RX, COB_SDO_TX, COB_SYNC};
+use crate::dcf::{RESTORE_SIGNATURE, STORE_SIGNATURE};
 use crate::eds::{self, AccessType, ObjectDictionary};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -88,8 +89,10 @@ pub struct SimNode {
     pub lss_store_count: u32,
     /// Successful SDO writes (to check that nothing was written).
     pub sdo_writes: u32,
-    /// Successful "store parameters" writes (0x1010:01 = "save").
+    /// Successful "store parameters" writes (0x1010:sub = "save").
     pub store_count: u32,
+    /// Successful "restore default parameters" writes (0x1011:sub = "load").
+    pub restore_count: u32,
 }
 
 impl SimNode {
@@ -114,6 +117,7 @@ impl SimNode {
             lss_store_count: 0,
             sdo_writes: 0,
             store_count: 0,
+            restore_count: 0,
         };
         n.load_defaults(0x0000, 0xFFFF);
         n.lss.identity = n.identity();
@@ -124,7 +128,37 @@ impl SimNode {
         let mut n = SimNode::new(node_id, Arc::new(builtin_dictionary()));
         n.fill_large = true;
         n.load_defaults(LARGE_OBJECT, LARGE_OBJECT);
+        // A small error history in 0x1003 (newest first).
+        n.push_error(0x5000, 0x0000);
+        n.push_error(0x8130, 0x0011);
         n
+    }
+
+    /// The highest sub-index of 0x1003 (the history size), 0 without it.
+    fn error_field_size(&self) -> u8 {
+        self.od.objects.get(&0x1003).map(|o| o.subs.keys().copied().filter(|&s| s >= 1).max().unwrap_or(0)).unwrap_or(0)
+    }
+
+    /// Add an error to 0x1003: the new entry goes to sub 1, the others move
+    /// down, the oldest drops out. `info` is the high 16 bits.
+    pub fn push_error(&mut self, code: u16, info: u16) {
+        let n = self.error_field_size();
+        if n == 0 {
+            return;
+        }
+        for s in (2..=n).rev() {
+            let v = self.values.get(&(0x1003, s - 1)).cloned().unwrap_or_else(|| vec![0; 4]);
+            self.values.insert((0x1003, s), v);
+        }
+        self.values.insert((0x1003, 1), ((info as u32) << 16 | code as u32).to_le_bytes().to_vec());
+        let count = self.values.get(&(0x1003, 0)).and_then(|v| v.first().copied()).unwrap_or(0);
+        self.values.insert((0x1003, 0), vec![count.saturating_add(1).min(n)]);
+    }
+
+    /// The error codes in 0x1003, newest first.
+    pub fn error_history(&self) -> Vec<u32> {
+        let count = self.values.get(&(0x1003, 0)).and_then(|v| v.first().copied()).unwrap_or(0);
+        (1..=count).map(|s| self.val32(0x1003, s)).collect()
     }
 
     /// A node that starts LSS-unconfigured (node-ID 255): it sends no
@@ -296,10 +330,14 @@ impl SimNode {
         Some(self.frame(cfg.cob_id, &data[..len]))
     }
 
-    /// Send an EMCY with an error code and error register.
+    /// Send an EMCY with an error code and error register. A code other
+    /// than 0 (error reset) also goes into the error history 0x1003.
     pub fn emcy(&mut self, code: u16, reg: u8, out: &mut Vec<CanFrame>) {
         if self.values.contains_key(&(0x1001, 0)) {
             self.values.insert((0x1001, 0), vec![reg]);
+        }
+        if code != 0 {
+            self.push_error(code, 0);
         }
         let c = code.to_le_bytes();
         out.push(self.frame(COB_EMCY + self.node_id as u32, &[c[0], c[1], reg, 0, 0, 0, 0, 0]));
@@ -523,13 +561,31 @@ impl SimNode {
             }
         }
         self.check_pdo_write(index, sub, &data)?;
-        if index == 0x1010 {
-            // Store parameters: only the "save" signature; the value read back stays.
-            if le_u64(&data) != 0x6576_6173 {
+        if index == 0x1010 || index == 0x1011 {
+            // Store parameters / restore defaults: only the "save" / "load"
+            // signature; the value read back stays (restore changes no value).
+            let want = if index == 0x1010 { STORE_SIGNATURE } else { RESTORE_SIGNATURE };
+            if le_u64(&data) != want as u64 {
                 return Err(0x0800_0020);
             }
             self.sdo_writes += 1;
-            self.store_count += 1;
+            if index == 0x1010 {
+                self.store_count += 1;
+            } else {
+                self.restore_count += 1;
+            }
+            return Ok(());
+        }
+        if index == 0x1003 && sub == 0 {
+            // Only 0 is allowed: it clears the error history.
+            if data.iter().any(|&b| b != 0) {
+                return Err(0x0609_0030);
+            }
+            self.sdo_writes += 1;
+            for s in 0..=self.error_field_size() {
+                let n = if s == 0 { 1 } else { 4 };
+                self.values.insert((0x1003, s), vec![0; n]);
+            }
             return Ok(());
         }
         self.sdo_writes += 1;

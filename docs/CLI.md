@@ -109,6 +109,9 @@ A `shell` run returns the code of the last failed line, else 0.
 | PDOs | `pdo read`, `pdo enable`, `pdo disable`, `pdo set`, `pdo map` |
 | LSS | `lss switch-global`, `lss switch-selective`, `lss inquire-identity`, `lss inquire-node-id`, `lss set-node-id`, `lss set-bit-timing`, `lss activate-bit-timing`, `lss store`, `lss fastscan`, `lss identify` |
 | DCF | `dcf save`, `dcf restore`, `dcf compare` |
+| EDS check | `check [--from] [--to] [--junit out.xml] [--all]` |
+| emergencies | `emcy history`, `emcy clear` |
+| parameters | `store [--sub n]`, `restore-defaults [--sub n]` |
 | scripting | `shell [--script file]` |
 
 `help --json` has the options and the output fields of each command.
@@ -251,6 +254,56 @@ line may set `--node`, `--timeout` and `--text`; the other global options
 are fixed by the `shell` command line. Empty lines and `#` comments are
 skipped; `exit` (or the end of the input) ends the shell. A shell can also
 read stdin, so a program can keep it open and send one line at a time.
+
+### 11. Check a node against its EDS
+
+`check` reads each entry of the EDS (`--eds`, or the built-in EDS of the
+simulator) from the node and compares it: `ok`, `missing`,
+`write_only_ok`, `access`, `size`, `value`, `abort`, `timeout` (and
+`not_checked` after a cancel or after `--stop-after` time-outs in a row).
+It writes nothing. `entries` lists only the entries that are not ok,
+unless `--all`. The exit code is 1 when at least one entry failed, so a CI
+job can use it; `--junit out.xml` also writes JUnit XML.
+
+```
+> canoxide-cli check --junit check.xml
+{"cancelled":false,"checked":79,"command":"check","counts":{"abort":0,"access":0,"missing":0,"not_checked":0,"ok":78,"size":0,"timeout":0,"value":0,"write_only_ok":1},"duration_ms":0,"eds_file":"sim_builtin.eds","entries":[],"failed":0,"junit":"check.xml","node":1,"not_checked":0,"ok":true,"ok_entries":79,"passed":true,"skipped_domain":2,"stopped_on_timeouts":false,"summary":"79 checked: 79 ok, 0 failed, 0 warning(s) - sim_builtin.eds, node 1, 0.00 s","warnings":0}
+```
+
+Missing, access, size and time-out results fail; a `value` result fails for
+0x1000 and 0x1018, else it is a warning; another abort is a warning. On a
+failure the result is `{"ok":false,"error":{...},"detail":{...}}` with the
+same fields in `detail`.
+
+### 12. The error history (0x1003)
+
+```
+> canoxide-cli emcy history
+{"command":"emcy history","count":2,"entries":[{"code":"0x8130","info":"0x0011","number":1,"raw":"0x00118130","text":"Life guard or heartbeat error"},{"code":"0x5000","info":"0x0000","number":2,"raw":"0x00005000","text":"Device hardware"}],"node":1,"ok":true}
+
+> canoxide-cli emcy clear
+{"cleared":true,"command":"emcy clear","index":"0x1003","node":1,"ok":true,"sub":0}
+```
+
+Entry 1 is the newest. `code` is the low 16 bits of the entry, `info` the
+high 16 bits (manufacturer specific). `emcy clear` writes 0 to 0x1003:00.
+
+### 13. Store parameters and restore the defaults
+
+```
+> canoxide-cli store
+{"command":"store","index":"0x1010","name":"All parameters","node":1,"ok":true,"stored":true,"sub":1}
+
+> canoxide-cli restore-defaults --sub 3
+{"command":"restore-defaults","index":"0x1011","name":"Application parameters","node":1,"note":"The defaults are active after a reset node or a power cycle.","ok":true,"restored":true,"sub":3}
+```
+
+`store` writes "save" (0x65766173) to 0x1010:sub, `restore-defaults`
+writes "load" (0x64616F6C) to 0x1011:sub. `--sub` 1 = all parameters (the
+default), 2 = communication, 3 = application, 4 and up manufacturer
+specific. A node that refuses aborts with 0x08000020 (exit 1). Both are
+refused with `--listen-only`, as `check`, `emcy history` and `emcy clear`
+are.
 
 ### Text output
 

@@ -9,6 +9,8 @@ mod analysis_view;
 mod dcf_view;
 mod diag;
 mod dock;
+mod edscheck_view;
+mod emcy_view;
 mod gpu;
 mod graph;
 mod library_view;
@@ -176,6 +178,12 @@ pub(crate) enum TaskOwner {
     DcfSave(PathBuf),
     DcfCompare,
     DcfRestore,
+    ErrorHistory,
+    ClearHistory,
+    EdsCheck,
+    ParamQuery,
+    ParamStore(u8),
+    ParamRestore(u8),
 }
 
 pub(crate) struct App {
@@ -216,6 +224,8 @@ pub(crate) struct App {
     txv: tx_view::TxView,
     lssv: lss_view::LssView,
     dcfv: dcf_view::DcfView,
+    emv: emcy_view::EmcyView,
+    ecv: edscheck_view::EdsCheckView,
     /// User signals, Find similar bits, Find signal, history, sparklines.
     an: analysis_view::AnalysisState,
     dock: Option<DockState<Tab>>,
@@ -285,6 +295,8 @@ impl App {
             txv: tx_view::TxView::default(),
             lssv: lss_view::LssView::default(),
             dcfv: dcf_view::DcfView::default(),
+            emv: emcy_view::EmcyView::default(),
+            ecv: edscheck_view::EdsCheckView::default(),
             an: analysis_view::AnalysisState::default(),
             dock: Some(boot.layout.unwrap_or_else(|| dock::default_layout(1280.0))),
             first_layout,
@@ -797,6 +809,9 @@ impl App {
             TaskOwner::PdoRead | TaskOwner::PdoApply => self.on_pdo_task(owner, result),
             TaskOwner::NodeInfo | TaskOwner::Heartbeat => self.on_net_task(owner, result),
             TaskOwner::DcfSave(_) | TaskOwner::DcfCompare | TaskOwner::DcfRestore => self.on_dcf_task(owner, result),
+            TaskOwner::ErrorHistory | TaskOwner::ClearHistory => self.on_emcy_task(owner, result),
+            TaskOwner::EdsCheck => self.on_edscheck_task(result),
+            TaskOwner::ParamQuery | TaskOwner::ParamStore(_) | TaskOwner::ParamRestore(_) => self.on_param_task(owner, result),
         }
     }
 

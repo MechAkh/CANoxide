@@ -281,68 +281,71 @@ fn nmt_text(d: &[u8]) -> String {
     }
 }
 
-/// Text for an EMCY error code (standard classes of CiA 301).
+/// The EMCY error codes of CiA 301 with a full-code text.
+const EMCY_CODES: &[(u16, &str)] = &[
+    (0x0000, "Error reset / no error"),
+    (0x8110, "CAN overrun (objects lost)"),
+    (0x8120, "CAN in error passive mode"),
+    (0x8130, "Life guard or heartbeat error"),
+    (0x8140, "Recovered from bus off"),
+    (0x8150, "CAN-ID collision"),
+    (0x8210, "PDO not processed (length error)"),
+    (0x8220, "PDO length exceeded"),
+    (0x8230, "DAM MPDO not processed (destination object not available)"),
+    (0x8240, "Unexpected SYNC data length"),
+    (0x8250, "RPDO time-out"),
+];
+
+/// The EMCY error classes of CiA 301 (high byte of the code).
+const EMCY_CLASSES: &[(u8, &str)] = &[
+    (0x10, "Generic error"),
+    (0x20, "Current"),
+    (0x21, "Current, device input side"),
+    (0x22, "Current inside the device"),
+    (0x23, "Current, device output side"),
+    (0x30, "Voltage"),
+    (0x31, "Mains voltage"),
+    (0x32, "Voltage inside the device"),
+    (0x33, "Output voltage"),
+    (0x40, "Temperature"),
+    (0x41, "Ambient temperature"),
+    (0x42, "Device temperature"),
+    (0x50, "Device hardware"),
+    (0x60, "Device software"),
+    (0x61, "Internal software"),
+    (0x62, "User software"),
+    (0x63, "Data set"),
+    (0x70, "Additional modules"),
+    (0x80, "Monitoring"),
+    (0x81, "Communication"),
+    (0x82, "Protocol error"),
+    (0x90, "External error"),
+    (0xF0, "Additional functions"),
+    (0xFF, "Device specific"),
+];
+
+/// Text for an EMCY error code (CiA 301): the full code, else the class
+/// (high byte), else the 0xN0 class of the high byte, else "Unknown".
 pub fn emcy_code_text(code: u16) -> &'static str {
-    match code {
-        0x0000 => "Error reset or no error",
-        0x8110 => "CAN overrun (objects lost)",
-        0x8120 => "CAN in error passive mode",
-        0x8130 => "Life guard error or heartbeat error",
-        0x8140 => "Recovered from bus off",
-        0x8150 => "CAN-ID collision",
-        0x8210 => "PDO not processed due to length error",
-        0x8220 => "PDO length exceeded",
-        0x8230 => "DAM MPDO not processed, destination object not available",
-        0x8240 => "Unexpected SYNC data length",
-        0x8250 => "RPDO timeout",
-        _ => match code >> 8 {
-            0x00 => "Error reset or no error",
-            0x10 => "Generic error",
-            0x20 => "Current",
-            0x21 => "Current, device input side",
-            0x22 => "Current inside the device",
-            0x23 => "Current, device output side",
-            0x30 => "Voltage",
-            0x31 => "Mains voltage",
-            0x32 => "Voltage inside the device",
-            0x33 => "Output voltage",
-            0x40 => "Temperature",
-            0x41 => "Ambient temperature",
-            0x42 => "Device temperature",
-            0x50 => "Device hardware",
-            0x60 => "Device software",
-            0x61 => "Internal software",
-            0x62 => "User software",
-            0x63 => "Data set",
-            0x70 => "Additional modules",
-            0x80 => "Monitoring",
-            0x81 => "Communication",
-            0x82 => "Protocol error",
-            0x90 => "External error",
-            0xF0 => "Additional functions",
-            0xFF => "Device specific",
-            _ => match code >> 12 {
-                0x1 => "Generic error",
-                0x2 => "Current",
-                0x3 => "Voltage",
-                0x4 => "Temperature",
-                0x5 => "Device hardware",
-                0x6 => "Device software",
-                0x7 => "Additional modules",
-                0x8 => "Monitoring",
-                0x9 => "External error",
-                0xF => "Additional functions",
-                _ => "Unknown error code",
-            },
-        },
+    if let Some((_, t)) = EMCY_CODES.iter().find(|(c, _)| *c == code) {
+        return t;
     }
+    let class = |c: u8| EMCY_CLASSES.iter().find(|(x, _)| *x == c).map(|(_, t)| *t);
+    let hi = (code >> 8) as u8;
+    class(hi).or_else(|| class(hi & 0xF0)).unwrap_or("Unknown")
 }
 
-/// Names of the set bits of the error register (0x1001).
+/// Names of the bits of the error register (0x1001), bit 0 first.
+pub const ERROR_REGISTER_BITS: [&str; 8] = ["generic", "current", "voltage", "temperature", "communication", "device profile", "reserved", "manufacturer"];
+
+/// The names of the set bits of the error register (0x1001).
+pub fn error_register_words(reg: u8) -> Vec<&'static str> {
+    (0..8).filter(|i| reg & (1 << i) != 0).map(|i| ERROR_REGISTER_BITS[i]).collect()
+}
+
+/// Names of the set bits of the error register (0x1001), joined by "+".
 pub fn error_register_text(reg: u8) -> String {
-    let names = ["generic", "current", "voltage", "temperature", "communication", "profile", "reserved", "manufacturer"];
-    let v: Vec<&str> = (0..8).filter(|i| reg & (1 << i) != 0).map(|i| names[i]).collect();
-    v.join("+")
+    error_register_words(reg).join("+")
 }
 
 fn emcy_text(d: &[u8]) -> String {

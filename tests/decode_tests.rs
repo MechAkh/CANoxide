@@ -83,20 +83,42 @@ fn heartbeat_states() {
 fn emcy() {
     let e = d(0x085, &[0x30, 0x81, 0x11, 1, 2, 3, 4, 5]);
     assert_eq!(e.node, Some(5));
-    assert!(e.text.starts_with("EMCY 0x8130 reg 0x11 Life guard error or heartbeat error"), "{}", e.text);
+    assert!(e.text.starts_with("EMCY 0x8130 reg 0x11 Life guard or heartbeat error"), "{}", e.text);
     assert!(e.text.contains("[generic+communication]"), "{}", e.text);
     assert!(e.text.ends_with("mfr 01 02 03 04 05"), "{}", e.text);
-    assert_eq!(emcy_code_text(0x0000), "Error reset or no error");
+    assert_eq!(emcy_code_text(0x0000), "Error reset / no error");
     assert_eq!(emcy_code_text(0x2310), "Current, device output side");
     assert_eq!(emcy_code_text(0x3210), "Voltage inside the device");
     assert_eq!(emcy_code_text(0x4210), "Device temperature");
     assert_eq!(emcy_code_text(0x5000), "Device hardware");
     assert_eq!(emcy_code_text(0x6100), "Internal software");
     assert_eq!(emcy_code_text(0x8110), "CAN overrun (objects lost)");
-    assert_eq!(emcy_code_text(0x8210), "PDO not processed due to length error");
+    assert_eq!(emcy_code_text(0x8210), "PDO not processed (length error)");
     assert_eq!(emcy_code_text(0x9000), "External error");
     assert_eq!(emcy_code_text(0xFF01), "Device specific");
     assert!(d(0x085, &[1]).text.contains("short"));
+}
+
+#[test]
+fn emcy_code_table_and_register_words() {
+    use canoxide::canopen::decode::{error_register_text, error_register_words};
+    // Full codes of the 0x81xx / 0x82xx table.
+    assert_eq!(emcy_code_text(0x8140), "Recovered from bus off");
+    assert_eq!(emcy_code_text(0x8250), "RPDO time-out");
+    // An unlisted code falls back to its class (high byte) ...
+    assert_eq!(emcy_code_text(0x8199), "Communication");
+    assert_eq!(emcy_code_text(0x6201), "User software");
+    // ... then to the 0xN0 class of the high byte ...
+    assert_eq!(emcy_code_text(0x2401), "Current");
+    assert_eq!(emcy_code_text(0x8301), "Monitoring");
+    assert_eq!(emcy_code_text(0x1234), "Generic error");
+    // ... else "Unknown".
+    assert_eq!(emcy_code_text(0xA000), "Unknown");
+    assert_eq!(emcy_code_text(0x0001), "Unknown");
+    assert!(error_register_words(0).is_empty());
+    assert_eq!(error_register_words(0xFF), vec!["generic", "current", "voltage", "temperature", "communication", "device profile", "reserved", "manufacturer"]);
+    assert_eq!(error_register_words(0x21), vec!["generic", "device profile"]);
+    assert_eq!(error_register_text(0x11), "generic+communication");
 }
 
 #[test]

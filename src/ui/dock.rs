@@ -30,11 +30,29 @@ pub(crate) enum Tab {
     Messages,
     /// Narrow down an unknown signal by steps (0.3).
     FindSignal,
+    /// The received EMCY frames and the error history 0x1003 (0.5).
+    Emergencies,
+    /// Check of a node against its EDS (0.5).
+    EdsCheck,
 }
 
 impl Tab {
     /// The tabs of the View menu, in menu order (trace tabs separately).
-    pub(crate) const VIEWS: [Tab; 11] = [Tab::Devices, Tab::Eds, Tab::Od, Tab::Network, Tab::Messages, Tab::FindSignal, Tab::Graph, Tab::Pdo, Tab::TxList, Tab::Lss, Tab::Dcf];
+    pub(crate) const VIEWS: [Tab; 13] = [
+        Tab::Devices,
+        Tab::Eds,
+        Tab::Od,
+        Tab::Network,
+        Tab::Emergencies,
+        Tab::Messages,
+        Tab::FindSignal,
+        Tab::Graph,
+        Tab::Pdo,
+        Tab::TxList,
+        Tab::Lss,
+        Tab::Dcf,
+        Tab::EdsCheck,
+    ];
 
     pub(crate) fn name(self) -> String {
         match self {
@@ -50,6 +68,8 @@ impl Tab {
             Tab::Dcf => "DCF save / restore".into(),
             Tab::Messages => "Messages".into(),
             Tab::FindSignal => "Find signal".into(),
+            Tab::Emergencies => "Emergencies".into(),
+            Tab::EdsCheck => "EDS check".into(),
         }
     }
 
@@ -67,6 +87,8 @@ impl Tab {
             Tab::Dcf => icon::FILE_CODE,
             Tab::Messages => icon::TABLE,
             Tab::FindSignal => icon::MAGNIFYING_GLASS,
+            Tab::Emergencies => icon::WARNING,
+            Tab::EdsCheck => icon::CHECK_SQUARE,
         }
     }
 }
@@ -176,8 +198,8 @@ pub(crate) fn open_tab(d: &mut DockState<Tab>, tab: Tab) {
         return;
     }
     let near = match tab {
-        Tab::Lss => leaf_of(d, Tab::Network),
-        Tab::Dcf => leaf_of(d, Tab::Od),
+        Tab::Lss | Tab::Emergencies => leaf_of(d, Tab::Network),
+        Tab::Dcf | Tab::EdsCheck => leaf_of(d, Tab::Od),
         Tab::Trace(_) | Tab::Messages | Tab::FindSignal => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
         _ => None,
     };
@@ -252,6 +274,8 @@ impl TabViewer for Viewer<'_> {
             Tab::Dcf => self.app.dcf_tab(ui),
             Tab::Messages => self.app.messages_tab(ui),
             Tab::FindSignal => self.app.findsig_tab(ui),
+            Tab::Emergencies => self.app.emcy_tab(ui),
+            Tab::EdsCheck => self.app.edscheck_tab(ui),
         });
     }
 
@@ -331,6 +355,37 @@ mod tests {
         open_tab(&mut d, Tab::Messages);
         assert_eq!(leaf_of(&d, Tab::Messages), leaf_of(&d, Tab::Trace(1)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A layout file of 0.4.0 (no Emergencies, no EDS check tab) still
+    /// loads; the new tabs open beside Network and the object dictionary.
+    #[test]
+    fn layout_of_0_4_0_loads_and_the_new_tabs_open() {
+        let dir = std::env::temp_dir().join(format!("canoxide_layout_040_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // 0.4.0 has the same egui_dock and the same names of the older
+        // tabs, so its file is this save of the 0.4.0 tab set.
+        let mut d = layout_a();
+        open_tab(&mut d, Tab::Lss);
+        open_tab(&mut d, Tab::Dcf);
+        save_layout(&dir, &d).unwrap();
+        let t = std::fs::read_to_string(dir.join(LAYOUT_FILE)).unwrap();
+        assert!(!t.contains("Emergencies") && !t.contains("EdsCheck"));
+        let (back, note) = load_layout(&dir);
+        assert!(note.is_none(), "{note:?}");
+        d = back.unwrap();
+        open_tab(&mut d, Tab::Emergencies);
+        open_tab(&mut d, Tab::EdsCheck);
+        assert_eq!(leaf_of(&d, Tab::Emergencies), leaf_of(&d, Tab::Network));
+        assert_eq!(leaf_of(&d, Tab::EdsCheck), leaf_of(&d, Tab::Od));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn view_menu_order_has_the_new_tabs() {
+        let pos = |t: Tab| Tab::VIEWS.iter().position(|x| *x == t).unwrap();
+        assert_eq!(pos(Tab::Emergencies), pos(Tab::Network) + 1);
+        assert_eq!(pos(Tab::EdsCheck), pos(Tab::Dcf) + 1);
     }
 
     #[test]

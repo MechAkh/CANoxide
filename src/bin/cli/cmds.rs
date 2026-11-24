@@ -16,7 +16,10 @@ use canoxide::canopen::sdo::{SdoError, SdoRequest, StartOptions, TransferMode, M
 use canoxide::canopen::task::{ReadsTask, SdoStep, SdoTask, StepsReport, StepsTask, TaskResult};
 use canoxide::canopen::types::{self, format_value, hex_bytes, le_u64, parse_int, parse_text, DataType, DisplayMode, Value as TValue};
 use canoxide::dcf::{readable_objects, DcfCommissioning, DcfCompareTask, DcfRestoreTask, ObjectAction, RestoreOptions};
+use canoxide::edscheck::{CheckKind, EdsCheckOptions, EdsCheckTask, Severity};
 use canoxide::eds::{self, ObjectDictionary};
+use canoxide::emcy::{clear_history_step, error_history, error_history_task};
+use canoxide::params::{restore_defaults, store_parameters, sub_name};
 use canoxide::netinfo::{heartbeat_steps, NodeInfo, NodeInfoTask};
 use canoxide::session::{download_from_file, upload_to_file, Ctl, FileTransferError, SessionError};
 use serde_json::{json, Map, Value};
@@ -416,6 +419,11 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, pos: &[String], a: &Args, out: &mut d
         "dcf save" => dcf_save(ctx, pos, a),
         "dcf restore" => dcf_restore(ctx, pos, a),
         "dcf compare" => dcf_compare(ctx, pos, a),
+        "check" => check(ctx, pos, a),
+        "emcy history" => emcy_history(ctx, pos),
+        "emcy clear" => emcy_clear(ctx, pos),
+        "store" => store_restore(ctx, pos, a, false),
+        "restore-defaults" => store_restore(ctx, pos, a, true),
         other => Err(CliError::usage(format!("'{other}' cannot run here"))),
     }
 }
@@ -1296,4 +1304,130 @@ fn dcf_compare(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
             "index": hex16(d.index), "sub": d.sub, "name": d.name, "dcf_value": d.dcf_value, "node_value": d.node_value, "error": d.error,
         })).collect::<Vec<_>>(),
     }))
+}
+
+/// `check`: the node against its EDS. Exit code 1 (an error with the full
+/// result as the detail) when an entry failed.
+fn check(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
+    max_args(pos, 0)?;
+    let od = ctx.dict().ok_or_else(|| CliError::usage("check needs --eds <file> (or --device) unless the adapter is the simulator"))?;
+    let eds_file = match &ctx.g.eds {
+        Some(p) => p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| p.display().to_string()),
+        None => "sim_builtin.eds".to_string(),
+    };
+    let defaults = EdsCheckOptions::default();
+    let opts = EdsCheckOptions {
+        skip_domain: !a.flag("include-domain"),
+        from: a.get("from").map(parse_index).transpose()?.unwrap_or(defaults.from),
+        to: a.get("to").map(parse_index).transpose()?.unwrap_or(defaults.to),
+        stop_after_timeouts: a.num::<u32>("stop-after")?.unwrap_or(defaults.stop_after_timeouts),
+    };
+    if opts.from > opts.to {
+        return Err(CliError::usage("--from is above --to"));
+    }
+    let node = ctx.node;
+    let rep = match run_task(ctx, Box::new(EdsCheckTask::new(node, od, eds_file, opts)))? {
+        TaskResult::EdsCheck(r) => r,
+        _ => return Err(internal()),
+    };
+    let mut junit = None;
+    if let Some(path) = a.get("junit") {
+        std::fs::write(path, rep.to_junit()).map_err(|e| CliError::new("file", format!("--junit {path}: {e}")))?;
+        junit = Some(path.to_string());
+    }
+    let all = a.flag("all");
+    let counts: Map<String, Value> = CheckKind::ALL.iter().map(|k| (k.label().to_string(), json!(rep.count(*k)))).collect();
+    let entries: Vec<Value> = rep
+        .entries
+        .iter()
+        .filter(|e| all || e.severity != Severity::Pass)
+        .map(|e| {
+            json!({
+                "index": hex16(e.index), "sub": e.sub, "name": e.name, "access": e.access, "data_type": e.data_type,
+                "kind": e.kind.label(), "severity": e.severity.label(), "detail": e.detail, "abort_code": e.abort_code.map(hex32),
+            })
+        })
+        .collect();
+    let mut m = Map::new();
+    m.insert("node".into(), json!(node));
+    m.insert("eds_file".into(), json!(rep.eds_file));
+    m.insert("passed".into(), json!(rep.passed()));
+    m.insert("summary".into(), json!(rep.summary_line()));
+    m.insert("checked".into(), json!(rep.checked()));
+    // Not "ok": that is the field of the result object itself.
+    m.insert("ok_entries".into(), json!(rep.count(CheckKind::Ok) + rep.count(CheckKind::WriteOnlyOk)));
+    m.insert("failed".into(), json!(rep.failed()));
+    m.insert("warnings".into(), json!(rep.warnings()));
+    m.insert("not_checked".into(), json!(rep.count(CheckKind::NotChecked)));
+    m.insert("skipped_domain".into(), json!(rep.skipped_domain));
+    m.insert("duration_ms".into(), json!(rep.duration_ms));
+    m.insert("cancelled".into(), json!(rep.cancelled));
+    m.insert("stopped_on_timeouts".into(), json!(rep.stopped_on_timeouts));
+    m.insert("counts".into(), Value::Object(counts));
+    m.insert("junit".into(), json!(junit));
+    m.insert("entries".into(), Value::Array(entries));
+    if rep.passed() {
+        return Ok(Value::Object(m));
+    }
+    Err(CliError { kind: "device", message: format!("EDS check failed: {}", rep.summary_line()), abort_code: None, detail: Some(Value::Object(m)) })
+}
+
+fn emcy_history(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
+    max_args(pos, 0)?;
+    let node = ctx.node;
+    let rep = match run_task(ctx, Box::new(error_history_task(node)))? {
+        TaskResult::Reads(r) => r,
+        _ => return Err(internal()),
+    };
+    match error_history(&rep) {
+        Ok(v) => Ok(json!({
+            "node": node,
+            "count": v.len(),
+            "entries": v.iter().map(|e| json!({
+                "number": e.number, "raw": hex32(e.raw), "code": hex16(e.code()), "text": e.text(), "info": hex16(e.info()),
+            })).collect::<Vec<_>>(),
+        })),
+        Err(msg) => {
+            let code = rep.reads.iter().find(|x| x.index == 0x1003 && x.error.is_some()).and_then(|x| x.abort_code);
+            let kind = if code.is_some() { "abort" } else if rep.cancelled { "cancelled" } else { "device" };
+            Err(CliError { kind, message: msg, abort_code: code, detail: None })
+        }
+    }
+}
+
+fn emcy_clear(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
+    max_args(pos, 0)?;
+    let node = ctx.node;
+    let r = run_steps(ctx, "clear error history", vec![clear_history_step(node)], true)?;
+    let mut m = Map::new();
+    m.insert("node".into(), json!(node));
+    m.insert("index".into(), json!(hex16(0x1003)));
+    m.insert("sub".into(), json!(0));
+    m.insert("cleared".into(), json!(r.ok));
+    finish_steps(&r, m)
+}
+
+/// `store` (0x1010, "save") and `restore-defaults` (0x1011, "load").
+fn store_restore(ctx: &mut Ctx, pos: &[String], a: &Args, restore: bool) -> CmdResult {
+    max_args(pos, 0)?;
+    let sub = a.num::<u8>("sub")?.unwrap_or(1);
+    if sub == 0 || sub == 255 {
+        return Err(CliError::usage("--sub must be 1..254"));
+    }
+    let node = ctx.node;
+    let step = if restore { restore_defaults(node, sub) } else { store_parameters(node, sub) };
+    let label = step.what.clone();
+    let r = run_steps(ctx, &label, vec![step], true)?;
+    let mut m = Map::new();
+    m.insert("node".into(), json!(node));
+    m.insert("index".into(), json!(hex16(if restore { 0x1011 } else { 0x1010 })));
+    m.insert("sub".into(), json!(sub));
+    m.insert("name".into(), json!(sub_name(sub)));
+    if restore {
+        m.insert("restored".into(), json!(r.ok));
+        m.insert("note".into(), json!("The defaults are active after a reset node or a power cycle."));
+    } else {
+        m.insert("stored".into(), json!(r.ok));
+    }
+    finish_steps(&r, m)
 }

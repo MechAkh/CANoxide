@@ -70,6 +70,8 @@ Name: "addtopath"; Description: "Add canoxide-cli to PATH"; GroupDescription: "C
 Source: "{#ExeDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ExeDir}\{#CliExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+; Licences of the crates and fonts in the exes (tools\make_notices.py).
+Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\CLI.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "..\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist

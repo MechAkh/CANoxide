@@ -2713,3 +2713,110 @@ fn screenshots_od_actions() {
         img.save(out.join(format!("{name}.png"))).unwrap_or_else(|e| panic!("{name}.png not written: {e}"));
     }
 }
+
+// ------------------------------------- v0.5: EMCY, EDS check, parameters
+
+/// The View menu offers Emergencies (after Network) and EDS check (after
+/// DCF save / restore).
+#[test]
+fn s37_view_menu_offers_emergencies_and_eds_check() {
+    let tmp = TempDir::new("s37");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    click_role(&mut h, Role::Button, "View");
+    let y = |h: &H, name: &str| cy(&rect_id(h, top_by_label(h, name, Some(Role::CheckBox))));
+    let (net, em, dcf, ec) = (y(&h, "Network"), y(&h, "Emergencies"), y(&h, "DCF save / restore"), y(&h, "EDS check"));
+    assert!(net < em && dcf < ec, "menu order: Network {net}, Emergencies {em}, DCF {dcf}, EDS check {ec}\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::CheckBox, "Emergencies");
+    assert!(h.state().is_open(Tab::Emergencies));
+    view_menu(&mut h, "EDS check");
+    assert!(h.state().is_open(Tab::EdsCheck));
+}
+
+/// Emergencies: a raised simulator EMCY is listed with its text; the error
+/// history 0x1003 of the node is read and cleared.
+#[test]
+fn s38_emergencies_raise_read_clear() {
+    let tmp = TempDir::new("s38");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Emergencies]);
+    assert!(has(&h, "No emergency received yet."), "\nUI:\n{}", dump(&h));
+    all_disabled(&h, "Read error history (0x1003)");
+    connect(&mut h);
+    click(&mut h, "Raise EMCY");
+    wait_for(&mut h, "EMCY listed", |h| has_exact(h, "Life guard or heartbeat error") && has_exact(h, "1 EMCY"));
+    assert!(has_exact(&h, "8130"), "\nUI:\n{}", dump(&h));
+    // The simulator starts with 2 entries; the raised EMCY is the third.
+    click(&mut h, "Read error history (0x1003)");
+    wait_for(&mut h, "0x1003 read", |h| has_exact(h, "Node 1: 3 entries (1 = newest)"));
+    // Clear asks first (confirm before write is on by default).
+    let before = buttons(&h, "Clear");
+    click(&mut h, "Clear error history");
+    assert!(has_exact(&h, "Clear error history") && has(&h, "Write 0 to 0x1003:00 of node 1"), "no question\nUI:\n{}", dump(&h));
+    click_new_button(&mut h, "Clear", &before);
+    wait_for(&mut h, "0x1003 cleared", |h| has_exact(h, "Error history of node 1 cleared"));
+    click(&mut h, "Read error history (0x1003)");
+    wait_for(&mut h, "0x1003 empty", |h| has_exact(h, "Node 1: the error history is empty."));
+    // Reset EMCY: code 0 in the ok colour; the list clear sends nothing.
+    click(&mut h, "Reset EMCY");
+    wait_for(&mut h, "reset listed", |h| has_exact(h, "Error reset / no error") && has_exact(h, "2 EMCY"));
+    click(&mut h, &format!("{} Clear", icon::TRASH));
+    assert!(has(&h, "No emergency received yet."), "\nUI:\n{}", dump(&h));
+}
+
+/// EDS check: disabled before the connection; on the simulator (built-in
+/// EDS) the summary shows no failure.
+#[test]
+fn s39_eds_check_on_the_simulator() {
+    let tmp = TempDir::new("s39");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::EdsCheck]);
+    let start = format!("{} Start", icon::PLAY);
+    all_disabled(&h, &start);
+    connect(&mut h);
+    click(&mut h, &start);
+    wait_for(&mut h, "summary", |h| has(h, " 0 failed") && has(h, "sim_builtin.eds, node 1"));
+    assert!(has_exact(&h, "Every entry is ok.") || has_exact(&h, "Index:sub"), "\nUI:\n{}", dump(&h));
+    click(&mut h, "show ok entries");
+    assert!(has_exact(&h, "1018:01"), "ok entries not shown\nUI:\n{}", dump(&h));
+}
+
+/// Network view, Parameters group: store and restore defaults on the
+/// simulator, each after its question.
+#[test]
+fn s40_parameters_store_and_restore() {
+    let tmp = TempDir::new("s40");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Network]);
+    all_disabled_containing(&h, "Store (0x1010)");
+    connect(&mut h);
+    let before = buttons(&h, "Store");
+    click_containing(&mut h, "Store (0x1010)");
+    assert!(has_exact(&h, "Store parameters"), "no question\nUI:\n{}", dump(&h));
+    click_new_button(&mut h, "Store", &before);
+    wait_for(&mut h, "stored", |h| has_exact(h, "Store parameters (0x1010:01, All parameters) on node 1 done"));
+    let before = buttons(&h, "Restore defaults");
+    click_containing(&mut h, "Restore defaults (0x1011)");
+    assert!(has_exact(&h, "Restore default parameters"), "no question\nUI:\n{}", dump(&h));
+    click_new_button(&mut h, "Restore defaults", &before);
+    wait_for(&mut h, "restored", |h| has(h, "The defaults are active after a reset node or a power cycle.") && has(h, "Restore defaults (0x1011:01, All parameters) on node 1 done"));
+    click(&mut h, "Read supported");
+    wait_for(&mut h, "caps read", |h| has(h, "0x1010: 1 on command, 2 on command, 3 on command"));
+}
+
+/// Listen only: the new send controls are disabled.
+#[test]
+fn s41_new_controls_listen_only() {
+    let tmp = TempDir::new("s41");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Network]);
+    click_role(&mut h, Role::CheckBox, "Listen only");
+    connect(&mut h);
+    all_disabled_containing(&h, "Store (0x1010)");
+    all_disabled_containing(&h, "Restore defaults (0x1011)");
+    only(&mut h, vec![Tab::Emergencies]);
+    all_disabled(&h, "Read error history (0x1003)");
+    all_disabled(&h, "Clear error history");
+    only(&mut h, vec![Tab::EdsCheck]);
+    all_disabled(&h, &format!("{} Start", icon::PLAY));
+}

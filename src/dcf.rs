@@ -22,6 +22,8 @@ use std::sync::Arc;
 
 /// "save" as the u32 of 0x1010 (store parameters).
 pub const STORE_SIGNATURE: u32 = 0x6576_6173;
+/// "load" as the u32 of 0x1011 (restore default parameters).
+pub const RESTORE_SIGNATURE: u32 = 0x6461_6F6C;
 
 /// The `[DeviceComissioning]` values of a DCF.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,7 +419,7 @@ fn compare_report(rep: &ReadsReport, dcf: &ObjectDictionary, want: &BTreeMap<(u1
 }
 
 /// Equal values; a string is compared without trailing NULs.
-fn same_value(dt: Option<DataType>, a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same_value(dt: Option<DataType>, a: &[u8], b: &[u8]) -> bool {
     match dt {
         Some(DataType::VisibleString) => {
             let t = |x: &[u8]| x.iter().rposition(|&c| c != 0).map(|i| x[..=i].to_vec()).unwrap_or_default();

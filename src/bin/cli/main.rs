@@ -30,14 +30,14 @@ use std::sync::Arc;
 pub const CLI_NAME: &str = "canoxide-cli";
 
 /// Options without a value.
-const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values"];
+const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values", "include-domain"];
 
 /// Global options that a shell line may set; the others are fixed by the
 /// shell command line.
 const SHELL_LINE_GLOBALS: &[&str] = &["node", "timeout", "text"];
 
 /// Groups whose commands have two words.
-const GROUPS: &[&str] = &["eds", "sdo", "od", "pdo", "heartbeat", "lss", "dcf"];
+const GROUPS: &[&str] = &["eds", "sdo", "od", "pdo", "heartbeat", "lss", "dcf", "emcy"];
 
 #[derive(Debug)]
 pub struct CliError {
