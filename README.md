@@ -1,10 +1,10 @@
 # CANoxide
 
 A small, free Windows tool to test, configure and debug CANopen devices
-on a bench. It works with a PEAK PCAN-USB adapter, an ifm CANfox, or with no hardware at all through a built-in
-simulated node.
+on a bench. It works with a PEAK PCAN-USB adapter, an ifm CANfox, or with
+no hardware at all through a built-in simulated node.
 
-- **GUI** (`CANoxide.exe`): one portable exe of about 6 MB, or a standard
+- **GUI** (`CANoxide.exe`): one portable exe of about 9 MB, or a standard
   Windows installer.
 - **Command line** (`canoxide-cli.exe`): the same functions with JSON
   output, made for scripts and AI agents.
@@ -55,12 +55,12 @@ first start ("More info" then "Run anyway").
 ## Comparison with CANopen Magic Professional
 
 CANopen Magic is the established commercial tool in this field. The table
-compares the features of CANoxide 0.3 with those of CANopen Magic
+compares the features of CANoxide 0.4 with those of CANopen Magic
 Professional, taken from the vendor's public product pages in November
 2026. Check the vendor's pages for the current and complete list.
 CANoxide is younger and has had far less use on real networks.
 
-| Feature | CANopen Magic Pro | CANoxide 0.3 |
+| Feature | CANopen Magic Pro | CANoxide 0.4 |
 |---|---|---|
 | Price and licence | Commercial licence | Free, MIT, open source |
 | EDS / DCF import, object dictionary browser | Yes | Yes |
@@ -302,4 +302,9 @@ cargo build --release
 ## Licence
 
 MIT. See [LICENSE](LICENSE). The embedded fonts (Inter, JetBrains Mono)
-are under the SIL Open Font License, see `licenses\`.
+are under the SIL Open Font License, see `licenses\`. The icons are
+Phosphor icons (MIT).
+
+No driver file of PEAK or Sontheim is part of CANoxide. Product and company
+names in this file are trademarks of their owners and are used only to
+describe compatibility.
