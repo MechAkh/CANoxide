@@ -1,0 +1,13 @@
+;$FILEVERSION=1.1
+;$STARTTIME=45986.4166666667
+;
+;   Hand-written test file for CANoxide (file version 1.1): message
+;   number, time offset (ms), type, ID (hex), data length, data bytes.
+;   A Warng and an Error line, an RTR frame and an extended ID.
+;
+     1)      1059.9 Rx         0300  8  00 00 00 00 04 00 00 00
+     2)      1160.0 Tx         0181  2  01 02
+     3)      1170.5 Warng  FFFFFFFF  4  00 00 00 08  BUSHEAVY
+     4)      1200.0 Rx         0701  4  RTR
+     5)      1250.0 Error      0000  5  01 02 03 04 05
+     6)      1300.0 Rx     0CF00400  8  01 02 03 04 05 06 07 08

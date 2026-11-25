@@ -40,10 +40,10 @@ impl App {
         };
         ui.add(egui::Label::new(egui::RichText::new(name).color(if self.settings.replay_file.is_empty() { p.text_secondary } else { p.text_primary })).truncate())
             .on_hover_text(if self.settings.replay_file.is_empty() { "Choose a log file" } else { self.settings.replay_file.as_str() });
-        if ui.add_enabled(!locked, egui::Button::new(format!("{}  Browse...", icon::FOLDER_OPEN))).on_hover_text("A trace CSV written by CANoxide or a candump log").clicked() {
+        if ui.add_enabled(!locked, egui::Button::new(format!("{}  Browse...", icon::FOLDER_OPEN))).on_hover_text("A trace CSV written by CANoxide, a candump log, a PEAK .trc or a Vector .asc file").clicked() {
             let picked = rfd::FileDialog::new()
                 .set_title("Log file to play back")
-                .add_filter("Log files", &["csv", "log", "txt"])
+                .add_filter("Log files", &["csv", "log", "txt", "trc", "asc"])
                 .add_filter("All files", &["*"])
                 .pick_file();
             if let Some(f) = picked {

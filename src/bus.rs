@@ -825,7 +825,10 @@ impl Worker {
         self.polling = false;
         self.polls.clear();
         lock(&self.signals).clear();
-        let skipped = if log.bad_lines > 0 { format!(", {} bad line(s) skipped", log.bad_lines) } else { String::new() };
+        let mut skipped = if log.bad_lines > 0 { format!(", {} bad line(s) skipped", log.bad_lines) } else { String::new() };
+        if log.skipped > 0 {
+            skipped.push_str(&format!(", {} other record(s) skipped", log.skipped));
+        }
         let text = format!("log file {name} ({}, {} frames, {:.3} s{skipped})", log.format.label(), frames.len(), player.duration_us() as f64 / 1e6);
         self.adapter = Some(Box::new(FileAdapter::new(format!("replay {name}"), Vec::new(), None)));
         let run = ReplayRun { path, frames, player, ctx, tail, kbit: bitrate.kbit(), rebuild: None };

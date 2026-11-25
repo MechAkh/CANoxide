@@ -243,6 +243,9 @@ impl App {
                 self.msgs.reset();
                 self.msgv.on_reset();
             }
+            if ui.button("Import DBC...").on_hover_text("Import the signals of a DBC file as user signals").clicked() {
+                self.import_dbc_dialog();
+            }
             ui.label(egui::RichText::new(format!("{} IDs", self.msgs.len())).color(p.text_secondary));
             if self.msgs.ignored() > 0 {
                 ui.label(egui::RichText::new(format!("{} frames of further IDs not counted (limit {})", self.msgs.ignored(), crate::msgstats::MAX_IDS)).color(p.warning));

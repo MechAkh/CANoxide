@@ -312,6 +312,12 @@ impl TraceStore {
         Ok(())
     }
 
+    /// The frames of view `id` (oldest first), for the `.trc` and `.asc`
+    /// export.
+    pub fn frames_of(&self, id: ViewId) -> Vec<crate::can::CanFrame> {
+        (0..self.view_len_of(id)).filter_map(|i| self.view_row_of(id, i).map(|e| e.frame)).collect()
+    }
+
     // ---- single-view API (view 0) ----
 
     pub fn filter(&self) -> &TraceFilter {

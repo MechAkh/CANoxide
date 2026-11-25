@@ -888,6 +888,10 @@ impl App {
                     let n = self.traces.keys().next().copied().unwrap_or(1);
                     self.save_trace_csv(n);
                 }
+                if ui.button("Import DBC...").on_hover_text("Import the signals of a DBC file as user signals").clicked() {
+                    ui.close_menu();
+                    self.import_dbc_dialog();
+                }
                 if ui.add_enabled(self.data_dir.is_some(), egui::Button::new("Open data folder")).clicked() {
                     ui.close_menu();
                     if let Some(d) = &self.data_dir {
@@ -1249,6 +1253,7 @@ impl App {
         self.replay_dialogs(ctx);
         self.graph_dialogs(ctx);
         self.define_signal_dialog(ctx);
+        self.dbc_dialog(ctx);
         self.similar_window(ctx);
         self.pdo_dialogs(ctx);
         self.library_dialogs(ctx);

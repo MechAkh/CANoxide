@@ -7,6 +7,7 @@ use crate::canopen::decode::MsgClass;
 use crate::canopen::types::{format_bytes, parse_int, DisplayMode};
 use crate::settings::{DataView, Settings, TimestampFormat, TraceColour};
 use crate::trace::{id_text, TraceEntry, TraceFilter, ViewId};
+use crate::tracefmt as canoxide_fmt;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder, TableRow};
 
@@ -280,7 +281,7 @@ impl App {
                 self.trace.clear();
                 tv.paused_at = self.trace.total();
             }
-            if theme::icon_button(ui, true, icon::FLOPPY_DISK, "Save CSV...", "Save the rows of this tab as CSV").clicked() {
+            if theme::icon_button(ui, true, icon::FLOPPY_DISK, "Save trace...", "Save the rows of this tab as CSV, PEAK .trc (version 1.1) or Vector .asc").clicked() {
                 self.save_view_csv(tv.view, tv.mode);
             }
             // This tab is taken out of `traces` while it is drawn.
@@ -343,23 +344,55 @@ impl App {
         self.traces.get(&n).is_some_and(|t| t.autoscroll)
     }
 
-    /// Save the rows of trace tab `n` as CSV (file dialog).
+    /// Save the rows of trace tab `n` (file dialog: CSV, .trc or .asc).
     pub(crate) fn save_trace_csv(&mut self, n: u8) {
         let (view, mode) = self.traces.get(&n).map(|t| (t.view, t.mode)).unwrap_or((0, self.settings.trace_display));
         self.save_view_csv(view, mode);
     }
 
     fn save_view_csv(&mut self, view: ViewId, mode: DisplayMode) {
-        let Some(path) = rfd::FileDialog::new().set_file_name("trace.csv").add_filter("CSV", &["csv"]).save_file() else { return };
-        let r = std::fs::File::create(&path).and_then(|file| {
-            let mut w = std::io::BufWriter::new(file);
-            self.trace.write_csv_of(view, &mut w, mode)?;
-            std::io::Write::flush(&mut w)
-        });
-        match r {
-            Ok(()) => self.set_status(format!("Saved {} rows to {}", self.trace.view_len_of(view), path.display()), false),
-            Err(e) => self.set_status(format!("CSV not saved: {e}"), true),
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("trace.csv")
+            .add_filter("CSV", &["csv"])
+            .add_filter("PEAK trace (version 1.1)", &["trc"])
+            .add_filter("Vector ASC", &["asc"])
+            .save_file()
+        else {
+            return;
+        };
+        if let Err(e) = self.write_view_file(view, mode, &path) {
+            self.set_status(format!("Trace not saved: {e}"), true);
+        } else {
+            self.set_status(format!("Saved {} rows to {}", self.trace.view_len_of(view), path.display()), false);
         }
+    }
+
+    /// Write the rows of a view; the extension of `path` picks the format
+    /// (`.trc`, `.asc`, else CSV).
+    pub(crate) fn write_view_file(&self, view: ViewId, mode: DisplayMode, path: &std::path::Path) -> std::io::Result<()> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let file = std::fs::File::create(path)?;
+        let mut w = std::io::BufWriter::new(file);
+        match ext.as_str() {
+            "trc" | "asc" => {
+                let frames = self.trace.frames_of(view);
+                // The trace keeps no wall time: the start is now minus the
+                // span of the rows.
+                let span = match (frames.first(), frames.last()) {
+                    (Some(a), Some(b)) => b.timestamp_us.saturating_sub(a.timestamp_us),
+                    _ => 0,
+                };
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0);
+                let start = now.saturating_sub(span);
+                if ext == "trc" {
+                    canoxide_fmt::write_trc(&mut w, &frames, start)?;
+                } else {
+                    canoxide_fmt::write_asc(&mut w, &frames, start)?;
+                }
+            }
+            _ => self.trace.write_csv_of(view, &mut w, mode)?,
+        }
+        std::io::Write::flush(&mut w)
     }
 
     fn chrono_table(&mut self, ui: &mut egui::Ui, tv: &mut TraceView, look: Look) {

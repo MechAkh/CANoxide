@@ -33,6 +33,12 @@ pub(crate) struct SigDraft {
     pub error: Option<String>,
 }
 
+/// A DBC file read for the import dialog.
+pub(crate) struct DbcPending {
+    pub file: String,
+    pub import: crate::dbc::DbcImport,
+}
+
 impl SigDraft {
     pub(crate) fn new(sig: UserSignal, edit: Option<usize>) -> SigDraft {
         let cob_text = format!("{:X}", sig.cob_id);
@@ -153,6 +159,8 @@ pub(crate) struct AnalysisState {
     /// The user signals (also in the decode context as an `Arc`).
     pub usigs: Vec<UserSignal>,
     pub draft: Option<SigDraft>,
+    /// A read DBC file waiting for Add / Replace.
+    pub dbc: Option<DbcPending>,
     pub similar: Option<SimilarJob>,
     pub find: FindView,
     pub hist: HistView,
@@ -403,6 +411,90 @@ impl App {
         }
         if keep {
             self.an.draft = Some(d);
+        }
+    }
+
+    // --------------------------------------------------------- DBC import
+
+    /// "Import DBC...": pick a file, then the merge dialog.
+    pub(crate) fn import_dbc_dialog(&mut self) {
+        let picked = rfd::FileDialog::new().set_title("DBC file to import as user signals").add_filter("DBC", &["dbc"]).add_filter("All files", &["*"]).pick_file();
+        if let Some(p) = picked {
+            self.open_dbc(&p);
+        }
+    }
+
+    /// Read a DBC file and open the merge dialog (or show the error).
+    pub(crate) fn open_dbc(&mut self, path: &std::path::Path) {
+        match crate::dbc::load(path) {
+            Ok(import) => {
+                let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.an.dbc = Some(DbcPending { file, import });
+            }
+            Err(e) => self.set_status(format!("DBC not read: {e}"), true),
+        }
+    }
+
+    /// Merge the pending import into the user signals.
+    pub(crate) fn apply_dbc(&mut self, replace: bool) {
+        let Some(d) = self.an.dbc.take() else { return };
+        let (v, rep) = crate::dbc::merge(&self.an.usigs, &d.import, replace);
+        self.set_user_signals(v);
+        self.set_status(format!("DBC {}: {}", d.file, rep.text()), false);
+    }
+
+    pub(crate) fn dbc_dialog(&mut self, ctx: &egui::Context) {
+        let Some(d) = &self.an.dbc else { return };
+        let warn_c = if self.is_dark() { theme::DARK.warning } else { theme::LIGHT.warning };
+        let screen = ctx.screen_rect();
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !ctx.memory(|m| m.any_popup_open());
+        let mut open = true;
+        let mut action: Option<Option<bool>> = None;
+        let n_sig = d.import.signal_count();
+        let n_msg = d.import.messages.iter().filter(|m| !m.signals.is_empty()).count();
+        egui::Window::new("Import DBC")
+            .id(egui::Id::new("import_dbc"))
+            .order(egui::Order::Foreground)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .constrain(true)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(screen.center())
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(&d.file).strong());
+                ui.label(format!("{n_msg} message(s) with {n_sig} signal(s) to import ({} message(s) in the file)", d.import.messages.len()));
+                if d.import.skipped.is_empty() {
+                    ui.label("Nothing skipped.");
+                } else {
+                    let mux = if d.import.multiplexed > 0 { format!(", {} multiplexed", d.import.multiplexed) } else { String::new() };
+                    ui.colored_label(warn_c, format!("Skipped: {}{mux}", d.import.skipped.len()));
+                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        for s in &d.import.skipped {
+                            ui.label(egui::RichText::new(s).small());
+                        }
+                    });
+                }
+                ui.label(egui::RichText::new("Add keeps the user signals you have and skips a signal whose name is already used on the same ID. Replace first removes every user signal of the IDs in this file.").small());
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(n_sig > 0, egui::Button::new("Add")).clicked() {
+                        action = Some(Some(false));
+                    }
+                    if ui.add_enabled(n_sig > 0, egui::Button::new("Replace all signals of these IDs")).clicked() {
+                        action = Some(Some(true));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        action = Some(None);
+                    }
+                });
+            });
+        if !open || escape {
+            action = Some(None);
+        }
+        match action {
+            Some(Some(replace)) => self.apply_dbc(replace),
+            Some(None) => self.an.dbc = None,
+            None => {}
         }
     }
 

@@ -5,6 +5,7 @@ pub mod decode;
 pub mod lss;
 pub mod nmt;
 pub mod pdo;
+pub mod pdocheck;
 pub mod sdo;
 pub mod task;
 pub mod types;

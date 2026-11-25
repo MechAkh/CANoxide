@@ -1,0 +1,9 @@
+;##########################################################################
+;   Hand-written test file for CANoxide (file version 1.0 layout, no
+;   $FILEVERSION line): message number, time offset (ms), ID (hex),
+;   data length, data bytes (hex). Line 3 is a bus warning (ID FFFFFFFF).
+;##########################################################################
+     1)      1000  0100  2  11 22
+     2)      1050  0200  0
+     3)      1051  FFFFFFFF  4  00 00 00 04
+     4)      1100  18FF0102  1  AA

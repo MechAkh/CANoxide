@@ -1,0 +1,9 @@
+;$FILEVERSION=2.1
+;$STARTTIME=45986.4166666667
+;$COLUMNS=N,O,T,I,d,L,D
+;
+;   Hand-written test file for CANoxide (file version 2.1). $COLUMNS
+;   leaves out the optional bus (B) and reserved (R) columns.
+;
+      1         0.000 DT     02A0 Tx 3  AA BB CC
+      2         2.345 DT     02A0 Rx 1  01

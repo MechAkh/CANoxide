@@ -23,7 +23,7 @@ pub struct Spec {
 
 pub const GLOBAL: &[Opt] = &[
     ("adapter", Some("sim|pcan|canfox|replay"), "Adapter. Default sim (the built-in simulator; nothing touches hardware). pcan is a PEAK PCAN-USB, canfox an ifm CANfox (Sontheim driver). replay plays back a log file (--file) and sends nothing."),
-    ("file", Some("log"), "Log file of --adapter replay: a trace CSV written by CANoxide or a candump log."),
+    ("file", Some("log"), "Log file of --adapter replay: a trace CSV written by CANoxide, a candump log, a PEAK .trc (file version 1.0 to 3.0) or a Vector .asc file. The format is found from the content."),
     ("speed", Some("max|factor"), "Replay speed: max (as fast as possible, the default) or a factor of the log time (1 = real time)."),
     ("channel", Some("usb1..usb8 | net"), "PCAN-USB channel (default usb1); with --adapter canfox the net number (default 105)."),
     ("bitrate", Some("10k..1M"), "Bit rate: 10k 20k 50k 125k 250k 500k 800k 1M. Default 250k."),
@@ -43,6 +43,7 @@ const ALL: Opt = ("all", None, "All nodes: NMT broadcast (node 0).");
 const NODES: Opt = ("nodes", Some("list"), "Node-IDs, comma separated (default --node).");
 const DURATION: Opt = ("duration", Some("s"), "Stop after this many seconds.");
 const COUNT: Opt = ("count", Some("n"), "Stop after this many samples / frames.");
+const FORCE: Opt = ("force", None, "Write even when the PDO check finds an error (without it an error stops the command with exit code 2, kind pdo_check, and the findings in detail.findings).");
 const LSS_TIMEOUT: Opt = ("lss-timeout", Some("ms"), "LSS answer timeout. Default 100.");
 
 pub const COMMANDS: &[Spec] = &[
@@ -85,6 +86,16 @@ pub const COMMANDS: &[Spec] = &[
         options: &[],
         output: "{file, objects, entries, file_info, device_info, is_dcf, node_id, baudrate_kbit, warnings}",
         example: "canoxide-cli eds info io.eds",
+    },
+    Spec {
+        name: "dbc info",
+        args: "<file>",
+        summary: "The messages and signals of a DBC file as the GUI imports them as user signals, and what is skipped (multiplexed signals, float64, IDs that are not CAN IDs).",
+        sends: false,
+        bus: false,
+        options: &[],
+        output: "{file, messages: [{id, extended, name, dlc, signals: [{name, start_bit, bits, byte_order, kind, factor, offset, unit}]}], message_count, signals, multiplexed, skipped: [text]}",
+        example: "canoxide-cli dbc info vehicle.dbc",
     },
     Spec {
         name: "eds objects",
@@ -253,8 +264,9 @@ pub const COMMANDS: &[Spec] = &[
             ("inhibit", Some("n"), "Inhibit time in 100 us."),
             ("event", Some("ms"), "Event timer in ms."),
             ("sync-start", Some("0..240"), "SYNC start value."),
+            FORCE,
         ],
-        output: "{before, after, steps: {...}}",
+        output: "{before, after, findings: [{severity, code, entry, message}], forced, steps: {...}}",
         example: "canoxide-cli pdo set tpdo1 --event 50",
     },
     Spec {
@@ -263,8 +275,8 @@ pub const COMMANDS: &[Spec] = &[
         summary: "Replace the mapping of one PDO (index hex, sub and bits decimal).",
         sends: true,
         bus: true,
-        options: &[],
-        output: "{before, after, steps: {...}}",
+        options: &[FORCE],
+        output: "{before, after, findings: [{severity, code, entry, message}], forced, steps: {...}}",
         example: "canoxide-cli pdo map tpdo2 0x2001:0:16 0x2002:0:32",
     },
     Spec {

@@ -1,8 +1,11 @@
 //! Log replay: the parsers of the trace files that CANoxide writes (the
 //! continuous log and "Save as CSV", header `time_s,delta_ms,...`, also
-//! the files of 0.2.0) and of candump logs (`(1700000000.123456) can0
-//! 123#DEADBEEF`), the replay clock (`ReplayPlayer`), the view rebuild
+//! the files of 0.2.0), of candump logs (`(1700000000.123456) can0
+//! 123#DEADBEEF`), of PEAK `.trc` and Vector `.asc` traces (in
+//! `crate::tracefmt`), the replay clock (`ReplayPlayer`), the view rebuild
 //! after a seek (`Rebuild`) and a file adapter for the command-line tool.
+//!
+//! The format is found from the content, not from the file extension.
 //!
 //! Replay never transmits: the adapter refuses every send, and the bus
 //! worker runs a replay in listen-only mode.
@@ -40,13 +43,20 @@ pub enum LogFormat {
     CanoxideCsv,
     /// A candump log (`candump -l`).
     Candump,
+    /// A PEAK PCAN-View / PCAN-Trace file (`.trc`), with its file version
+    /// (major, minor).
+    PeakTrc(u8, u8),
+    /// A Vector ASCII log (`.asc`).
+    VectorAsc,
 }
 
 impl LogFormat {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            LogFormat::CanoxideCsv => "CANoxide CSV",
-            LogFormat::Candump => "candump log",
+            LogFormat::CanoxideCsv => "CANoxide CSV".to_string(),
+            LogFormat::Candump => "candump log".to_string(),
+            LogFormat::PeakTrc(a, b) => format!("PEAK trace {a}.{b}"),
+            LogFormat::VectorAsc => "Vector ASC".to_string(),
         }
     }
 }
@@ -75,6 +85,10 @@ pub struct ParsedLog {
     pub errors: Vec<LineError>,
     /// All bad lines.
     pub bad_lines: usize,
+    /// Records that are read correctly but are not classic CAN frames
+    /// (error frames, status and event lines, CAN FD frames of a `.trc` or
+    /// `.asc` file): skipped and counted, not bad lines.
+    pub skipped: usize,
 }
 
 impl ParsedLog {
@@ -83,7 +97,7 @@ impl ParsedLog {
     }
 }
 
-fn progress_set(p: Option<&AtomicUsize>, v: usize) {
+pub(crate) fn progress_set(p: Option<&AtomicUsize>, v: usize) {
     if let Some(p) = p {
         p.store(v, Ordering::Relaxed);
     }
@@ -106,14 +120,19 @@ pub fn parse_log(text: &str, progress: Option<&AtomicUsize>) -> Result<ParsedLog
         parse_csv(text, progress)?
     } else if first.starts_with('(') {
         parse_candump(text, progress)
+    } else if crate::tracefmt::is_trc(first) {
+        crate::tracefmt::parse_trc(text, progress)?
+    } else if crate::tracefmt::is_asc(first) {
+        crate::tracefmt::parse_asc(text, progress)?
     } else {
         let short: String = first.chars().take(40).collect();
-        return Err(format!("unknown file format (the first line is \"{short}\"); expected a CANoxide trace CSV or a candump log"));
+        return Err(format!("unknown file format (the first line is \"{short}\"); expected a CANoxide trace CSV, a candump log, a PEAK .trc or a Vector .asc file"));
     };
     progress_set(progress, text.len());
     if log.frames.is_empty() {
         return Err(match log.errors.first() {
             Some(e) => format!("no frame could be read ({} bad line(s); first: {e})", log.bad_lines),
+            None if log.skipped > 0 => format!("the file holds no classic CAN frame ({} other record(s) skipped)", log.skipped),
             None => "the file holds no frame".to_string(),
         });
     }
@@ -132,16 +151,16 @@ fn rebase(frames: &mut [CanFrame]) {
     }
 }
 
-struct Errors {
-    list: Vec<LineError>,
-    count: usize,
+pub(crate) struct Errors {
+    pub(crate) list: Vec<LineError>,
+    pub(crate) count: usize,
 }
 
 impl Errors {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Errors { list: Vec::new(), count: 0 }
     }
-    fn add(&mut self, line: usize, message: impl Into<String>) {
+    pub(crate) fn add(&mut self, line: usize, message: impl Into<String>) {
         self.count += 1;
         if self.list.len() < MAX_ERRORS_KEPT {
             self.list.push(LineError { line, message: message.into() });
@@ -318,8 +337,9 @@ fn parse_bit(s: &str, name: &str) -> Result<bool, String> {
     }
 }
 
-/// Seconds with up to 6 decimals as µs, without float rounding.
-fn parse_seconds(s: &str) -> Option<u64> {
+/// Seconds with up to 6 decimals as µs, without float rounding (more
+/// decimals are cut off).
+pub(crate) fn parse_seconds(s: &str) -> Option<u64> {
     let s = s.trim();
     let (int, frac) = s.split_once('.').unwrap_or((s, ""));
     if int.is_empty() || !int.bytes().all(|c| c.is_ascii_digit()) || !frac.bytes().all(|c| c.is_ascii_digit()) {
@@ -400,7 +420,7 @@ fn parse_csv(text: &str, progress: Option<&AtomicUsize>) -> Result<ParsedLog, St
             Err(e) => errors.add(line, e),
         }
     }
-    Ok(ParsedLog { format: LogFormat::CanoxideCsv, frames, errors: errors.list, bad_lines: errors.count })
+    Ok(ParsedLog { format: LogFormat::CanoxideCsv, frames, errors: errors.list, bad_lines: errors.count, skipped: 0 })
 }
 
 // -------------------------------------------------------------- candump
@@ -471,7 +491,7 @@ fn parse_candump(text: &str, progress: Option<&AtomicUsize>) -> ParsedLog {
             Err(e) => errors.add(i + 1, e),
         }
     }
-    ParsedLog { format: LogFormat::Candump, frames, errors: errors.list, bad_lines: errors.count }
+    ParsedLog { format: LogFormat::Candump, frames, errors: errors.list, bad_lines: errors.count, skipped: 0 }
 }
 
 /// One candump line of a frame (for tests and tools).

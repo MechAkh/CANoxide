@@ -30,18 +30,18 @@ use std::sync::Arc;
 pub const CLI_NAME: &str = "canoxide-cli";
 
 /// Options without a value.
-const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values", "include-domain"];
+const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values", "include-domain", "force"];
 
 /// Global options that a shell line may set; the others are fixed by the
 /// shell command line.
 const SHELL_LINE_GLOBALS: &[&str] = &["node", "timeout", "text"];
 
 /// Groups whose commands have two words.
-const GROUPS: &[&str] = &["eds", "sdo", "od", "pdo", "heartbeat", "lss", "dcf", "emcy"];
+const GROUPS: &[&str] = &["eds", "sdo", "od", "pdo", "heartbeat", "lss", "dcf", "emcy", "dbc"];
 
 #[derive(Debug)]
 pub struct CliError {
-    /// usage | listen_only | file | eds | adapter | abort | timeout | protocol | device | cancelled
+    /// usage | listen_only | file | eds | pdo_check | adapter | abort | timeout | protocol | device | cancelled
     pub kind: &'static str,
     pub message: String,
     pub abort_code: Option<u32>,
@@ -62,7 +62,7 @@ impl CliError {
     }
     pub fn exit_code(&self) -> i32 {
         match self.kind {
-            "usage" | "listen_only" | "file" | "eds" => 2,
+            "usage" | "listen_only" | "file" | "eds" | "pdo_check" => 2,
             "adapter" => 3,
             _ => 1,
         }
@@ -348,6 +348,9 @@ impl Ctx {
                 if log.bad_lines > 0 {
                     let first = log.errors.first().map(|e| format!(" (first: {e})")).unwrap_or_default();
                     eprintln!("{CLI_NAME}: {}: {} bad line(s) skipped{first}", path.display(), log.bad_lines);
+                }
+                if log.skipped > 0 {
+                    eprintln!("{CLI_NAME}: {}: {} record(s) that are not classic CAN frames skipped (error frames, status, events, CAN FD)", path.display(), log.skipped);
                 }
                 Session::open(Box::new(a), 0, self.g.bitrate, true).map_err(|e| CliError::new("adapter", format!("replay: {e}")))?
             } else if self.g.adapter == "canfox" {

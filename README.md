@@ -17,13 +17,18 @@ What it is for:
 - **Watch the bus.** A live trace decodes NMT, SYNC, EMCY, heartbeat, SDO,
   PDO and LSS messages. With an EDS, SDO lines show object names and PDOs
   are split into their mapped signals. Switch the data view between hex,
-  decimal and string; filter, pause, log to a file, save as CSV.
+  decimal and string; filter, pause, log to a file, save as CSV, PEAK
+  `.trc` or Vector `.asc`. Play back a log (CANoxide CSV, candump, PEAK
+  `.trc`, Vector `.asc`) as if it were the bus.
+- **Decode your own messages.** Define signals in the bit grid, or import
+  them from a DBC file.
 - **Plot values.** Graph PDO signals, SDO-polled objects or raw frame bits
   over time.
 - **Configure a device.** Read and change its PDO configuration, set its
   node-ID and bit rate by LSS, save its configuration to a DCF, compare
-  and restore it. Store its parameters (0x1010) or restore its defaults
-  (0x1011).
+  and restore it. A PDO check finds a mapping or a COB-ID that cannot work
+  before it is written. Store its parameters (0x1010) or restore its
+  defaults (0x1011).
 - **Check a device against its EDS.** Read every entry of the EDS from the
   node and list what does not match: missing objects, wrong access, wrong
   size, constant values that differ. Read only; CSV and JUnit XML export.
@@ -77,7 +82,10 @@ CANoxide is younger and has had far less use on real networks.
 | Trace with CANopen decoding and filters | Yes | Yes |
 | Several trace windows | Yes | Yes (up to 4 tabs) |
 | Continuous logging to a file | Yes | Yes (CSV) |
-| Log playback | Yes | Yes (CANoxide files and candump logs) |
+| Log playback | Yes | Yes (CANoxide CSV, candump, PEAK `.trc` 1.0 to 2.1, Vector `.asc`) |
+| Save a trace as PEAK `.trc` or Vector `.asc` | not stated | Yes (`.trc` 1.1, `.asc`) |
+| DBC import (signals of non-CANopen messages) | not stated | Yes (no multiplexed signals) |
+| Check of a PDO configuration before the write | not stated | Yes (length, EDS, COB-ID, transmission type) |
 | PDO decoding from the device's real configuration | Yes | Yes |
 | PDO configuration window (read, edit, write) | Yes | Yes |
 | Graphical display of process data over time | Yes | Yes |
@@ -126,7 +134,8 @@ menu:
   history** writes 0 to 0x1003:00. On the simulator, **Raise EMCY** and
   **Reset EMCY** make the simulated node send one.
 - **Trace 1..4**: up to four trace tabs on one shared buffer, each with its
-  own filter, display mode and pause; save as CSV. With **Autoscroll** on,
+  own filter, display mode and pause; **Save trace...** writes CSV, PEAK
+  `.trc` (version 1.1) or Vector `.asc`. With **Autoscroll** on,
   the view follows the newest frame; scroll up (wheel, Page Up, Home) and
   it stops; scroll back to the end (or End) and it follows again. With
   Autoscroll off, the visible rows stay in place while new frames arrive.
@@ -142,7 +151,13 @@ menu:
   start it. The **Add signal** window can be moved, so that the plot stays
   visible.
 - **PDO configuration**: read the PDOs of a node, edit, enable or disable
-  them, save and load them from the library.
+  them, save and load them from the library. Under the editor, the **PDO
+  check** lists errors and warnings while you edit: more than 64 bits, an
+  object that is not in the EDS, not mappable or of another length, the
+  wrong access for the PDO direction, a COB-ID in a restricted range of
+  CiA 301 or used by another PDO, a reserved transmission type. With an
+  error, **Apply**
+  asks first and **Write anyway** writes it.
 - **Transmit list**: saved raw frames, sent once, periodically or on
   reception of a COB-ID.
 - **LSS**: switch state, inquire, fastscan, configure node-ID and bit
@@ -157,8 +172,13 @@ menu:
   **Export CSV...** and **Export JUnit XML...**. Nothing is written.
 
 **Log replay.** Choose **Log file (replay)** as the adapter and pick a
-CANoxide trace CSV or a candump log (`(1700000000.123456) can0 181#0102`).
-Connect loads the log (a log with bad lines asks first) and shows the
+CANoxide trace CSV, a candump log (`(1700000000.123456) can0 181#0102`), a
+PEAK `.trc` file (versions 1.0 to 2.1, with `$COLUMNS`) or a Vector `.asc`
+file (hex or decimal base, absolute or relative time). The format is found
+from the content of the file, not from its name. Records that are no
+classic CAN frame (CAN FD frames, error frames, status and event lines)
+are skipped; the status bar gives their count. Continuous logging stays
+CSV. Connect loads the log (a log with bad lines asks first) and shows the
 transport bar: play / pause, step, speed (0.25x to 16x or as fast as
 possible), loop and a time scrubber. Every view works on the replayed
 frames as on a live bus; nothing is sent. `canoxide-cli --adapter replay
@@ -174,6 +194,14 @@ frames as on a live bus; nothing is sent. `canoxide-cli --adapter replay
   grid, in the value list beside it (edit, delete), in the decoded text of
   the trace and as the **User signal** source of the Graph. They may overlap
   the PDO-mapped signals.
+- **Import DBC...** (Messages toolbar and File menu): the messages and
+  signals of a DBC file become user signals. A dialog shows what the file
+  gives and what is skipped (multiplexed signals, float64, IDs that are not
+  CAN IDs); **Add** keeps the existing signals, **Replace all signals of
+  these IDs** first removes the user signals of the imported IDs. The DBC
+  start bit is used as it is (Intel: the least significant bit; Motorola:
+  the most significant bit in the DBC bit numbering). The file is read as
+  UTF-8, else as Windows-1252.
 - **Find similar bits.** Select one bit (or use a 1-bit user signal) and
   rank every bit of the trace buffer, or of the loaded log up to the replay
   cursor, by how often it equals the reference (match) or its inverse
@@ -220,7 +248,9 @@ transfer included), OD dump, NMT, SYNC, raw frames, a bounded bus monitor,
 PDO read/enable/set/map, heartbeat, value watch, LSS, DCF
 save/restore/compare, the EDS check (`check`, JUnit XML for CI), the
 error history (`emcy history`, `emcy clear`), `store` and
-`restore-defaults`, and a `shell` that keeps one session open. Output is
+`restore-defaults`, `dbc info`, and a `shell` that keeps one session open.
+`pdo set` and `pdo map` run the PDO check first and stop on an error
+unless `--force` is given. Output is
 JSON (JSON Lines for `monitor`, `watch` and `shell`); `--text` gives
 tables. The simulator is the default adapter, and `--listen-only` refuses
 every command that transmits.

@@ -15,6 +15,25 @@ download files and their SHA-256 checksums.
   Network view and in the command-line tool.
 - `THIRD-PARTY-NOTICES.txt` with the licences of the Rust crates and fonts
   in the program.
+- **PEAK and Vector trace files:** log replay reads PEAK `.trc` files
+  (versions 1.0 to 2.1, `$COLUMNS` included) and Vector `.asc` files (hex
+  or decimal base, absolute or relative time). Records that are no classic
+  CAN frame (CAN FD, error frames, events) are skipped and counted. The
+  format is found from the content. **Save trace...** writes CSV, `.trc`
+  version 1.1 or `.asc`.
+- **Import DBC:** the messages and signals of a DBC file become user
+  signals (Messages view and File menu). Add them, or replace all signals
+  of the imported IDs. Multiplexed signals are skipped and counted.
+  `canoxide-cli dbc info` shows what an import gives.
+- **PDO check:** the PDO editor lists errors and warnings while you edit
+  (length over 64 bits, an object that is not in the EDS or not mappable,
+  a reserved or duplicate COB-ID, a reserved transmission type). With an
+  error, Apply asks before it writes. `canoxide-cli pdo set` and `pdo map`
+  stop with exit code 2 (kind `pdo_check`) unless `--force` is given.
+
+### Changed
+
+- The **Save CSV...** button of the trace is now **Save trace...**.
 
 ## 0.4.0 (2026-11-20)
 

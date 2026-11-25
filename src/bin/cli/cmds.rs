@@ -12,6 +12,8 @@ use canoxide::canopen::pdo::{
     configs_from_od, extract_bits, parse_map_entry, parse_pdo_name, plan_change, plan_enable, plan_enable_all, MapEntry, NodePdoConfig, PdoChange,
     PdoConfig, PdoKind, PdoReadOptions, PdoReadTask, DEFAULT_PDO_SCAN_STOP, MAX_PDOS,
 };
+use canoxide::canopen::pdocheck::{self, OtherPdo};
+use canoxide::signals::RawKind;
 use canoxide::canopen::sdo::{SdoError, SdoRequest, StartOptions, TransferMode, MAX_BLOCK_SIZE};
 use canoxide::canopen::task::{ReadsTask, SdoStep, SdoTask, StepsReport, StepsTask, TaskResult};
 use canoxide::canopen::types::{self, format_value, hex_bytes, le_u64, parse_int, parse_text, DataType, DisplayMode, Value as TValue};
@@ -395,6 +397,7 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, pos: &[String], a: &Args, out: &mut d
         "eds info" => eds_info(pos),
         "eds objects" => eds_objects(pos),
         "eds pdos" => eds_pdos(ctx, pos),
+        "dbc info" => dbc_info(pos),
         "scan" => scan(ctx, pos, a),
         "info" => info(ctx, pos, a),
         "sdo read" => sdo_read(ctx, pos, a),
@@ -412,7 +415,7 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, pos: &[String], a: &Args, out: &mut d
         "pdo enable" => pdo_enable(ctx, pos, true),
         "pdo disable" => pdo_enable(ctx, pos, false),
         "pdo set" => pdo_set(ctx, pos, a),
-        "pdo map" => pdo_map(ctx, pos),
+        "pdo map" => pdo_map(ctx, pos, a),
         "heartbeat set" => heartbeat_set(ctx, pos, a),
         "watch" => watch(ctx, pos, a, out),
         n if n.starts_with("lss ") => lss(ctx, &n[4..], pos, a),
@@ -485,6 +488,49 @@ fn eds_info(pos: &[String]) -> CmdResult {
         "file_info": kv(&od.file_info),
         "device_info": kv(&od.device_info),
         "warnings": od.warnings,
+    }))
+}
+
+fn dbc_info(pos: &[String]) -> CmdResult {
+    max_args(pos, 1)?;
+    let path = arg(pos, 0, "<file>")?;
+    let imp = canoxide::dbc::load(Path::new(path)).map_err(|e| CliError::new("file", e))?;
+    let messages: Vec<Value> = imp
+        .messages
+        .iter()
+        .map(|m| {
+            let sigs: Vec<Value> = m
+                .signals
+                .iter()
+                .map(|s| {
+                    json!({
+                        "name": s.name,
+                        "start_bit": s.start_bit,
+                        "bits": s.bits,
+                        "byte_order": if s.big_endian { "motorola" } else { "intel" },
+                        "kind": match s.kind { RawKind::Unsigned => "unsigned", RawKind::Signed => "signed", RawKind::Float => "float32" },
+                        "factor": s.factor,
+                        "offset": s.offset,
+                        "unit": s.unit,
+                    })
+                })
+                .collect();
+            json!({
+                "id": if m.extended { hex32(m.id) } else { cob(m.id) },
+                "extended": m.extended,
+                "name": m.name,
+                "dlc": m.dlc,
+                "signals": sigs,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "file": path,
+        "messages": messages,
+        "message_count": imp.messages.len(),
+        "signals": imp.signal_count(),
+        "multiplexed": imp.multiplexed,
+        "skipped": imp.skipped,
     }))
 }
 
@@ -937,15 +983,37 @@ fn pdo_enable(ctx: &mut Ctx, pos: &[String], enable: bool) -> CmdResult {
     finish_steps(&rep, m)
 }
 
-fn pdo_change(ctx: &mut Ctx, name: &str, change: PdoChange) -> CmdResult {
+/// The saved PDO configurations of the library devices (`pdo read
+/// --device`), for the COB-ID comparison of the PDO check.
+fn known_pdos(ctx: &Ctx) -> Vec<OtherPdo> {
+    let Some(lib) = &ctx.lib else { return Vec::new() };
+    let mut out = Vec::new();
+    for d in &lib.devices {
+        if let Ok(Some(cfg)) = lib.load_pdo_config(&d.name) {
+            out.extend(cfg.pdos.into_iter().map(|config| OtherPdo { node: d.node_id, config }));
+        }
+    }
+    out
+}
+
+fn pdo_change(ctx: &mut Ctx, name: &str, change: PdoChange, force: bool) -> CmdResult {
     let (k, n) = pdo_name(name)?;
     let node = ctx.node;
     let before = read_one_pdo(ctx, k, n)?;
     let after = change.apply(&before);
+    let od = ctx.dict();
+    let findings = pdocheck::check(node, &after, od.as_deref(), &known_pdos(ctx));
+    let fj = serde_json::to_value(&findings).unwrap_or_default();
+    if pdocheck::has_errors(&findings) && !force {
+        let errs: Vec<String> = findings.iter().filter(|f| f.is_error()).map(|f| f.message.clone()).collect();
+        return Err(CliError::new("pdo_check", format!("{}: the PDO check found {} error(s): {}; nothing written (--force writes anyway)", after.short_name(), errs.len(), errs.join("; ")))
+            .with_detail(json!({"node": node, "pdo": after.short_name(), "after": pdo_json(&after, od.as_deref()), "findings": fj})));
+    }
     let steps = plan_change(node, &before, &change);
     let rep = run_steps(ctx, "change PDO", steps, true)?;
-    let od = ctx.dict();
     let mut m = Map::new();
+    m.insert("findings".into(), fj);
+    m.insert("forced".into(), json!(force && pdocheck::has_errors(&findings)));
     m.insert("node".into(), json!(node));
     m.insert("pdo".into(), json!(before.short_name()));
     m.insert("before".into(), pdo_json(&before, od.as_deref()));
@@ -972,10 +1040,10 @@ fn pdo_set(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
     if change.cob_id.is_some_and(|c| c > 0x1FFF_FFFF) {
         return Err(CliError::usage("--cob-id above 0x1FFFFFFF"));
     }
-    pdo_change(ctx, name, change)
+    pdo_change(ctx, name, change, a.flag("force"))
 }
 
-fn pdo_map(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
+fn pdo_map(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
     let name = arg(pos, 0, "<rpdoN|tpdoN>")?;
     if pos.len() < 2 {
         return Err(CliError::usage("missing argument: <index:sub:bits>..."));
@@ -988,7 +1056,7 @@ fn pdo_map(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
     if bits > 64 || mapping.len() > 64 {
         return Err(CliError::usage(format!("mapping has {bits} bits; a PDO holds at most 64")));
     }
-    pdo_change(ctx, name, PdoChange { mapping: Some(mapping), ..Default::default() })
+    pdo_change(ctx, name, PdoChange { mapping: Some(mapping), ..Default::default() }, a.flag("force"))
 }
 
 fn heartbeat_set(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {

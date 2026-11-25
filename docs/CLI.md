@@ -93,7 +93,7 @@ for `monitor` and `watch` a final result line. `--text` gives tables and
 |---|---|---|
 | 0 | ok | |
 | 1 | device or protocol error | `abort` (SDO abort, with `abort_code`), `timeout`, `protocol`, `device`, `cancelled` |
-| 2 | usage error | `usage`, `listen_only`, `file`, `eds` |
+| 2 | usage error | `usage`, `listen_only`, `file`, `eds`, `pdo_check` (the PDO check found an error; nothing written) |
 | 3 | adapter or driver error | `adapter` |
 
 A `shell` run returns the code of the last failed line, else 0.
@@ -104,9 +104,10 @@ A `shell` run returns the code of the last failed line, else 0.
 |---|---|
 | info | `help [--json]`, `version`, `adapters` |
 | EDS files | `eds info`, `eds objects`, `eds pdos` |
+| DBC files | `dbc info` |
 | network | `scan`, `info`, `nmt`, `sync`, `send`, `monitor`, `heartbeat set` |
 | objects | `sdo read`, `sdo write`, `od dump`, `watch` |
-| PDOs | `pdo read`, `pdo enable`, `pdo disable`, `pdo set`, `pdo map` |
+| PDOs | `pdo read`, `pdo enable`, `pdo disable`, `pdo set [--force]`, `pdo map [--force]` |
 | LSS | `lss switch-global`, `lss switch-selective`, `lss inquire-identity`, `lss inquire-node-id`, `lss set-node-id`, `lss set-bit-timing`, `lss activate-bit-timing`, `lss store`, `lss fastscan`, `lss identify` |
 | DCF | `dcf save`, `dcf restore`, `dcf compare` |
 | EDS check | `check [--from] [--to] [--junit out.xml] [--all]` |
@@ -214,6 +215,29 @@ default).
 change follows the CiA 301 sequence: PDO invalid, write, valid again.
 `steps.done` lists each SDO write.
 
+Before it writes, `pdo set` and `pdo map` run the PDO check on the new
+configuration: against the EDS (`--eds` or `--device`) and against the
+PDOs saved in the library (`pdo read --device`). Errors: more than 64
+bits, more than 64 entries (more than 8 when every entry is a whole number
+of bytes), an entry of 0 bits, an object that is not in the EDS, a length
+that differs from the data type, a COB-ID in a restricted range of CiA 301
+(0x000-0x07F, 0x101-0x180, 0x581-0x5FF, 0x601-0x67F, 0x6E0-0x6FF,
+0x701-0x7FF), transmission type 252 or 253 (RTR only) on an RPDO.
+Warnings: no EDS, an object with `PDOMapping=0`, the wrong access for the
+direction, the default COB-ID of another node, a COB-ID that another known
+PDO uses, transmission type 241-251 (reserved). The COB-ID checks run only
+for a valid PDO. An error stops the command with exit code 2:
+
+```
+> canoxide-cli pdo set tpdo1 --cob-id 5A0
+{"detail":{"after":{...},"findings":[{"code":"cob_restricted","message":"COB-ID 0x5A0 is in the restricted range 0x581..0x5FF of CiA 301","severity":"error"}],"node":1,"pdo":"tpdo1"},"error":{"abort_code":null,"kind":"pdo_check","message":"tpdo1: the PDO check found 1 error(s): ...; nothing written (--force writes anyway)"},"ok":false}
+```
+
+`--force` writes anyway. The result of every change has `findings` (the
+warnings, and the errors with `--force`) and `forced` (true when an error
+was overruled). The 64-bit limit of `pdo map` stays: `--force` does not
+write a mapping of more than 64 bits.
+
 ### 9. Save and compare a DCF
 
 ```
@@ -305,6 +329,20 @@ specific. A node that refuses aborts with 0x08000020 (exit 1). Both are
 refused with `--listen-only`, as `check`, `emcy history` and `emcy clear`
 are.
 
+### 14. What a DBC import gives
+
+```
+> canoxide-cli dbc info bus.dbc
+{"command":"dbc info","file":"bus.dbc","message_count":1,"messages":[{"dlc":4,"extended":false,"id":"0x3A0","name":"Level","signals":[{"bits":16,"byte_order":"intel","factor":0.5,"kind":"unsigned","name":"depth","offset":-10.0,"start_bit":8,"unit":"mm"}]}],"multiplexed":1,"ok":true,"signals":1,"skipped":["Level signal Mux: multiplexed signals are not supported"]}
+```
+
+`dbc info` reads the file only (no bus). It gives the messages and
+signals that the GUI's **Import DBC...** turns into user signals, and what
+it skips: multiplexed signals, float64 signals and IDs that are not CAN
+IDs. The start bit is the DBC start bit (Intel: the least significant bit;
+Motorola: the most significant bit). A file that cannot be read fails with
+kind `file`.
+
 ### Text output
 
 ```
@@ -366,12 +404,22 @@ kind `usage`, before the file is opened.
 canoxide-cli --adapter replay --file trace.csv monitor
 canoxide-cli --adapter replay --file can0.log --speed 1 monitor --class tpdo --text
 canoxide-cli --adapter replay --file trace.csv --eds dev.eds watch pdo:0x2001:0
+canoxide-cli --adapter replay --file bench.trc monitor --class tpdo
+canoxide-cli --adapter replay --file bench.asc monitor --text
 ```
 
 - Formats: the trace CSV that CANoxide writes (the continuous log and
-  "Save as CSV", also the files of 0.2.0; data in hex or decimal) and
+  "Save trace...", also the files of 0.2.0; data in hex or decimal),
   candump logs (`(1700000000.123456) can0 123#DEADBEEF`, `#R` for a remote
-  frame). The format comes from the first line.
+  frame), PEAK `.trc` files (versions 1.0 to 1.3 and 2.0 to 2.1, also 3.0;
+  `$COLUMNS` is read; without `$FILEVERSION` the file is 1.0) and Vector
+  `.asc` files (`base hex|dec`, `timestamps absolute|relative`, an `x`
+  after an extended ID, `r` for a remote frame). The format comes from the
+  first line, not from the file name.
+- Records that are no classic CAN frame (CAN FD frames, error frames,
+  status, event and trigger lines, `TxRq`) are skipped and counted; the
+  count goes to stderr. They are not bad lines. A file with only such
+  records fails with kind `file`.
 - Time: the first frame is at 0 s; `t` is the log time. A time that goes
   back is raised to the one before it.
 - `--speed max` (the default) reads the file as fast as possible;

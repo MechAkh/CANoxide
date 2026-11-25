@@ -1313,10 +1313,13 @@ fn s22_pdo_failed_apply_banner() {
         .expect("entry field");
     set_text(&mut h, field, "1000:0:8");
     click_role(&mut h, Role::Button, "Add entry");
-    let before = buttons(&h, "Apply");
+    // The PDO check finds an error (the length; not mappable per the EDS is
+    // a warning): Apply asks first.
+    assert!(has_exact(&h, "PDO check: 1 error(s), 1 warning(s)"), "findings\nUI:\n{}", dump(&h));
     let before_close = buttons(&h, "Close");
     click_role(&mut h, Role::Button, "Apply");
-    click_new_button(&mut h, "Apply", &before);
+    assert!(has_exact(&h, "PDO mapping has errors"), "error question\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Write anyway");
     wait_for(&mut h, "apply failed", |h| has(h, "PDO change failed"));
     click_new_button(&mut h, "Close", &before_close);
     assert!(has(&h, "TPDO1 was left disabled on the device after a failed step: "), "banner\nUI:\n{}", dump(&h));
@@ -2626,6 +2629,95 @@ fn s30_replay_connect_and_scrub() {
     click(&mut h, "Disconnect");
     wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect") && !has(h, "Replay: nothing is sent"));
     assert!(!has_exact(&h, "Replay speed"));
+}
+
+/// Replay of a PEAK .trc file (version 1.1): it loads with its format in
+/// the status; the records that are no frame are counted, not bad lines.
+#[test]
+fn s35_replay_peak_trc() {
+    let t = TempDir::new("replay_trc");
+    let log = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join("peak_v11.trc");
+    let mut h = build(&t.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    {
+        let app = h.state_mut();
+        app.settings.adapter = AdapterKind::Replay;
+        app.settings.replay_file = log.display().to_string();
+    }
+    step2(&mut h);
+    assert!(has_exact(&h, "peak_v11.trc"), "file name in the connection bar\nUI:\n{}", dump(&h));
+    click(&mut h, "Connect");
+    wait_for(&mut h, "replay connected", |h| has(h, "Replay: nothing is sent") && has_exact(h, "frame 0 / 4"));
+    assert!(!has(&h, "Log file with bad lines"));
+    assert!(has(&h, "Connected: log file peak_v11.trc (PEAK trace 1.1, 4 frames"), "status text\nUI:\n{}", dump(&h));
+    assert!(has(&h, "2 other record(s) skipped"), "skipped count\nUI:\n{}", dump(&h));
+    pick(&mut h, "Replay speed", "As fast as possible");
+    click(&mut h, "Play");
+    wait_for(&mut h, "end of the log", |h| has_exact(h, "frame 4 / 4") && replay_info(h).is_some_and(|i| !i.playing));
+    step2(&mut h);
+    assert_eq!(trace_counts(&h).0, 4);
+    click(&mut h, "Disconnect");
+    wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect"));
+}
+
+/// Import DBC: the dialog lists the import; Add stores the signals, which
+/// then decode in the Messages view and in the decoded text.
+#[test]
+fn s36_import_dbc() {
+    let tmp = TempDir::new("s36");
+    let dbc = tmp.0.join("level.dbc");
+    std::fs::write(
+        &dbc,
+        "VERSION \"\"\n\nBU_: Node\n\nBO_ 928 Level: 4 Node\n SG_ depth : 8|16@1+ (1,0) [0|65535] \"mm\" Node\n SG_ count : 7|8@0+ (1,0) [0|255] \"\" Node\n\nBO_ 2147484672 Ext: 8 Node\n SG_ Mux M : 0|8@1+ (1,0) [0|0] \"\" Node\n",
+    )
+    .unwrap();
+    let mut h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    only(&mut h, vec![Tab::Messages]);
+    analysis_frames(&mut h, 40);
+    step2(&mut h);
+    assert!(has_exact(&h, "Import DBC..."), "toolbar button\nUI:\n{}", dump(&h));
+    let before = buttons(&h, "Add");
+    h.state_mut().open_dbc(&dbc);
+    step2(&mut h);
+    assert!(has_exact(&h, "Import DBC"), "dialog\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "Replace all signals of these IDs"));
+    click_new_button(&mut h, "Add", &before);
+    assert!(h.state().an.dbc.is_none(), "dialog still open\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().an.usigs.len(), 2);
+    assert!(has(&h, "DBC level.dbc: "), "status\nUI:\n{}", dump(&h));
+    // The decoded text of a new frame (depth = 0x2710, count = byte 0).
+    let mut f = crate::can::CanFrame::new(0x3A0, &[5, 0x10, 0x27, 0]);
+    f.timestamp_us = 3_000_000;
+    let d = crate::canopen::decode::decode(&f, &h.state().decode_ctx);
+    assert!(d.text.contains("depth=10000 mm") && d.text.contains("count=5"), "decoded {:?}", d.text);
+    // The Messages detail (newest depth = 1000 + 39 * 7 = 1273).
+    let r = top_by_label(&h, "3A0", None);
+    pointer_click(&mut h, r);
+    assert!(has_exact(&h, "depth = 1273 mm"), "value list\nUI:\n{}", dump(&h));
+}
+
+/// The PDO view checks the mapping in the editor: 4 x 16 + 8 = 72 bits is
+/// an error that shows under the editor.
+#[test]
+fn s37_pdo_check_finding() {
+    let tmp = TempDir::new("s37");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Pdo");
+    connect(&mut h);
+    only(&mut h, vec![Tab::Pdo]);
+    click_containing(&mut h, "Read PDOs");
+    wait_for(&mut h, "PDOs read", |h| has(h, "PDO(s) read"));
+    let t1 = top_by_label(&h, "TPDO1", Some(Role::Label));
+    let edit = button_on_row(&h, t1, "Edit");
+    click_id(&mut h, edit);
+    step2(&mut h);
+    assert!(has_exact(&h, "PDO check: no finding"), "clean PDO\nUI:\n{}", dump(&h));
+    let mut m = vec![crate::canopen::pdo::MapEntry { index: 0x6401, sub: 1, bits: 16 }; 4];
+    m.push(crate::canopen::pdo::MapEntry { index: 0x6000, sub: 1, bits: 8 });
+    h.state_mut().pdo.editor.as_mut().expect("editor").new.mapping = m;
+    step2(&mut h);
+    assert!(has_exact(&h, "PDO check: 1 error(s), 0 warning(s)"), "finding count\nUI:\n{}", dump(&h));
+    assert!(has(&h, "72 bits"), "finding text\nUI:\n{}", dump(&h));
 }
 
 /// The visible part of the Object dictionary leaf, in accesskit units:

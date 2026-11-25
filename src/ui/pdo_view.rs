@@ -6,6 +6,7 @@
 use super::{theme, App, TaskOwner};
 use crate::bus::BusCommand;
 use crate::canopen::pdo::{parse_map_entry, plan_apply, plan_enable, plan_enable_all, MapEntry, NodePdoConfig, PdoConfig, PdoKind, PdoReadOptions, PdoReadTask};
+use crate::canopen::pdocheck::{self, Finding, OtherPdo, Severity};
 use crate::canopen::task::{StepsReport, StepsTask, TaskResult};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -115,10 +116,24 @@ impl App {
         let n = steps.len();
         let ask = self.settings.confirm_pdo_apply;
         self.confirm_then(ask, "Apply PDO change", format!("{label} on node {node}: {n} SDO write(s). The node may stop or change its PDOs."), "Apply", false, move |app| {
-            app.pdo.applying = Some((node, after));
-            app.pdo.last = Some(format!("{label}: writing..."));
-            app.start_task(TaskOwner::PdoApply, Box::new(StepsTask::new(label, steps, true)));
+            app.start_pdo_steps(node, label, steps, after);
         });
+    }
+
+    fn start_pdo_steps(&mut self, node: u8, label: String, steps: Vec<crate::canopen::task::SdoStep>, after: Vec<PdoConfig>) {
+        self.pdo.applying = Some((node, after));
+        self.pdo.last = Some(format!("{label}: writing..."));
+        self.start_task(TaskOwner::PdoApply, Box::new(StepsTask::new(label, steps, true)));
+    }
+
+    /// The PDO check of the configuration in the editor: against the EDS of
+    /// the node (library) and the PDOs read or loaded in this view.
+    pub(crate) fn pdo_findings(&mut self) -> Vec<Finding> {
+        let Some(e) = &self.pdo.editor else { return Vec::new() };
+        let (node, cfg) = (e.node, e.new.clone());
+        let others: Vec<OtherPdo> = self.pdo.configs.values().flat_map(|c| c.pdos.iter().map(move |p| OtherPdo { node: c.node, config: p.clone() })).collect();
+        let od = self.od_of_node(node);
+        pdocheck::check(node, &cfg, od.as_deref(), &others)
     }
 
     fn pdo_set_valid(&mut self, node: u8, cfg: &PdoConfig, enable: bool) {
@@ -157,7 +172,17 @@ impl App {
         let Some(all) = self.pdo.configs.get(&node).map(|c| c.pdos.clone()) else { return };
         let steps = plan_apply(node, &old, &new);
         let after: Vec<PdoConfig> = all.into_iter().map(|c| if c.kind == new.kind && c.number == new.number { new.clone() } else { c }).collect();
-        self.run_pdo_steps(node, format!("Apply {}", new.label()), steps, after);
+        let label = format!("Apply {}", new.label());
+        let errors: Vec<String> = self.pdo_findings().into_iter().filter(Finding::is_error).map(|f| f.text()).collect();
+        if errors.is_empty() || steps.is_empty() {
+            self.run_pdo_steps(node, label, steps, after);
+            return;
+        }
+        // Always asked, also when the normal confirmation is off.
+        let text = format!("The PDO check found {} error(s) in {} of node {node}:\n\n{}\n\nThe node will likely refuse the change, or it breaks the network. {} SDO write(s).", errors.len(), new.label(), errors.join("\n"), steps.len());
+        self.confirm_then(true, "PDO mapping has errors", text, "Write anyway", true, move |app| {
+            app.start_pdo_steps(node, label, steps, after);
+        });
     }
 
     pub(crate) fn on_pdo_task(&mut self, owner: TaskOwner, result: TaskResult) {
@@ -392,6 +417,7 @@ impl App {
         let p = theme::pal(ui);
         let can_send = self.can_send();
         let hint = self.send_hint();
+        let findings = self.pdo_findings();
         let Some(e) = self.pdo.editor.as_mut() else { return };
         ui.separator();
         let mut apply = false;
@@ -488,6 +514,17 @@ impl App {
                     close = true;
                 }
             });
+            ui.add_space(4.0);
+            if findings.is_empty() {
+                ui.label(egui::RichText::new("PDO check: no finding").color(p.text_secondary));
+            } else {
+                let n_err = findings.iter().filter(|f| f.is_error()).count();
+                ui.strong(format!("PDO check: {n_err} error(s), {} warning(s)", findings.len() - n_err));
+                for f in &findings {
+                    let c = if f.severity == Severity::Error { p.error } else { p.warning };
+                    ui.colored_label(c, f.text());
+                }
+            }
         });
         if close {
             self.pdo.editor = None;

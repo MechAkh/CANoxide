@@ -506,6 +506,72 @@ fn cli_replay_of_a_log_file() {
     fails(&["--adapter", "replay", "--file", dir.join("missing.log").to_str().unwrap(), "monitor"], 2, "file");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+fn fixture(name: &str) -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data").join(name).display().to_string()
+}
+
+#[test]
+fn cli_replay_of_peak_and_vector_files() {
+    // PEAK .trc version 1.1: 4 frames (2 other records skipped).
+    let f = fixture("peak_v11.trc");
+    let r = run(&["--adapter", "replay", "--file", &f, "monitor"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let v = r.lines();
+    assert_eq!(v.len(), 5, "{}", r.out);
+    assert_eq!(v[4]["frames"], 4);
+    // Vector .asc (hex base, absolute time): 4 frames (4 other records).
+    let f = fixture("vector_hex.asc");
+    let r = run(&["--adapter", "replay", "--file", &f, "monitor"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let v = r.lines();
+    assert_eq!(v.len(), 5, "{}", r.out);
+    assert_eq!(v[0]["id"], "0x123");
+    assert_eq!(v[0]["data"], "DE AD");
+    assert_eq!(v[4]["frames"], 4);
+}
+
+#[test]
+fn cli_dbc_info() {
+    let dir = temp("dbc");
+    let dbc = dir.join("bus.dbc");
+    std::fs::write(
+        &dbc,
+        "VERSION \"\"\n\nBO_ 928 Level: 4 Node\n SG_ depth : 8|16@1+ (0.5,-10) [0|0] \"mm\" Node\n SG_ count : 7|8@0- (1,0) [0|0] \"\" Node\n SG_ Mux M : 24|8@1+ (1,0) [0|0] \"\" Node\n",
+    )
+    .unwrap();
+    let v = ok(&["dbc", "info", dbc.to_str().unwrap()]);
+    assert_eq!(v["message_count"], 1, "{v}");
+    assert_eq!(v["signals"], 2, "{v}");
+    assert_eq!(v["multiplexed"], 1, "{v}");
+    let m = &v["messages"][0];
+    assert_eq!(m["name"], "Level");
+    assert_eq!(m["extended"], false);
+    assert_eq!(m["signals"][0]["byte_order"], "intel");
+    assert_eq!(m["signals"][0]["factor"], 0.5);
+    assert_eq!(m["signals"][1]["byte_order"], "motorola");
+    assert_eq!(m["signals"][1]["kind"], "signed");
+    assert_eq!(v["skipped"].as_array().unwrap().len(), 1, "{v}");
+    fails(&["dbc", "info", dir.join("missing.dbc").to_str().unwrap()], 2, "file");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_pdo_check_stops_a_bad_write() {
+    // 0x5A0 is in the SDO response range: an error, nothing is written.
+    let v = fails(&["pdo", "set", "tpdo1", "--cob-id", "5A0"], 2, "pdo_check");
+    let f = v["detail"]["findings"].as_array().expect("findings");
+    assert!(f.iter().any(|x| x["code"] == "cob_restricted" && x["severity"] == "error"), "{v}");
+    // --force writes it anyway.
+    let v = ok(&["pdo", "set", "tpdo1", "--cob-id", "5A0", "--force"]);
+    assert_eq!(v["forced"], true, "{v}");
+    assert_eq!(v["after"]["cob_id"], "0x5A0", "{v}");
+    assert!(v["findings"].as_array().is_some_and(|f| !f.is_empty()), "{v}");
+    // A clean change has no finding.
+    let v = ok(&["pdo", "set", "tpdo1", "--event", "50"]);
+    assert_eq!(v["forced"], false, "{v}");
+    assert_eq!(v["findings"].as_array().map(|f| f.len()), Some(0), "{v}");
+}
 #[test]
 fn cli_check_against_the_simulator() {
     let dir = temp("check");

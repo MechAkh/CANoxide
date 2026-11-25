@@ -1,0 +1,14 @@
+;$FILEVERSION=2.0
+;$STARTTIME=45986.4166666667
+;$COLUMNS=N,O,T,I,d,l,D
+;
+;   Hand-written test file for CANoxide (file version 2.0): a data
+;   frame, an RTR frame (RR), an error frame (ER), a status line (ST),
+;   a CAN FD frame (FD) and an extended data frame.
+;
+      1         0.000 DT     0181 Rx 2  01 02
+      2         1.250 RR     0601 Rx 2
+      3         2.000 ER          Rx 0  04 00 00 00 00
+      4         3.000 ST          Rx    00 00 00 08
+      5         4.000 FD     0123 Rx 12 00 01 02 03 04 05 06 07 08 09 0A 0B
+      6         5.500 DT 1CFFAABB Tx 1  42
