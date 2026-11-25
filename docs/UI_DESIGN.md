@@ -1,6 +1,6 @@
 # CANoxide 0.5 — UI design specification
 
-This file describes the user interface of CANoxide 0.5.0, built in Rust
+This file describes the user interface of CANoxide 0.5.1, built in Rust
 with `egui` 0.31, `egui_dock` 0.16 and `egui_plot`. It is complete on its
 own; the design canvas only illustrates it. All sizes are egui logical
 points at UI scale 100 % (1 pt = 1 px at 100 % Windows scaling). Hex
@@ -376,7 +376,7 @@ Every icon-only button has a tooltip with the action and its shortcut.
 
 Top to bottom (window 1280 × 800):
 
-1. **Native window title bar** (OS). Title `CANoxide 0.5.0` (`CANoxide`
+1. **Native window title bar** (OS). Title `CANoxide 0.5.1` (`CANoxide`
    and the version), the app icon.
 2. **Menu bar** — height 28, fill bg.frame, bottom 1 px border.subtle.
    Items `File  View  Settings  Help`, `body`, padding 10, hover fill
