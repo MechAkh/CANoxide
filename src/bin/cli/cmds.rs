@@ -6,8 +6,8 @@ use canoxide::can::kvaser::KvaserAdapter;
 use canoxide::can::pcan::PcanAdapter;
 use canoxide::can::slcan;
 use canoxide::can::sontheim::SontheimAdapter;
-use canoxide::can::{CanAdapter, CanFrame};
-use canoxide::canopen::decode::{DecodeContext, MsgClass, SdoBlockTracker};
+use canoxide::can::{CanAdapter, CanFrame, CanId};
+use canoxide::canopen::decode::{j1939_id, DecodeContext, J1939Tracker, MsgClass, SdoBlockTracker};
 use canoxide::canopen::lss::{bit_timing_index, LssCommand, LssError, LssIdentity, LssResult, DEFAULT_LSS_TIMEOUT_MS};
 use canoxide::canopen::nmt::{nmt_frame, sync_frame, NmtCommand};
 use canoxide::canopen::pdo::{
@@ -47,6 +47,18 @@ pub fn hex32(v: u32) -> String {
 
 fn cob(v: u32) -> String {
     format!("0x{v:03X}")
+}
+
+/// The text form of a raw CAN ID in the JSON output: `0x` and the shared
+/// form (3 digits standard, 8 digits extended).
+fn can_id_text(c: CanId) -> String {
+    format!("0x{c}")
+}
+
+/// A raw CAN ID argument (the shared parser: above 7FF, 8 digits or a
+/// trailing `x` is extended).
+fn parse_can_id(s: &str, what: &str) -> Result<CanId, CliError> {
+    CanId::parse(s).map_err(|e| CliError::usage(format!("{what}: {e}")))
 }
 
 fn arg<'a>(pos: &'a [String], i: usize, what: &str) -> Result<&'a str, CliError> {
@@ -402,6 +414,7 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, pos: &[String], a: &Args, out: &mut d
         "eds objects" => eds_objects(pos),
         "eds pdos" => eds_pdos(ctx, pos),
         "dbc info" => dbc_info(pos),
+        "j1939 decode-id" => j1939_decode_id(pos),
         "scan" => scan(ctx, pos, a),
         "info" => info(ctx, pos, a),
         "sdo read" => sdo_read(ctx, pos, a),
@@ -544,7 +557,7 @@ fn dbc_info(pos: &[String]) -> CmdResult {
                 })
                 .collect();
             json!({
-                "id": if m.extended { hex32(m.id) } else { cob(m.id) },
+                "id": can_id_text(CanId::new(m.id, m.extended)),
                 "extended": m.extended,
                 "name": m.name,
                 "dlc": m.dlc,
@@ -799,8 +812,10 @@ fn nmt(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
 }
 
 fn send(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
-    let id = parse_hex_u32(arg(pos, 0, "<id>")?, "id")?;
-    let ext = a.flag("ext");
+    // --ext and the text form agree: either makes the ID extended.
+    let cid = parse_can_id(arg(pos, 0, "<id>")?, "id")?;
+    let cid = CanId::new(cid.id, cid.extended || a.flag("ext"));
+    let (id, ext) = (cid.id, cid.extended);
     let rtr = a.flag("rtr");
     let data = if pos.len() > 1 {
         if rtr {
@@ -841,7 +856,40 @@ fn send(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
             }
         }
     }
-    Ok(json!({"id": cob(id), "ext": ext, "rtr": rtr, "dlc": f.dlc, "data": hex_bytes(f.payload()), "sent": count, "period_ms": period}))
+    Ok(json!({"id": can_id_text(cid), "ext": ext, "rtr": rtr, "dlc": f.dlc, "data": hex_bytes(f.payload()), "sent": count, "period_ms": period}))
+}
+
+/// The J1939 fields of a 29-bit ID.
+fn j1939_json(j: &canoxide::j1939::J1939Id) -> Value {
+    json!({"pgn": j.pgn(), "name": canoxide::j1939::pgn_name(j.pgn()), "priority": j.priority, "sa": j.sa, "da": j.da()})
+}
+
+/// `j1939 decode-id <id>`: the J1939 fields of a 29-bit ID (no bus).
+fn j1939_decode_id(pos: &[String]) -> CmdResult {
+    max_args(pos, 1)?;
+    let s = pos.first().ok_or_else(|| CliError::usage("give the 29-bit ID, for example 0x18FEF100"))?;
+    let t = s.trim();
+    let id = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(h) => u32::from_str_radix(h, 16).ok(),
+        None => u32::from_str_radix(t, 16).ok(),
+    };
+    let Some(id) = id.filter(|&i| i <= 0x1FFF_FFFF) else {
+        return Err(CliError::usage(format!("'{s}' is not a 29-bit ID (hex, 0 to 1FFFFFFF)")));
+    };
+    let sp = canoxide::j1939::J1939Id::split(id);
+    let Some(j) = canoxide::j1939::J1939Id::parse(id, true) else {
+        return Ok(json!({"id": format!("0x{id:08X}"), "j1939": false, "edp": sp.edp, "dp": sp.dp, "note": "EDP and DP both set: not a J1939 ID"}));
+    };
+    let mut v = j1939_json(&j);
+    let m = v.as_object_mut().expect("object");
+    m.insert("id".into(), json!(format!("0x{id:08X}")));
+    m.insert("j1939".into(), json!(true));
+    m.insert("pdu".into(), json!(if j.is_pdu1() { 1 } else { 2 }));
+    m.insert("pf".into(), json!(j.pf));
+    m.insert("ps".into(), json!(j.ps));
+    m.insert("edp".into(), json!(j.edp));
+    m.insert("dp".into(), json!(j.dp));
+    Ok(v)
 }
 
 fn class_name(c: MsgClass) -> &'static str {
@@ -855,6 +903,7 @@ fn class_name(c: MsgClass) -> &'static str {
         MsgClass::SdoReq | MsgClass::SdoResp => "sdo",
         MsgClass::Heartbeat => "heartbeat",
         MsgClass::Lss => "lss",
+        MsgClass::J1939 => "j1939",
         MsgClass::Other => "other",
     }
 }
@@ -895,7 +944,7 @@ fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdR
     let node_f = a.get("filter-node").map(|s| parse_node(s, "--filter-node")).transpose()?;
     let classes: Option<Vec<String>> = a.get("class").map(|s| s.split(',').map(|c| c.trim().to_ascii_lowercase()).collect());
     if let Some(cs) = &classes {
-        let known = ["nmt", "sync", "emcy", "time", "tpdo", "rpdo", "sdo", "heartbeat", "lss", "other"];
+        let known = ["nmt", "sync", "emcy", "time", "tpdo", "rpdo", "sdo", "heartbeat", "lss", "j1939", "other"];
         if let Some(bad) = cs.iter().find(|c| !known.contains(&c.as_str())) {
             return Err(CliError::usage(format!("--class: '{bad}' is not one of {}", known.join(" "))));
         }
@@ -903,7 +952,8 @@ fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdR
     let id_range = match a.get("id") {
         Some(s) => {
             let (lo, hi) = s.split_once('-').unwrap_or((s, s));
-            Some((parse_hex_u32(lo, "--id")?, parse_hex_u32(hi, "--id")?))
+            // The CanId order: every standard ID before every extended ID.
+            Some((parse_can_id(lo, "--id")?, parse_can_id(hi, "--id")?))
         }
         None => None,
     };
@@ -911,8 +961,10 @@ fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdR
     if let Some(od) = ctx.dict() {
         nodes.insert(ctx.node, od);
     }
-    let dctx = DecodeContext::new(nodes);
+    let mut dctx = DecodeContext::new(nodes);
+    dctx.set_j1939(!a.flag("ext-raw"));
     let mut tracker = SdoBlockTracker::new();
+    let mut j1939 = J1939Tracker::new();
     let text = ctx.text;
     let s = ctx.session()?;
     let t0 = Instant::now();
@@ -931,20 +983,21 @@ fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdR
         if replay && dur.is_some_and(|d| f.timestamp_us as u128 > d.as_micros()) {
             break;
         }
-        let d = tracker.decode(&f, &dctx);
+        let mut d = tracker.decode(&f, &dctx);
+        j1939.annotate(&f, &dctx, &mut d);
         if node_f.is_some_and(|x| d.node != Some(x)) {
             continue;
         }
         if classes.as_ref().is_some_and(|cs| !cs.iter().any(|c| c == class_name(d.class))) {
             continue;
         }
-        if id_range.is_some_and(|(lo, hi)| f.id < lo || f.id > hi) {
+        if id_range.is_some_and(|(lo, hi)| f.can_id() < lo || f.can_id() > hi) {
             continue;
         }
         n += 1;
         let t = f.timestamp_us as f64 / 1e6;
-        let id = if f.extended { format!("0x{:08X}", f.id) } else { cob(f.id) };
-        let v = json!({
+        let id = can_id_text(f.can_id());
+        let mut v = json!({
             "t": (t * 1e6).round() / 1e6,
             "dir": f.dir.label(),
             "id": id,
@@ -957,6 +1010,9 @@ fn monitor(ctx: &mut Ctx, pos: &[String], a: &Args, out: &mut dyn Write) -> CmdR
             "node": d.node,
             "text": d.text,
         });
+        if let Some(j) = j1939_id(&f, &dctx) {
+            v["j1939"] = j1939_json(&j);
+        }
         let tl = text.then(|| format!("{t:>11.6} {} {id:>10} [{}] {:<23} {:<10} {}", f.dir.label(), f.dlc, hex_bytes(f.payload()), d.label, d.text));
         line(out, &v, tl);
     }

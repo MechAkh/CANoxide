@@ -14,8 +14,13 @@ pub const TXLIST_FILE: &str = "txlist.json";
 pub enum Trigger {
     Manual,
     Periodic { period_ms: u64 },
-    /// Send when a frame with this identifier is received.
-    OnRx { cob_id: u32, extended: bool },
+    /// Send when a frame with this identifier (number and format) is
+    /// received.
+    OnRx {
+        cob_id: u32,
+        #[serde(default)]
+        extended: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +29,7 @@ pub struct TxEntry {
     pub key: u64,
     pub name: String,
     pub id: u32,
+    #[serde(default)]
     pub extended: bool,
     pub rtr: bool,
     pub dlc: u8,

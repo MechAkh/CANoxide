@@ -4,8 +4,9 @@
 //! Read: `BO_ <id> <name>: <dlc> <node>` (bit 31 of the ID set = a 29-bit
 //! ID; the bit is removed), `SG_ <name> : <start>|<length>@<order><sign>
 //! (<factor>,<offset>) [<min>|<max>] "<unit>" <receivers>` and
-//! `SIG_VALTYPE_ <id> <signal> : <1|2>;`. All other keywords (`VAL_`,
-//! `BA_`, `CM_`, ...) are ignored. Multiplexed signals (`M`, `m<n>`) are
+//! `SIG_VALTYPE_ <id> <signal> : <1|2>;`. `BA_ "ProtocolType" "J1939"` and
+//! the `VFrameFormat` value `J1939PG` mark a J1939 file (`DbcImport::j1939`).
+//! All other keywords (`VAL_`, other `BA_`, `CM_`, ...) are ignored. Multiplexed signals (`M`, `m<n>`) are
 //! skipped and counted.
 //!
 //! Bit numbering: a DBC start bit is the LSB for `@1` (Intel) and the MSB in
@@ -14,7 +15,7 @@
 //! the start bit is taken over unchanged for both byte orders.
 
 use crate::signals::RawKind;
-use crate::usersig::{UserSignal, COLOURS, MAX_USER_SIGNALS};
+use crate::usersig::{MatchMode, UserSignal, COLOURS, MAX_USER_SIGNALS};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
@@ -36,6 +37,9 @@ pub struct DbcImport {
     pub skipped: Vec<String>,
     /// Multiplexed signals (also in `skipped`).
     pub multiplexed: usize,
+    /// The file is a J1939 database: `BA_ "ProtocolType" "J1939"`, or a
+    /// message with the `VFrameFormat` value `J1939PG`.
+    pub j1939: bool,
 }
 
 impl DbcImport {
@@ -46,6 +50,24 @@ impl DbcImport {
     /// All signals of all messages, in file order.
     pub fn signals(&self) -> impl Iterator<Item = &UserSignal> {
         self.messages.iter().flat_map(|m| m.signals.iter())
+    }
+
+    /// The signals of the extended messages match by the J1939 PGN. The
+    /// source address of the message ID becomes the SA filter; SA 254 (the
+    /// usual placeholder of a J1939 DBC) matches any source address.
+    pub fn set_pgn_match(&mut self, on: bool) {
+        for m in self.messages.iter_mut().filter(|m| m.extended) {
+            for s in &mut m.signals {
+                if on {
+                    s.match_mode = MatchMode::J1939Pgn;
+                    let sa = (m.id & 0xFF) as u8;
+                    s.source = (sa != crate::j1939::NULL_ADDR).then_some(sa);
+                } else {
+                    s.match_mode = MatchMode::Exact;
+                    s.source = None;
+                }
+            }
+        }
     }
 }
 
@@ -71,6 +93,9 @@ pub fn parse(text: &str) -> Result<DbcImport, String> {
     let mut valtype: HashMap<(u32, String), u8> = HashMap::new();
     let mut in_string = false;
     let mut seen_bo = false;
+    // The index of "J1939PG" in the VFrameFormat enum, and the values used.
+    let mut vframe_j1939: Option<usize> = None;
+    let mut vframe_values: Vec<usize> = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let n = i + 1;
         let quotes = line.matches('"').count() - line.matches("\\\"").count();
@@ -129,10 +154,30 @@ pub fn parse(text: &str) -> Result<DbcImport, String> {
                     _ => out.skipped.push(format!("line {n}: SIG_VALTYPE_ not understood")),
                 }
             }
+            "BA_DEF_" if l.contains("\"VFrameFormat\"") => {
+                // BA_DEF_ BO_ "VFrameFormat" ENUM "StandardCAN","ExtendedCAN",...,"J1939PG";
+                if let Some((_, list)) = l.split_once("ENUM") {
+                    let names: Vec<&str> = list.trim_end_matches(';').split(',').map(|s| s.trim().trim_matches('"')).collect();
+                    vframe_j1939 = names.iter().position(|s| *s == "J1939PG");
+                }
+                cur = None;
+            }
+            "BA_" => {
+                let t: Vec<&str> = l.trim_end_matches(';').split_whitespace().collect();
+                match t.get(1).copied() {
+                    Some("\"ProtocolType\"") if t.get(2).is_some_and(|v| v.trim_matches('"') == "J1939") => out.j1939 = true,
+                    Some("\"VFrameFormat\"") => vframe_values.extend(t.last().and_then(|v| v.parse::<usize>().ok())),
+                    _ => {}
+                }
+                cur = None;
+            }
             "" => {}
             // An indented line that is not SG_ ends the message.
             _ => cur = None,
         }
+    }
+    if vframe_j1939.is_some_and(|k| vframe_values.contains(&k)) {
+        out.j1939 = true;
     }
     if !seen_bo {
         return Err("no message (BO_) found; is this a DBC file?".to_string());
@@ -405,6 +450,28 @@ SIG_VALTYPE_ 2566844672 D : 2;
         std::fs::write(&p, b"BO_ 100 A: 8 N\n SG_ T : 0|8@1+ (1,0) [0|0] \"\xB0C\" N\n").unwrap();
         assert_eq!(load(&p).unwrap().messages[0].signals[0].unit, "°C");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn j1939_detection_and_pgn_match() {
+        assert!(!parse(DBC).unwrap().j1939);
+        let base = "BO_ 2364540158 PgA: 8 N\n SG_ V : 24|16@1+ (1,0) [0|0] \"\" N\n\nBO_ 2566843937 PgB: 8 N\n SG_ W : 0|8@1+ (1,0) [0|0] \"\" N\n\nBO_ 100 Std: 8 N\n SG_ X : 0|8@1+ (1,0) [0|0] \"\" N\n";
+        let p = format!("{base}BA_DEF_  \"ProtocolType\" STRING ;\nBA_ \"ProtocolType\" \"J1939\";\n");
+        assert!(parse(&p).unwrap().j1939);
+        let v = format!("{base}BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\nBA_ \"VFrameFormat\" BO_ 2364540158 3;\n");
+        assert!(parse(&v).unwrap().j1939);
+        let e = format!("{base}BA_DEF_ BO_ \"VFrameFormat\" ENUM \"StandardCAN\",\"ExtendedCAN\",\"reserved\",\"J1939PG\";\nBA_ \"VFrameFormat\" BO_ 2364540158 1;\n");
+        assert!(!parse(&e).unwrap().j1939, "ExtendedCAN only");
+        let mut i = parse(&p).unwrap();
+        i.set_pgn_match(true);
+        // 2364540158 = 0x8CF004FE: SA 254 = any; 0x98FEEE21: SA 33.
+        assert_eq!((sig(&i, "V").match_mode, sig(&i, "V").source), (MatchMode::J1939Pgn, None));
+        assert_eq!((sig(&i, "W").match_mode, sig(&i, "W").source), (MatchMode::J1939Pgn, Some(33)));
+        assert_eq!(sig(&i, "X").match_mode, MatchMode::Exact, "a standard ID stays exact");
+        assert!(sig(&i, "V").matches_frame(0x0CF0_0400, true, true));
+        assert!(!sig(&i, "W").matches_frame(0x18FE_EE00, true, true));
+        i.set_pgn_match(false);
+        assert_eq!((sig(&i, "V").match_mode, sig(&i, "W").source), (MatchMode::Exact, None));
     }
 
     #[test]

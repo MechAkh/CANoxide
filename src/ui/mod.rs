@@ -13,6 +13,7 @@ mod dock;
 mod drive_view;
 mod edscheck_view;
 mod emcy_view;
+mod j1939_view;
 mod gpu;
 mod graph;
 mod library_view;
@@ -29,6 +30,7 @@ mod trace_view;
 mod tx_view;
 #[cfg(test)]
 mod ui_tests;
+mod update_notice;
 
 use crate::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
 use crate::can::slcan::SlcanTarget;
@@ -111,6 +113,9 @@ struct Boot {
     library: Option<Library>,
     layout: Option<DockState<Tab>>,
     notes: Vec<String>,
+    /// Asks GitHub for the latest release (update.rs); the UI tests inject
+    /// their own, so no test makes a request.
+    update_fetch: crate::update::Fetcher,
 }
 
 impl Boot {
@@ -130,6 +135,7 @@ impl Boot {
                 library: None,
                 layout: None,
                 notes: Vec::new(),
+                update_fetch: default_update_fetch(),
             },
         }
     }
@@ -137,7 +143,7 @@ impl Boot {
     /// Load settings, library and layout from a given data folder (the UI
     /// tests use a temporary folder; the app uses `CANoxide_data`).
     fn load_dir(dir: PathBuf) -> Boot {
-        let mut b = Boot { data_dir: None, data_mode: None, data_error: None, settings: Settings::default(), library: None, layout: None, notes: Vec::new() };
+        let mut b = Boot { data_dir: None, data_mode: None, data_error: None, settings: Settings::default(), library: None, layout: None, notes: Vec::new(), update_fetch: default_update_fetch() };
         b.data_dir = Some(dir.clone());
         if let Err(e) = library::ensure_writable(&dir) {
             b.data_error = Some(format!("The data folder {} is not writable: {e}. Nothing is saved.", dir.display()));
@@ -224,6 +230,10 @@ pub(crate) struct App {
     /// Node ID used when no device is active.
     free_node: u8,
     decode_ctx: DecodeContext,
+    /// The J1939 transport state of the trace texts, and whether 29-bit
+    /// frames are J1939 (Settings: Extended IDs are).
+    j1939_tp: crate::canopen::decode::J1939Tracker,
+    j1939_on: bool,
     trace: TraceStore,
     traces: BTreeMap<u8, trace_view::TraceView>,
     /// Per-COB-ID statistics of the Messages view (fed with the trace).
@@ -237,6 +247,7 @@ pub(crate) struct App {
     lssv: lss_view::LssView,
     dcfv: dcf_view::DcfView,
     emv: emcy_view::EmcyView,
+    j1v: j1939_view::J1939View,
     ecv: edscheck_view::EdsCheckView,
     /// The program download wizard.
     pdl: progdl_view::ProgDlView,
@@ -273,6 +284,8 @@ pub(crate) struct App {
     status_error: bool,
     dialog: Option<Dialog>,
     next_tag: u64,
+    /// The update notice (update_notice.rs).
+    upd: update_notice::UpdateState,
 }
 
 impl App {
@@ -306,6 +319,8 @@ impl App {
             selected_eds: None,
             free_node: 1,
             decode_ctx: DecodeContext::default(),
+            j1939_tp: crate::canopen::decode::J1939Tracker::new(),
+            j1939_on: true,
             od: od::OdView::default(),
             net: network::NetView::default(),
             graph: graph::GraphView::default(),
@@ -314,6 +329,7 @@ impl App {
             lssv: lss_view::LssView::default(),
             dcfv: dcf_view::DcfView::default(),
             emv: emcy_view::EmcyView::default(),
+            j1v: j1939_view::J1939View::default(),
             ecv: edscheck_view::EdsCheckView::default(),
             pdl: progdl_view::ProgDlView::default(),
             drv: drive_view::DriveView::default(),
@@ -337,6 +353,7 @@ impl App {
             status_error: false,
             dialog: None,
             next_tag: 1,
+            upd: update_notice::UpdateState::new(boot.update_fetch),
         };
         if !boot.notes.is_empty() {
             app.set_status(boot.notes.join("; "), true);
@@ -361,6 +378,7 @@ impl App {
         if app.settings.connect_on_start {
             app.connect();
         }
+        app.start_update_check(&cc.egui_ctx);
         app
     }
 
@@ -580,7 +598,15 @@ impl App {
         for (n, p) in pdos {
             self.decode_ctx.set_node_pdos(n, p);
         }
+        let j1939 = self.settings.ext_protocol == crate::settings::ExtProtocol::J1939;
+        if j1939 != self.j1939_on {
+            // Off: the J1939 view and the transport state start again.
+            self.j1939_tp.reset();
+        }
+        self.j1939_on = j1939;
+        self.decode_ctx.set_j1939(j1939);
         self.bus.send(BusCommand::SetDecodeNodes(map));
+        self.bus.send(BusCommand::SetJ1939(j1939));
     }
 
     pub(crate) fn send_sdo(&mut self, node: u8, req: SdoRequest, pending: od::Pending) {
@@ -641,7 +667,7 @@ impl App {
                     Some(Ok(od)) => Some(od),
                     _ => None,
                 };
-                (AdapterChoice::Sim { node_id, od }, 0)
+                (AdapterChoice::Sim { node_id, od, extended_demo: self.settings.sim_extended_demo }, 0)
             }
         };
         self.bus.send(BusCommand::SetSdoTimeout(self.settings.sdo_timeout_ms));
@@ -776,6 +802,7 @@ impl App {
                     }
                     self.set_status(format!("Connected: {text}"), false);
                     self.connect_text = text;
+                    self.j1939_tp.reset();
                     self.rebuild_decode();
                     self.graph.on_connected(&self.bus);
                     self.msgs.reset();
@@ -796,7 +823,8 @@ impl App {
                 BusEvent::Info(s) => self.set_status(s, false),
                 BusEvent::Frames(v) => {
                     for f in v {
-                        let d = decode(&f, &self.decode_ctx);
+                        let mut d = decode(&f, &self.decode_ctx);
+                        self.j1939_tp.annotate(&f, &self.decode_ctx, &mut d);
                         self.msgs.on_frame(&f, &d);
                         self.an.sparks.on_frame(&f);
                         self.trace.push(f, d);
@@ -834,6 +862,7 @@ impl App {
                 }
                 BusEvent::ReplaySnapshot { msgs, tail } => {
                     self.trace.clear();
+                    self.j1939_tp.reset();
                     self.an.sparks.clear();
                     for (f, d) in tail {
                         self.an.sparks.on_frame(&f);
@@ -923,7 +952,9 @@ impl App {
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        egui::menu::bar(ui, |ui| {
+        #[cfg(test)]
+        let panel = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        let r = egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.add_enabled(self.lib.is_some(), egui::Button::new("Open EDS...").shortcut_text("Ctrl+O")).clicked() {
                     ui.close_menu();
@@ -1006,6 +1037,11 @@ impl App {
                     ui.close_menu();
                     self.diag_request = true;
                 }
+                if ui.button("Check for updates...").on_hover_text("Asks GitHub for the newest release; nothing is downloaded").clicked() {
+                    ui.close_menu();
+                    let ctx = ui.ctx().clone();
+                    self.manual_update_check(&ctx);
+                }
                 if ui.button("About CANoxide").clicked() {
                     ui.close_menu();
                     self.about = true;
@@ -1021,8 +1057,13 @@ impl App {
                     self.settings.theme = next;
                     self.mark_settings();
                 }
+                self.update_pill(ui);
             });
         });
+        #[cfg(test)]
+        theme::toolbar_rects::push_bar(ui.ctx(), panel, r.response.rect);
+        #[cfg(not(test))]
+        let _ = r;
     }
 
     /// The connection bar: the state and the bus load at the right end
@@ -1433,6 +1474,7 @@ impl App {
         self.library_dialogs(ctx);
         self.progdl_dialog(ctx);
         self.dash_dialog(ctx);
+        self.update_window(ctx);
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -1467,6 +1509,19 @@ impl App {
     }
 }
 
+/// The fetcher of the update check: the real request in the app, an error
+/// in the unit tests (no test may make a network request).
+fn default_update_fetch() -> crate::update::Fetcher {
+    #[cfg(not(test))]
+    {
+        crate::update::default_fetcher()
+    }
+    #[cfg(test)]
+    {
+        Arc::new(|| Err("Update check: no network in the tests".to_string()))
+    }
+}
+
 /// Open a folder in the Explorer (only on a user click).
 fn open_folder(p: &std::path::Path) {
     #[cfg(windows)]
@@ -1483,6 +1538,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.apply_style(ctx);
         self.poll_bus();
+        self.poll_update();
         self.drive_tick();
         self.shortcuts(ctx);
 

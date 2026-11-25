@@ -57,6 +57,54 @@ fn same_frames(a: &[CanFrame], b: &[CanFrame]) {
     }
 }
 
+/// Standard and extended frames with the same numbers (made up).
+fn same_number_mix() -> Vec<CanFrame> {
+    let mut v = Vec::new();
+    for (i, id) in [0x123u32, 0x7FF, 0x0].into_iter().enumerate() {
+        let t = i as u64 * 2000;
+        v.push(frame(id, &[i as u8, 1], t));
+        let mut e = frame(id, &[i as u8, 2], t + 1000);
+        e.extended = true;
+        v.push(e);
+    }
+    v
+}
+
+#[test]
+fn csv_keeps_format_of_same_number() {
+    let fr = same_number_mix();
+    let text = csv_of(&fr, DisplayMode::Hex);
+    assert!(text.contains(",123,0,") && text.contains(",00000123,1,"), "{text}");
+    let log = parse_log(&text, None).unwrap();
+    assert_eq!(log.bad_lines, 0, "{:?}", log.errors);
+    same_frames(&fr, &log.frames);
+}
+
+#[test]
+fn candump_keeps_format_of_same_number() {
+    let fr = same_number_mix();
+    let text: String = fr.iter().map(|f| candump_line(f, 1000) + "\n").collect();
+    assert!(text.contains(" 123#") && text.contains(" 00000123#"), "{text}");
+    let log = parse_log(&text, None).unwrap();
+    assert_eq!(log.bad_lines, 0, "{:?}", log.errors);
+    same_frames(&fr, &log.frames);
+}
+
+#[test]
+fn replay_statistics_keep_same_number_apart() {
+    let fr = same_number_mix();
+    let ctx = DecodeContext::default();
+    let mut r = Rebuild::new(fr.len(), fr.last().unwrap().timestamp_us, 100, 250);
+    assert!(r.step(&fr, &ctx, None, 1000));
+    let s: &MsgStats = &r.msgs;
+    assert_eq!(s.len(), 6);
+    let mut keys: Vec<_> = s.entries().map(|e| e.key).collect();
+    keys.sort();
+    let text: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+    assert_eq!(text, vec!["000", "123", "7FF", "00000000", "00000123", "000007FF"]);
+    assert!(s.entries().all(|e| e.count == 1));
+}
+
 // ------------------------------------------------------------- parsers
 
 #[test]

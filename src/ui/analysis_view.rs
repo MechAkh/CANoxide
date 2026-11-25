@@ -6,7 +6,7 @@
 use super::{messages_view, theme, App};
 use crate::analysis::{self, BitMatch, BitRef, CmpOp, FindSettings, FindSignal, FindStep, HistFilter, HistRow, SparkSet, Sparkline};
 use crate::bus::BusCommand;
-use crate::can::CanFrame;
+use crate::can::{CanFrame, CanId};
 use crate::msgstats::MsgKey;
 use crate::signals::{RawKind, SignalDef};
 use crate::usersig::{self, fmt_value, UserSignal, COLOURS, MAX_USER_SIGNALS, USER_SIGNALS_FILE};
@@ -37,11 +37,13 @@ pub(crate) struct SigDraft {
 pub(crate) struct DbcPending {
     pub file: String,
     pub import: crate::dbc::DbcImport,
+    /// The check box "Match by PGN (J1939)", preset from the detection.
+    pub pgn: bool,
 }
 
 impl SigDraft {
     pub(crate) fn new(sig: UserSignal, edit: Option<usize>) -> SigDraft {
-        let cob_text = format!("{:X}", sig.cob_id);
+        let cob_text = CanId::new(sig.cob_id, sig.extended).to_string();
         SigDraft { sig, cob_text, edit, error: None }
     }
 }
@@ -209,11 +211,7 @@ pub(crate) fn colour32(c: [u8; 3]) -> egui::Color32 {
 }
 
 fn key_text(k: MsgKey) -> String {
-    if k.extended {
-        format!("{:08X}", k.id)
-    } else {
-        format!("{:03X}", k.id)
-    }
+    k.to_string()
 }
 
 fn bit_text(bit: u32) -> String {
@@ -268,6 +266,10 @@ impl App {
             s.kind = RawKind::Signed;
         }
         s.colour = COLOURS[(self.an.usigs.len() + 1) % COLOURS.len()];
+        // A J1939 row: match the PGN from any source address by default.
+        if self.decode_ctx.j1939() && crate::j1939::J1939Id::parse(key.id, key.extended).is_some() {
+            s.match_mode = usersig::MatchMode::J1939Pgn;
+        }
         self.an.draft = Some(SigDraft::new(s, None));
     }
 
@@ -288,9 +290,9 @@ impl App {
 
     /// Check and store the dialog's signal. `Err`: the text for the dialog.
     pub(crate) fn save_draft(&mut self, d: &mut SigDraft) -> Result<(), String> {
-        let t = d.cob_text.trim();
-        let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
-        d.sig.cob_id = u32::from_str_radix(t, 16).map_err(|_| "COB-ID: hex value".to_string())?;
+        let c = CanId::parse_with_flag(&d.cob_text, d.sig.extended).map_err(|e| format!("COB-ID: {e}"))?;
+        d.sig.cob_id = c.id;
+        d.sig.extended = c.extended;
         d.sig.name = d.sig.name.trim().to_string();
         d.sig.unit = d.sig.unit.trim().to_string();
         d.sig.validate()?;
@@ -344,6 +346,31 @@ impl App {
                         ui.checkbox(&mut d.sig.extended, "Ext");
                     });
                     ui.end_row();
+                    if d.sig.extended {
+                        ui.label("J1939");
+                        ui.vertical(|ui| {
+                            let mut pgn = d.sig.match_mode == usersig::MatchMode::J1939Pgn;
+                            if ui
+                                .checkbox(&mut pgn, "Match the PGN (any source address)")
+                                .on_hover_text("Take every frame with the J1939 PGN of this ID: any priority, any source address, PDU1 any destination. With two or more source addresses the signal takes each frame in time order. Off: the exact ID.")
+                                .changed()
+                            {
+                                d.sig.match_mode = if pgn { usersig::MatchMode::J1939Pgn } else { usersig::MatchMode::Exact };
+                            }
+                            if pgn {
+                                ui.horizontal(|ui| {
+                                    let mut only = d.sig.source.is_some();
+                                    if ui.checkbox(&mut only, "Only source address").changed() {
+                                        d.sig.source = only.then(|| crate::j1939::J1939Id::split(d.sig.cob_id).sa);
+                                    }
+                                    if let Some(sa) = d.sig.source.as_mut() {
+                                        ui.add(egui::DragValue::new(sa).range(0..=253));
+                                    }
+                                });
+                            }
+                        });
+                        ui.end_row();
+                    }
                     ui.label("Start bit");
                     ui.add(egui::DragValue::new(&mut d.sig.start_bit).range(0..=63));
                     ui.end_row();
@@ -429,7 +456,8 @@ impl App {
         match crate::dbc::load(path) {
             Ok(import) => {
                 let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.an.dbc = Some(DbcPending { file, import });
+                let pgn = import.j1939;
+                self.an.dbc = Some(DbcPending { file, import, pgn });
             }
             Err(e) => self.set_status(format!("DBC not read: {e}"), true),
         }
@@ -437,15 +465,17 @@ impl App {
 
     /// Merge the pending import into the user signals.
     pub(crate) fn apply_dbc(&mut self, replace: bool) {
-        let Some(d) = self.an.dbc.take() else { return };
+        let Some(mut d) = self.an.dbc.take() else { return };
+        d.import.set_pgn_match(d.pgn);
         let (v, rep) = crate::dbc::merge(&self.an.usigs, &d.import, replace);
         self.set_user_signals(v);
         self.set_status(format!("DBC {}: {}", d.file, rep.text()), false);
     }
 
     pub(crate) fn dbc_dialog(&mut self, ctx: &egui::Context) {
-        let Some(d) = &self.an.dbc else { return };
         let warn_c = if self.is_dark() { theme::DARK.warning } else { theme::LIGHT.warning };
+        let Some(d) = &mut self.an.dbc else { return };
+        let has_ext = d.import.messages.iter().any(|m| m.extended && !m.signals.is_empty());
         let screen = ctx.screen_rect();
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !ctx.memory(|m| m.any_popup_open());
         let mut open = true;
@@ -474,6 +504,12 @@ impl App {
                             ui.label(egui::RichText::new(s).small());
                         }
                     });
+                }
+                if has_ext {
+                    let hint = if d.import.j1939 { "The file is a J1939 database." } else { "The file is not marked as a J1939 database." };
+                    ui.checkbox(&mut d.pgn, "Match by PGN (J1939)").on_hover_text(format!(
+                        "{hint} On: the signals of the 29-bit messages take every frame with the same PGN, of the source address in the message ID (SA 254 in the file: any source address). Off: the exact ID."
+                    ));
                 }
                 ui.label(egui::RichText::new("Add keeps the user signals you have and skips a signal whose name is already used on the same ID. Replace first removes every user signal of the IDs in this file.").small());
                 ui.horizontal(|ui| {
@@ -817,15 +853,10 @@ impl App {
     fn find_reset(&mut self) {
         let mut ids = Vec::new();
         for part in self.an.find.ids_text.split([',', ' ', ';']).filter(|s| !s.trim().is_empty()) {
-            let t = part.trim();
-            let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
-            match u32::from_str_radix(t, 16) {
-                Ok(id) => {
-                    ids.push(MsgKey { id, extended: false });
-                    ids.push(MsgKey { id, extended: true });
-                }
-                Err(_) => {
-                    self.an.find.error = Some(format!("COB-ID {part}: hex value"));
+            match CanId::parse(part) {
+                Ok(id) => ids.push(id),
+                Err(e) => {
+                    self.an.find.error = Some(format!("COB-ID {part}: {e}"));
                     return;
                 }
             }

@@ -38,6 +38,26 @@ pub struct UserSignal {
     /// sRGB.
     #[serde(default = "default_colour")]
     pub colour: [u8; 3],
+    /// How frames are matched; a file without it means the exact ID.
+    #[serde(default)]
+    pub match_mode: MatchMode,
+    /// `J1939Pgn` only: take frames of this source address only (`None`:
+    /// any).
+    #[serde(default)]
+    pub source: Option<u8>,
+}
+
+/// How a user signal finds its frames.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    /// The exact ID and format.
+    #[default]
+    Exact,
+    /// A 29-bit ID: every frame with its J1939 PGN (any priority, any
+    /// source address unless `source` is set, PDU1 any destination). With
+    /// J1939 off, the exact ID.
+    J1939Pgn,
 }
 
 fn one() -> f64 {
@@ -64,11 +84,37 @@ impl UserSignal {
     /// A 1-bit unsigned signal at bit `k` of `cob_id` (a starting point for
     /// the dialog).
     pub fn new(name: impl Into<String>, cob_id: u32, extended: bool, start_bit: u32, bits: u32) -> UserSignal {
-        UserSignal { name: name.into(), cob_id, extended, start_bit, bits, big_endian: false, kind: RawKind::Unsigned, factor: 1.0, offset: 0.0, unit: String::new(), colour: default_colour() }
+        UserSignal {
+            name: name.into(),
+            cob_id,
+            extended,
+            start_bit,
+            bits,
+            big_endian: false,
+            kind: RawKind::Unsigned,
+            factor: 1.0,
+            offset: 0.0,
+            unit: String::new(),
+            colour: default_colour(),
+            match_mode: MatchMode::Exact,
+            source: None,
+        }
     }
 
+    /// The exact ID and format (the match without J1939).
     pub fn matches(&self, id: u32, extended: bool) -> bool {
         self.cob_id == id && self.extended == extended
+    }
+
+    /// Matched by the J1939 PGN (an extended signal in `J1939Pgn` mode).
+    pub fn by_pgn(&self) -> bool {
+        self.extended && self.match_mode == MatchMode::J1939Pgn
+    }
+
+    /// The match of a frame: by the PGN (and source address) when the
+    /// signal is in `J1939Pgn` mode and J1939 is on, else `matches`.
+    pub fn matches_frame(&self, id: u32, extended: bool, j1939_on: bool) -> bool {
+        crate::signals::id_matches(self.cob_id, self.extended, self.by_pgn().then_some(self.source), id, extended, j1939_on)
     }
 
     /// Check the fields; the error names the first bad one.
@@ -119,7 +165,11 @@ impl UserSignal {
 
     /// The Graph signal of this field.
     pub fn to_def(&self) -> SignalDef {
-        let source = SignalSource::Raw { cob_id: self.cob_id, extended: self.extended, start_bit: self.start_bit, bits: self.bits, raw_kind: self.kind, big_endian: self.big_endian };
+        let source = if self.by_pgn() {
+            SignalSource::J1939 { cob_id: self.cob_id, source: self.source, start_bit: self.start_bit, bits: self.bits, raw_kind: self.kind, big_endian: self.big_endian }
+        } else {
+            SignalSource::Raw { cob_id: self.cob_id, extended: self.extended, start_bit: self.start_bit, bits: self.bits, raw_kind: self.kind, big_endian: self.big_endian }
+        };
         let mut d = SignalDef::new(self.name.clone(), source);
         d.unit = self.unit.clone();
         d.scale = self.factor;

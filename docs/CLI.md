@@ -46,6 +46,9 @@ Read this before you use `--adapter pcan`, `canfox`, `kvaser` or `slcan`.
    download` (it stops and replaces the program of the node) and `drive
    command enable` (the drive can move) send nothing without `--yes`: they
    exit with code 2 and say what they would do.
+8. **No network.** The CLI never makes a network request; the update
+   check (one HTTPS GET to GitHub) is in the GUI only. An SLCAN adapter
+   over TCP connects only to the `host:port` that you give.
 
 On a real bus, act like a careful engineer: `scan` and `info` first, read
 before you write, and know what an NMT command does to a running machine.
@@ -109,6 +112,7 @@ A `shell` run returns the code of the last failed line, else 0.
 | info | `help [--json]`, `version`, `adapters` |
 | EDS files | `eds info`, `eds objects`, `eds pdos` |
 | DBC files | `dbc info` |
+| J1939 | `j1939 decode-id <id>` (no bus) |
 | network | `scan`, `info`, `nmt`, `sync`, `send`, `monitor`, `heartbeat set` |
 | objects | `sdo read`, `sdo write`, `od dump`, `watch` |
 | PDOs | `pdo read`, `pdo enable`, `pdo disable`, `pdo set [--force]`, `pdo map [--force]` |
@@ -122,6 +126,56 @@ A `shell` run returns the code of the last failed line, else 0.
 | scripting | `shell [--script file]` |
 
 `help --json` has the options and the output fields of each command.
+
+### Raw CAN IDs (11 and 29 bit)
+
+A standard (11-bit) and an extended (29-bit) frame with the same number are
+two different messages. `send <id>` and `monitor --id lo[-hi]` read an ID in
+hex (`0x` optional): a value above `7FF` is extended, a trailing `x`
+(`123x`) makes a small value extended, and 8 digits (`00000123`) are
+extended too. More than 29 bits is a usage error. `send --ext` still works
+and makes the ID extended.
+
+The output writes an ID as `0x` and 3 hex digits for a standard ID
+(`"id":"0x123"`) and 8 hex digits for an extended ID
+(`"id":"0x00000123"`, `"id":"0x18FEF100"`), with the separate flag `ext`
+(`send`, `monitor`) or `extended` (`dbc info`). An extended frame is never
+decoded as CANopen. `monitor` decodes it as J1939 (`"type":"J1939"`,
+`"class":"j1939"`, `"node"` = the source address), with `--ext-raw` as a
+raw frame (`"type":"Ext"`, `"class":"other"`); see J1939 below.
+
+`monitor --id` sorts every standard ID before every extended ID:
+`--id 180-1FF` holds standard frames only, `--id 18FEF100-18FEF1FF`
+extended frames only, `--id 0-1FFFFFFF` every frame.
+
+```
+> canoxide-cli send 18FEF100 "01 02"
+{"command":"send","data":"01 02","dlc":2,"ext":true,"id":"0x18FEF100","ok":true,"period_ms":null,"rtr":false,"sent":1}
+```
+
+### J1939 (receive only)
+
+`monitor` decodes every 29-bit frame as SAE J1939 unless `--ext-raw` is
+given. A J1939 frame gets the field `j1939` with `pgn`, `name` (the short
+name of the parameter group, or `null`), `priority`, `sa` (source
+address) and `da` (destination: the PDU1 address, else 255). Its `text`
+has the PGN, the priority, the destination and the decoded detail; the
+transport protocol (TP.CM / TP.DT, BAM and RTS/CTS) is followed, and the
+last packet adds `complete: PGN n NAME, k bytes` with the DM1 / DM2
+faults. `--class j1939` keeps only these frames. A frame with EDP and DP
+both set is not J1939 (`"type":"Ext"`). Nothing is sent: no address
+claim, no request, no CTS.
+
+`j1939 decode-id <id>` splits a 29-bit ID (hex, `0x` optional) without a
+bus: `id`, `j1939`, `pgn`, `name`, `priority`, `sa`, `da`, `pdu` (1 or 2),
+`pf`, `ps`, `edp`, `dp`. With EDP and DP both set the answer is
+`{"id", "j1939":false, "edp", "dp", "note"}`. More than 29 bits or no ID is
+a usage error.
+
+```
+> canoxide-cli j1939 decode-id 0x18FEF100
+{"command":"j1939 decode-id","da":255,"dp":false,"edp":false,"id":"0x18FEF100","j1939":true,"name":"CCVS","ok":true,"pdu":2,"pf":254,"pgn":65265,"priority":6,"ps":241,"sa":0}
+```
 
 Global options: `--adapter sim|pcan|canfox|kvaser|slcan|replay`, `--file log`,
 `--speed max|factor`, `--channel usb1..usb8` (PCAN), a net number (CANfox, default 105),
@@ -206,7 +260,8 @@ default).
 ```
 
 `t` is seconds from the open of the adapter. Filters: `--filter-node`,
-`--class heartbeat,emcy`, `--id 180-1FF`.
+`--class heartbeat,emcy`, `--id 180-1FF` (standard frames), `--id 18FEF100-18FEF1FF`
+(extended frames; see "Raw CAN IDs").
 
 ### 8. Read and change a PDO
 

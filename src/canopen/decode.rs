@@ -7,6 +7,7 @@ use super::types::{self, DataType, DisplayMode};
 use super::*;
 use crate::can::CanFrame;
 use crate::eds::ObjectDictionary;
+use crate::j1939::{J1939Id, TpReassembler, PGN_TP_CM, PGN_TP_DT};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -22,11 +23,13 @@ pub enum MsgClass {
     SdoReq,
     Heartbeat,
     Lss,
+    /// An extended frame decoded as SAE J1939 (setting "Extended IDs are").
+    J1939,
     Other,
 }
 
 impl MsgClass {
-    pub const ALL: [MsgClass; 11] = [
+    pub const ALL: [MsgClass; 12] = [
         MsgClass::Nmt,
         MsgClass::Sync,
         MsgClass::Emcy,
@@ -37,6 +40,7 @@ impl MsgClass {
         MsgClass::SdoResp,
         MsgClass::Heartbeat,
         MsgClass::Lss,
+        MsgClass::J1939,
         MsgClass::Other,
     ];
     pub fn label(self) -> &'static str {
@@ -51,11 +55,12 @@ impl MsgClass {
             MsgClass::SdoReq => "SDO req",
             MsgClass::Heartbeat => "Heartbeat",
             MsgClass::Lss => "LSS",
+            MsgClass::J1939 => "J1939",
             MsgClass::Other => "Other",
         }
     }
     pub fn bit(self) -> u16 {
-        1 << (MsgClass::ALL.iter().position(|&c| c == self).unwrap_or(10) as u16)
+        1 << (MsgClass::ALL.iter().position(|&c| c == self).unwrap_or(MsgClass::ALL.len() - 1) as u16)
     }
 }
 
@@ -97,7 +102,7 @@ pub fn classify(id: u32, extended: bool) -> (MsgClass, Option<u8>, String) {
 }
 
 /// Assigned dictionaries per node and the PDO lookup by COB-ID.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 ///
 /// The PDO lookup comes from the EDS defaults of each assigned node, unless
 /// a PDO configuration read from the device was set for the node
@@ -109,6 +114,14 @@ pub struct DecodeContext {
     pdos: HashMap<u32, (u8, PdoConfig)>,
     /// User signals (0.3): their values follow the decoded text.
     user: Arc<Vec<crate::usersig::UserSignal>>,
+    /// Extended frames are decoded as J1939 (on by default); off: raw.
+    j1939: bool,
+}
+
+impl Default for DecodeContext {
+    fn default() -> Self {
+        DecodeContext::new(HashMap::new())
+    }
 }
 
 fn put_pdo(pdos: &mut HashMap<u32, (u8, PdoConfig)>, node: u8, c: PdoConfig) {
@@ -125,7 +138,7 @@ fn put_pdo(pdos: &mut HashMap<u32, (u8, PdoConfig)>, node: u8, c: PdoConfig) {
 
 impl DecodeContext {
     pub fn new(nodes: HashMap<u8, Arc<ObjectDictionary>>) -> Self {
-        let mut c = DecodeContext { nodes, overrides: HashMap::new(), pdos: HashMap::new(), user: Arc::default() };
+        let mut c = DecodeContext { nodes, overrides: HashMap::new(), pdos: HashMap::new(), user: Arc::default(), j1939: true };
         c.rebuild();
         c
     }
@@ -180,6 +193,15 @@ impl DecodeContext {
         &self.user
     }
 
+    /// Decode extended frames as J1939 (true) or as raw frames.
+    pub fn set_j1939(&mut self, on: bool) {
+        self.j1939 = on;
+    }
+
+    pub fn j1939(&self) -> bool {
+        self.j1939
+    }
+
     /// The read PDO configuration set for `node`.
     pub fn node_pdos(&self, node: u8) -> Option<&[PdoConfig]> {
         self.overrides.get(&node).map(|v| v.as_slice())
@@ -212,20 +234,51 @@ impl DecodeContext {
 
 pub fn decode(f: &CanFrame, ctx: &DecodeContext) -> Decoded {
     let mut d = decode_frame(f, ctx);
-    if !f.rtr && !ctx.user.is_empty() {
-        for s in ctx.user.iter().filter(|s| s.matches(f.id, f.extended)) {
-            if let Some(t) = s.text(f.payload()) {
-                if !d.text.is_empty() {
-                    d.text.push_str(if d.text.ends_with(';') { " " } else { "; " });
-                }
-                d.text.push_str(&t);
-            }
-        }
-    }
+    push_user_text(f, ctx, &mut d.text);
     d
 }
 
+/// Append the values of the user signals that match `f`.
+fn push_user_text(f: &CanFrame, ctx: &DecodeContext, text: &mut String) {
+    if !f.rtr && !ctx.user.is_empty() {
+        for s in ctx.user.iter().filter(|s| s.matches_frame(f.id, f.extended, ctx.j1939)) {
+            if let Some(t) = s.text(f.payload()) {
+                if !text.is_empty() {
+                    text.push_str(if text.ends_with(';') { " " } else { "; " });
+                }
+                text.push_str(&t);
+            }
+        }
+    }
+}
+
+/// The Decoded text of a Messages row: `PGN n NAME  SA n` for a J1939
+/// frame, else the Trace text; with the user-signal values.
+pub fn row_text(f: &CanFrame, ctx: &DecodeContext) -> String {
+    match j1939_id(f, ctx) {
+        Some(j) => {
+            let mut t = format!("{}  SA {}", crate::j1939::pgn_text(j.pgn()), j.sa);
+            push_user_text(f, ctx, &mut t);
+            t
+        }
+        None => decode(f, ctx).text,
+    }
+}
+
+/// The J1939 fields of `f` when the context decodes it as J1939.
+pub fn j1939_id(f: &CanFrame, ctx: &DecodeContext) -> Option<J1939Id> {
+    if ctx.j1939 {
+        J1939Id::parse(f.id, f.extended)
+    } else {
+        None
+    }
+}
+
 fn decode_frame(f: &CanFrame, ctx: &DecodeContext) -> Decoded {
+    if let Some(j) = j1939_id(f, ctx) {
+        let text = if f.rtr { format!("{}  RTR", crate::j1939::pgn_text(j.pgn())) } else { crate::j1939::frame_text(&j, f.payload(), None) };
+        return Decoded { class: MsgClass::J1939, node: Some(j.sa), label: "J1939".to_string(), text };
+    }
     if !f.extended {
         if let Some((node, cfg)) = ctx.pdo(f.id) {
             let class = if cfg.kind == PdoKind::Tpdo { MsgClass::Tpdo } else { MsgClass::Rpdo };
@@ -265,7 +318,7 @@ fn decode_frame(f: &CanFrame, ctx: &DecodeContext) -> Decoded {
             }
         }
         MsgClass::Lss => super::lss::lss_text(f.id == COB_LSS_MASTER, d),
-        MsgClass::Other => String::new(),
+        MsgClass::J1939 | MsgClass::Other => String::new(),
     };
     Decoded { class, node, label, text }
 }
@@ -588,6 +641,45 @@ impl SdoBlockTracker {
             _ => {}
         }
         dec
+    }
+}
+
+/// Stateful J1939 decoder for the trace: a TP.DT shows "TP.DT n/N" and the
+/// last packet of a complete message its PGN, size and DM1/DM2 faults,
+/// which a single frame cannot tell. Feed it every frame in order (both
+/// directions).
+#[derive(Clone, Debug, Default)]
+pub struct J1939Tracker {
+    tp: TpReassembler,
+}
+
+impl J1939Tracker {
+    pub fn new() -> Self {
+        J1939Tracker::default()
+    }
+
+    pub fn reset(&mut self) {
+        self.tp.reset();
+    }
+
+    /// Decode one frame (like `decode`), with the transport state.
+    pub fn decode(&mut self, f: &CanFrame, ctx: &DecodeContext) -> Decoded {
+        let mut d = decode(f, ctx);
+        self.annotate(f, ctx, &mut d);
+        d
+    }
+
+    /// Replace the text of a J1939 transport frame in `d` (a `decode` or
+    /// `SdoBlockTracker::decode` result of `f`).
+    pub fn annotate(&mut self, f: &CanFrame, ctx: &DecodeContext, d: &mut Decoded) {
+        let Some(j) = j1939_id(f, ctx) else { return };
+        let step = self.tp.on_frame(f);
+        if f.rtr || !matches!(j.pgn(), PGN_TP_CM | PGN_TP_DT) {
+            return;
+        }
+        let mut text = crate::j1939::frame_text(&j, f.payload(), Some(&step));
+        push_user_text(f, ctx, &mut text);
+        d.text = text;
     }
 }
 

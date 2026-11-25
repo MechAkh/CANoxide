@@ -497,7 +497,7 @@ fn parse_candump(text: &str, progress: Option<&AtomicUsize>) -> ParsedLog {
 /// One candump line of a frame (for tests and tools).
 pub fn candump_line(f: &CanFrame, base_s: u64) -> String {
     let t = base_s * 1_000_000 + f.timestamp_us;
-    let id = if f.extended { format!("{:08X}", f.id) } else { format!("{:03X}", f.id) };
+    let id = f.can_id();
     let data: String = if f.rtr && f.dlc > 0 {
         format!("R{}", f.dlc)
     } else if f.rtr {
@@ -707,6 +707,10 @@ pub struct Rebuild {
     pub nodes: NodeTracker,
     pub network: NetworkOverview,
     pub load: BusLoad,
+    /// The J1939 view (fed when the context decodes J1939).
+    pub j1939: crate::j1939::J1939Monitor,
+    /// The J1939 transport state of the trace texts.
+    j1939_tp: crate::canopen::decode::J1939Tracker,
 }
 
 impl Rebuild {
@@ -721,6 +725,8 @@ impl Rebuild {
             nodes: NodeTracker::default(),
             network: NetworkOverview::new(),
             load: BusLoad::new(bitrate_kbit),
+            j1939: crate::j1939::J1939Monitor::new(),
+            j1939_tp: crate::canopen::decode::J1939Tracker::new(),
         }
     }
 
@@ -734,7 +740,8 @@ impl Rebuild {
         let end = (self.done + max).min(self.target).min(frames.len());
         let mut signals = signals;
         for f in &frames[self.done..end] {
-            let d = decode(f, ctx);
+            let mut d = decode(f, ctx);
+            self.j1939_tp.annotate(f, ctx, &mut d);
             self.msgs.on_frame(f, &d);
             if self.tail.len() >= self.tail_cap {
                 self.tail.pop_front();
@@ -744,6 +751,9 @@ impl Rebuild {
             if f.dir == Dir::Rx {
                 self.nodes.on_frame(f);
                 self.network.on_frame(f);
+                if ctx.j1939() {
+                    self.j1939.on_frame(f);
+                }
             }
             if let Some(s) = signals.as_deref_mut() {
                 s.on_frame(f, ctx);

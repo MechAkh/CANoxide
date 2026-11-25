@@ -171,11 +171,7 @@ const BIT_HEAD: [&str; 8] = ["7", "6", "5", "4", "3", "2", "1", "0"];
 const SHIFT_TIP: &str = "Shift + click on a bit extends the selection from its first bit to that bit; Shift + click on a Byte label extends it to whole bytes";
 
 fn key_text(k: MsgKey) -> String {
-    if k.extended {
-        format!("{:08X}", k.id)
-    } else {
-        format!("{:03X}", k.id)
-    }
+    k.to_string()
 }
 
 fn cycle_text(period_us: Option<f64>) -> String {
@@ -225,9 +221,9 @@ pub(crate) fn byte_range(ab: u32, b: u32, be: bool) -> (u32, u32) {
 
 /// The indices (into `signals`) of the user signals of `key` with a bit in
 /// the selection (a, z) (`be`: in grid reading order).
-pub(crate) fn signals_overlapping_selection(signals: &[UserSignal], key: MsgKey, sel: Option<(u32, u32)>, be: bool) -> Vec<usize> {
+pub(crate) fn signals_overlapping_selection(signals: &[UserSignal], key: MsgKey, sel: Option<(u32, u32)>, be: bool, j1939: bool) -> Vec<usize> {
     let Some((a, z)) = sel else { return Vec::new() };
-    signals.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended) && s.bit_list().iter().any(|k| sel_contains(be, a, z, *k))).map(|(i, _)| i).collect()
+    signals.iter().enumerate().filter(|(_, s)| s.matches_frame(key.id, key.extended, j1939) && s.bit_list().iter().any(|k| sel_contains(be, a, z, *k))).map(|(i, _)| i).collect()
 }
 
 /// The small icon buttons "to Graph" and "to Dashboard" of a signal row
@@ -464,7 +460,7 @@ impl App {
                     // Decoded text of the newest frame (visible rows only).
                     row.col(|ui| {
                         let f = CanFrame { id: e.key.id, extended: e.key.extended, rtr: e.rtr, dlc: e.dlc, data: e.data, timestamp_us: e.last_us, dir: e.dir };
-                        ui.add(egui::Label::new(crate::canopen::decode::decode(&f, dctx).text).truncate());
+                        ui.add(egui::Label::new(crate::canopen::decode::row_text(&f, dctx)).truncate());
                     });
                     if row.response().clicked() {
                         clicked = Some(e.key);
@@ -590,7 +586,7 @@ impl App {
         let window_s = self.settings.sparkline_s as f64;
         let now_s = now as f64 / 1e6;
         // The user signals of this COB-ID: (index, bits, colour).
-        let usr: Vec<(usize, Vec<u32>, egui::Color32)> = self.an.usigs.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended)).map(|(i, s)| (i, s.bit_list(), analysis_view::colour32(s.colour))).collect();
+        let usr: Vec<(usize, Vec<u32>, egui::Color32)> = self.an.usigs.iter().enumerate().filter(|(_, s)| s.matches_frame(key.id, key.extended, self.decode_ctx.j1939())).map(|(i, s)| (i, s.bit_list(), analysis_view::colour32(s.colour))).collect();
         ui.add_space(4.0);
         theme::toolbar(ui, |ui| {
             if ui.button(format!("{}  Close", icon::X)).on_hover_text("Close the bit view (also: click the selected row again)").clicked() {
@@ -648,7 +644,7 @@ impl App {
         let sparks = &mut self.an.sparks;
         let usigs = &self.an.usigs;
         // The user signals with a bit in the selection (marked in the list).
-        let in_sel = signals_overlapping_selection(usigs, key, self.msgv.bit_sel, self.msgv.sel_be);
+        let in_sel = signals_overlapping_selection(usigs, key, self.msgv.bit_sel, self.msgv.sel_be, self.decode_ctx.j1939());
         // The grid and the value list scroll (both ways) inside the pane;
         // the history below keeps the rest of the height.
         let avail_h = ui.available_height();
@@ -913,15 +909,15 @@ mod tests {
         let mut be = UserSignal::new("Pressure", 0x181, false, 39, 16);
         be.big_endian = true;
         let sigs = vec![a, b, other, be];
-        assert!(signals_overlapping_selection(&sigs, key, None, false).is_empty());
+        assert!(signals_overlapping_selection(&sigs, key, None, false, true).is_empty());
         // Byte 1 (LE): only the first signal.
-        assert_eq!(signals_overlapping_selection(&sigs, key, Some((8, 15)), false), vec![0]);
+        assert_eq!(signals_overlapping_selection(&sigs, key, Some((8, 15)), false, true), vec![0]);
         // Bits 15..16 (LE, either direction): the first two.
-        assert_eq!(signals_overlapping_selection(&sigs, key, Some((16, 15)), false), vec![0, 1]);
+        assert_eq!(signals_overlapping_selection(&sigs, key, Some((16, 15)), false, true), vec![0, 1]);
         // Byte 5 (BE): the big-endian signal (bytes 4 and 5).
         let (s, z) = byte_range(5, 5, true);
-        assert_eq!(signals_overlapping_selection(&sigs, key, Some((s, z)), true), vec![3]);
+        assert_eq!(signals_overlapping_selection(&sigs, key, Some((s, z)), true, true), vec![3]);
         // Another COB-ID: nothing.
-        assert!(signals_overlapping_selection(&sigs, MsgKey { id: 0x182, extended: false }, Some((0, 63)), false).is_empty());
+        assert!(signals_overlapping_selection(&sigs, MsgKey { id: 0x182, extended: false }, Some((0, 63)), false, true).is_empty());
     }
 }

@@ -19,7 +19,7 @@ use crate::can::sim::{SimAdapter, SimNode};
 use crate::can::slcan::{self, SlcanAdapter, SlcanTarget};
 use crate::can::sontheim::SontheimAdapter;
 use crate::can::{Bitrate, CanAdapter, CanFrame, ChannelInfo, Dir};
-use crate::canopen::decode::{DecodeContext, Decoded, SdoBlockTracker};
+use crate::canopen::decode::{DecodeContext, Decoded, J1939Tracker, SdoBlockTracker};
 use crate::canopen::lss::{LssCommand, LssError, LssMaster, LssOutput, LssResult};
 use crate::canopen::nmt::{nmt_frame, sync_frame, NmtCommand, NodeTracker};
 use crate::canopen::pdo::NodePdoConfig;
@@ -50,7 +50,9 @@ pub enum AdapterChoice {
     Kvaser,
     /// SLCAN on a COM port or over TCP (the channel is not used).
     Slcan(SlcanTarget),
-    Sim { node_id: u8, od: Option<Arc<ObjectDictionary>> },
+    /// The simulator; `extended_demo` adds the cyclic extended-ID demo
+    /// frames (setting `sim_extended_demo`).
+    Sim { node_id: u8, od: Option<Arc<ObjectDictionary>>, extended_demo: bool },
     /// Play a log file back (listen-only, never transmits). `tail` is the
     /// trace capacity (the newest decoded frames sent after a seek); `ctx`
     /// the decoder of the UI trace, for the seek rebuild.
@@ -102,6 +104,9 @@ pub enum BusCommand {
     ClearNodePdos(u8),
     /// The user signals for the worker decoder (trace log).
     SetUserSignals(Arc<Vec<crate::usersig::UserSignal>>),
+    /// Decode 29-bit frames as J1939 (true) or as raw frames. Off also
+    /// clears the J1939 view.
+    SetJ1939(bool),
     /// Allow (true) or stop SDO signal polling. Off after `Connect`.
     SetSignalPolling(bool),
     /// One LSS service. Ends with `LssDone`.
@@ -222,6 +227,9 @@ pub struct Shared {
     /// The frames of the replayed log (the analysis uses them up to the
     /// replay cursor).
     pub replay_frames: Option<Arc<Vec<CanFrame>>>,
+    /// The J1939 view: parameter groups, addresses, DM1/DM2 faults (fed
+    /// with the received frames while extended IDs are J1939).
+    pub j1939: crate::j1939::J1939Monitor,
 }
 
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -350,6 +358,8 @@ struct Worker {
     txlist: TxList,
     decode: DecodeContext,
     block: SdoBlockTracker,
+    /// The J1939 transport state of the trace log texts.
+    j1939_log: J1939Tracker,
     log: Option<TraceLogger>,
     log_seq: u64,
     load: BusLoad,
@@ -389,6 +399,7 @@ impl Worker {
             txlist: TxList::default(),
             decode: DecodeContext::default(),
             block: SdoBlockTracker::new(),
+            j1939_log: J1939Tracker::new(),
             log: None,
             log_seq: 0,
             load: BusLoad::new(250),
@@ -515,12 +526,12 @@ impl Worker {
                         }
                     },
                     AdapterChoice::Slcan(target) => Box::new(SlcanAdapter::new(target)),
-                    AdapterChoice::Sim { node_id, od } => {
+                    AdapterChoice::Sim { node_id, od, extended_demo } => {
                         let node = match od {
                             Some(od) => SimNode::new(node_id, od),
                             None => SimNode::builtin(node_id),
                         };
-                        Box::new(SimAdapter::new(node))
+                        Box::new(SimAdapter::new(node).with_extended_demo(extended_demo))
                     }
                 };
                 if let Err(e) = a.open(channel, bitrate, listen_only) {
@@ -534,6 +545,7 @@ impl Worker {
                 self.listen_only = listen_only;
                 self.load = BusLoad::new(bitrate.kbit());
                 self.block.reset();
+                self.j1939_log.reset();
                 self.polling = false;
                 self.polls.clear();
                 let text = format!("{} at {}{}", a.name(), bitrate.label(), if listen_only { ", listen only" } else { "" });
@@ -544,6 +556,7 @@ impl Worker {
                     s.listen_only = listen_only;
                     s.nodes.clear();
                     s.network.clear();
+                    s.j1939.clear();
                     s.status = "OK".to_string();
                     s.fps = 0.0;
                     s.bus_load = BusLoadStats::default();
@@ -627,6 +640,13 @@ impl Worker {
             }
             BusCommand::SetDecodeNodes(nodes) => self.decode.set_nodes(nodes),
             BusCommand::SetUserSignals(v) => self.decode.set_user_signals(v),
+            BusCommand::SetJ1939(on) => {
+                self.decode.set_j1939(on);
+                self.j1939_log.reset();
+                if !on {
+                    lock(&self.shared).j1939.clear();
+                }
+            }
             BusCommand::SetNodePdos(cfg) => self.use_pdo_config(cfg),
             BusCommand::ClearNodePdos(node) => {
                 self.decode.clear_node_pdos(node);
@@ -843,6 +863,7 @@ impl Worker {
         self.listen_only = true;
         self.load = BusLoad::new(bitrate.kbit());
         self.block.reset();
+        self.j1939_log.reset();
         self.polling = false;
         self.polls.clear();
         lock(&self.signals).clear();
@@ -859,6 +880,7 @@ impl Worker {
             s.listen_only = true;
             s.nodes.clear();
             s.network.clear();
+            s.j1939.clear();
             s.status = "OK".to_string();
             s.fps = 0.0;
             s.bus_load = BusLoadStats::default();
@@ -900,6 +922,9 @@ impl Worker {
             let mut s = lock(&self.shared);
             s.nodes.on_frame(&f);
             s.network.on_frame(&f);
+            if self.decode.j1939() {
+                s.j1939.on_frame(&f);
+            }
         }
         self.rx_count += 1;
     }
@@ -911,12 +936,13 @@ impl Worker {
         if let Some(mut rb) = r.rebuild.take() {
             let finished = rb.step(&r.frames, &r.ctx, Some(&mut lock(&self.signals)), REBUILD_CHUNK);
             if finished {
-                let Rebuild { msgs, tail, nodes, network, load, pos_us, .. } = rb;
+                let Rebuild { msgs, tail, nodes, network, load, pos_us, j1939, .. } = rb;
                 self.load = load;
                 {
                     let mut s = lock(&self.shared);
                     s.nodes = nodes;
                     s.network = network;
+                    s.j1939 = j1939;
                     s.bus_load = self.load.stats();
                     s.now_us = pos_us;
                 }
@@ -1116,7 +1142,7 @@ impl Worker {
                 true
             }
             Err(e) => {
-                self.emit(BusEvent::Error(format!("send 0x{:03X} failed: {e}", f.id)));
+                self.emit(BusEvent::Error(format!("send 0x{} failed: {e}", f.can_id())));
                 false
             }
         }
@@ -1128,7 +1154,8 @@ impl Worker {
         self.load.add(f);
         lock(&self.signals).on_frame(f, &self.decode);
         if self.log.is_some() {
-            let d = self.block.decode(f, &self.decode);
+            let mut d = self.block.decode(f, &self.decode);
+            self.j1939_log.annotate(f, &self.decode, &mut d);
             let e = TraceEntry::new(self.log_seq, *f, d);
             self.log_seq += 1;
             let now = self.now_ms();
@@ -1381,9 +1408,13 @@ impl Worker {
         };
         {
             let mut s = lock(&self.shared);
+            let j1939 = self.decode.j1939();
             for f in &received {
                 s.nodes.on_frame(f);
                 s.network.on_frame(f);
+                if j1939 {
+                    s.j1939.on_frame(f);
+                }
             }
             s.now_us = now_us;
             s.sdo_queue = self.jobs.len() + self.sdo.is_busy() as usize;

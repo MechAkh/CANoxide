@@ -2,7 +2,7 @@
 //! (filter and pause per view), the fixed (one row per COB-ID) view, CSV
 //! export and the continuous CSV log. No UI code.
 
-use crate::can::{CanFrame, Dir};
+use crate::can::{CanFrame, CanId, Dir};
 use crate::canopen::decode::{Decoded, MsgClass};
 use crate::canopen::types::{format_bytes, DisplayMode};
 use std::collections::{BTreeMap, VecDeque};
@@ -19,7 +19,7 @@ pub struct TraceEntry {
 
 impl TraceEntry {
     pub fn new(seq: u64, frame: CanFrame, decoded: Decoded) -> Self {
-        let search = format!("{:03x} {} {}", frame.id, decoded.label, decoded.text).to_lowercase();
+        let search = format!("{} {} {}", CanId::of(&frame), decoded.label, decoded.text).to_lowercase();
         TraceEntry { seq, frame, decoded, search }
     }
 }
@@ -31,19 +31,68 @@ pub struct FixedRow {
     pub cycle_us: Option<u64>,
 }
 
+/// The frame-format choice of a trace filter.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameFormat {
+    #[default]
+    All,
+    /// 11-bit frames only.
+    Standard,
+    /// 29-bit frames only.
+    Extended,
+}
+
+impl FrameFormat {
+    pub const ALL: [FrameFormat; 3] = [FrameFormat::All, FrameFormat::Standard, FrameFormat::Extended];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameFormat::All => "All formats",
+            FrameFormat::Standard => "Standard only",
+            FrameFormat::Extended => "Extended only",
+        }
+    }
+
+    pub fn accepts(self, extended: bool) -> bool {
+        match self {
+            FrameFormat::All => true,
+            FrameFormat::Standard => !extended,
+            FrameFormat::Extended => extended,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceFilter {
     pub node: Option<u8>,
     /// Bit set of `MsgClass::bit()`.
     pub classes: u16,
-    pub id_min: u32,
-    pub id_max: u32,
+    /// The ID range in the `CanId` order: every standard ID comes before
+    /// every extended ID, so `std(0x700)..=std(0x77F)` holds standard frames
+    /// only and `ext(0x18FEF100)..=ext(0x18FEF1FF)` extended frames only.
+    pub id_min: CanId,
+    pub id_max: CanId,
+    pub format: FrameFormat,
     pub text: String,
+    /// J1939 only: the PGN. A set PGN or SA filter hides every frame that
+    /// is not decoded as J1939.
+    pub pgn: Option<u32>,
+    /// J1939 only: the source address.
+    pub sa: Option<u8>,
 }
 
 impl Default for TraceFilter {
     fn default() -> Self {
-        TraceFilter { node: None, classes: 0xFFFF, id_min: 0, id_max: 0x1FFF_FFFF, text: String::new() }
+        TraceFilter {
+            node: None,
+            classes: 0xFFFF,
+            id_min: CanId::std(0),
+            id_max: CanId::ext(CanId::MAX_EXT),
+            format: FrameFormat::All,
+            text: String::new(),
+            pgn: None,
+            sa: None,
+        }
     }
 }
 
@@ -58,15 +107,28 @@ impl TraceFilter {
 
     /// `matches` with the filter text already in lower case.
     fn matches_lower(&self, e: &TraceEntry, text_lower: &str) -> bool {
+        let j1939 = e.decoded.class == MsgClass::J1939;
         if let Some(n) = self.node {
-            if e.decoded.node != Some(n) {
+            // The node filter is the CANopen node; a J1939 frame has the
+            // SA filter.
+            if j1939 || e.decoded.node != Some(n) {
+                return false;
+            }
+        }
+        if self.pgn.is_some() || self.sa.is_some() {
+            let Some(j) = j1939.then(|| crate::j1939::J1939Id::parse(e.frame.id, e.frame.extended)).flatten() else { return false };
+            if self.pgn.is_some_and(|p| p != j.pgn()) || self.sa.is_some_and(|a| a != j.sa) {
                 return false;
             }
         }
         if self.classes & e.decoded.class.bit() == 0 {
             return false;
         }
-        if e.frame.id < self.id_min || e.frame.id > self.id_max {
+        if !self.format.accepts(e.frame.extended) {
+            return false;
+        }
+        let id = CanId::of(&e.frame);
+        if id < self.id_min || id > self.id_max {
             return false;
         }
         if !text_lower.is_empty() && !e.search.contains(text_lower) {
@@ -119,7 +181,7 @@ pub struct TraceStore {
     ring: VecDeque<TraceEntry>,
     capacity: usize,
     next_seq: u64,
-    fixed: BTreeMap<(u32, bool), FixedRow>,
+    fixed: BTreeMap<CanId, FixedRow>,
     /// Slot 0 is always `Some`. Removed views leave `None`.
     views: Vec<Option<View>>,
 }
@@ -184,7 +246,7 @@ impl TraceStore {
     pub fn push(&mut self, frame: CanFrame, decoded: Decoded) {
         let e = TraceEntry::new(self.next_seq, frame, decoded);
         self.next_seq += 1;
-        let key = (frame.id, frame.extended);
+        let key = CanId::of(&frame);
         match self.fixed.get_mut(&key) {
             Some(r) => {
                 r.cycle_us = Some(frame.timestamp_us.saturating_sub(r.last.frame.timestamp_us));
@@ -460,12 +522,9 @@ impl TraceLogger {
 }
 
 
+/// The shared text form of the frame's ID (`CanId`'s `Display`).
 pub fn id_text(f: &CanFrame) -> String {
-    if f.extended {
-        format!("{:08X}", f.id)
-    } else {
-        format!("{:03X}", f.id)
-    }
+    CanId::of(f).to_string()
 }
 
 pub fn dir_label(d: Dir) -> &'static str {

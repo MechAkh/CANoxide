@@ -4,6 +4,7 @@
 
 use super::{theme, App};
 use crate::bus::{BusCommand, BusHandle};
+use crate::can::CanId;
 use crate::canopen::pdo::configs_from_od;
 use crate::library::Library;
 use crate::signals::{RawKind, SignalDef, SignalSource, MIN_POLL_MS};
@@ -110,18 +111,17 @@ impl AddDraft {
             }
             SourceKind::User => return Err("choose a user signal".to_string()),
             SourceKind::Raw => {
-                let cob_id = hex(&self.cob_text, "COB-ID")?;
-                let max = if self.extended { 0x1FFF_FFFF } else { 0x7FF };
-                if cob_id > max {
-                    return Err(format!("COB-ID above 0x{max:X}"));
-                }
+                // The text and the Ext box agree: a text that makes the
+                // ID extended wins over an empty box.
+                let c = CanId::parse_with_flag(&self.cob_text, self.extended).map_err(|e| format!("COB-ID: {e}"))?;
+                let (cob_id, extended) = (c.id, c.extended);
                 if self.bits == 0 || self.bits > 64 || self.start_bit + self.bits > 64 {
                     return Err("bits: the field must fit in 64 bits".to_string());
                 }
                 if self.raw_kind == RawKind::Float && self.bits != 32 && self.bits != 64 {
                     return Err("a float has 32 or 64 bits".to_string());
                 }
-                SignalSource::Raw { cob_id, extended: self.extended, start_bit: self.start_bit, bits: self.bits, raw_kind: self.raw_kind, big_endian: self.big_endian }
+                SignalSource::Raw { cob_id, extended, start_bit: self.start_bit, bits: self.bits, raw_kind: self.raw_kind, big_endian: self.big_endian }
             }
         };
         let name = if self.name.trim().is_empty() { default_name(&source) } else { self.name.trim().to_string() };
@@ -137,7 +137,16 @@ pub(crate) fn default_name(s: &SignalSource) -> String {
     match s {
         SignalSource::Pdo { node, index, sub } => format!("N{node} {index:04X}:{sub:02X}"),
         SignalSource::SdoPoll { node, index, sub, .. } => format!("N{node} {index:04X}:{sub:02X} (SDO)"),
-        SignalSource::Raw { cob_id, start_bit, bits, .. } => format!("{cob_id:X} bits {start_bit}+{bits}"),
+        SignalSource::Raw { cob_id, extended, start_bit, bits, .. } => format!("{} bits {start_bit}+{bits}", CanId::new(*cob_id, *extended)),
+        SignalSource::J1939 { cob_id, start_bit, bits, .. } => format!("PGN {} bits {start_bit}+{bits}", crate::j1939::J1939Id::split(*cob_id).pgn()),
+    }
+}
+
+fn kind_text(k: &RawKind) -> &'static str {
+    match k {
+        RawKind::Unsigned => "unsigned",
+        RawKind::Signed => "signed",
+        RawKind::Float => "float",
     }
 }
 
@@ -146,12 +155,20 @@ pub(crate) fn source_text(s: &SignalSource) -> String {
         SignalSource::Pdo { node, index, sub } => format!("PDO, node {node}, {index:04X}:{sub:02X}"),
         SignalSource::SdoPoll { node, index, sub, period_ms, .. } => format!("SDO, node {node}, {index:04X}:{sub:02X}, {period_ms} ms"),
         SignalSource::Raw { cob_id, extended, start_bit, bits, raw_kind, big_endian } => {
-            let k = match raw_kind {
-                RawKind::Unsigned => "unsigned",
-                RawKind::Signed => "signed",
-                RawKind::Float => "float",
+            let k = kind_text(raw_kind);
+            format!("raw {}, bit {start_bit}, {bits} bit {k}{}", CanId::new(*cob_id, *extended), if *big_endian { ", big endian" } else { "" })
+        }
+        SignalSource::J1939 { cob_id, source, start_bit, bits, raw_kind, big_endian } => {
+            let k = kind_text(raw_kind);
+            let from = match source {
+                Some(sa) => format!("source address {sa}"),
+                None => "any source address (with two or more addresses the signal takes each frame in time order)".to_string(),
             };
-            format!("raw {}{cob_id:X}, bit {start_bit}, {bits} bit {k}{}", if *extended { "x" } else { "" }, if *big_endian { ", big endian" } else { "" })
+            format!(
+                "J1939 {}, {from}, bit {start_bit}, {bits} bit {k}{}",
+                crate::j1939::pgn_text(crate::j1939::J1939Id::split(*cob_id).pgn()),
+                if *big_endian { ", big endian" } else { "" }
+            )
         }
     }
 }
@@ -177,6 +194,10 @@ pub(crate) struct GraphView {
     pub visible: (f64, f64),
     /// The Export range dialog: (from, to) in seconds.
     pub range: Option<(f64, f64)>,
+    /// Tests: per drawn series, the number of plot points and the time of
+    /// the first one, as last drawn.
+    #[cfg(test)]
+    pub drawn: Vec<(usize, Option<f64>)>,
 }
 
 impl GraphView {
@@ -306,6 +327,13 @@ impl App {
         let t_end = self.graph.paused_at.unwrap_or(now);
         let t0 = t_end - window;
         let max_points = (ui.available_width().max(100.0) as usize).min(4000);
+        // The time range to draw: with Follow the newest window; without it
+        // the range that the plot shows (the user dragged or zoomed), so
+        // that older points in the buffer stay visible.
+        let (q0, q1) = match self.graph.visible {
+            (a, b) if !self.graph.follow && b > a => (a - (b - a) * 0.05, b + (b - a) * 0.05),
+            _ => (t0, t_end),
+        };
         struct Series {
             id: u64,
             name: String,
@@ -323,7 +351,7 @@ impl App {
                 .map(|sig| {
                     let mut pts = Vec::new();
                     if !self.graph.hidden.contains(&sig.id) {
-                        for m in s.slice(sig.id, t0, t_end, max_points) {
+                        for m in s.slice(sig.id, q0, q1, max_points) {
                             pts.push([m.t, m.min]);
                             if m.max != m.min {
                                 pts.push([m.t, m.max]);
@@ -335,6 +363,10 @@ impl App {
                 .collect(),
             Err(_) => Vec::new(),
         };
+        #[cfg(test)]
+        {
+            self.graph.drawn = series.iter().map(|s| (s.pts.len(), s.pts.first().map(|p| p[0]))).collect();
+        }
 
         if series.is_empty() {
             ui.add_space(16.0);
@@ -539,7 +571,7 @@ impl App {
         } else {
             Vec::new()
         };
-        let users: Vec<String> = self.an.usigs.iter().map(|s| format!("{} ({}{:X}, bit {}, {} bit)", s.name, if s.extended { "x" } else { "" }, s.cob_id, s.start_bit, s.bits)).collect();
+        let users: Vec<String> = self.an.usigs.iter().map(|s| format!("{} ({}, bit {}, {} bit)", s.name, CanId::new(s.cob_id, s.extended), s.start_bit, s.bits)).collect();
         let err_c = if self.is_dark() { theme::DARK.error } else { theme::LIGHT.error };
         // A movable window (spec: the Add signal dialog moves by its title
         // bar and stays inside the app window) over a scrim that blocks the

@@ -309,8 +309,108 @@ fn cli_od_dump_nmt_sync_send() {
     assert_eq!(v["sent"], 3);
     let v = ok(&["send", "0x701", "--rtr", "--dlc", "1"]);
     assert_eq!(v["rtr"], true);
-    fails(&["send", "0x800", "01"], 2, "usage");
+    // Extended IDs: above 7FF, a trailing x, or --ext (the old form).
+    let v = ok(&["send", "0x800", "01"]);
+    assert_eq!((v["id"].clone(), v["ext"].clone()), (serde_json::json!("0x00000800"), serde_json::json!(true)), "{v}");
+    let v = ok(&["send", "18FEF100", "01"]);
+    assert_eq!((v["id"].clone(), v["ext"].clone()), (serde_json::json!("0x18FEF100"), serde_json::json!(true)), "{v}");
+    let v = ok(&["send", "123x", "01"]);
+    assert_eq!((v["id"].clone(), v["ext"].clone()), (serde_json::json!("0x00000123"), serde_json::json!(true)), "{v}");
+    let v = ok(&["send", "0x123", "--ext", "01"]);
+    assert_eq!((v["id"].clone(), v["ext"].clone()), (serde_json::json!("0x00000123"), serde_json::json!(true)), "{v}");
+    let v = ok(&["send", "0x123", "01"]);
+    assert_eq!((v["id"].clone(), v["ext"].clone()), (serde_json::json!("0x123"), serde_json::json!(false)), "{v}");
+    let e = fails(&["send", "0x20000000", "01"], 2, "usage");
+    assert!(e["error"]["message"].as_str().unwrap().contains("29 bits"), "{e}");
     fails(&["send", "0x123", "01 02 03 04 05 06 07 08 09"], 2, "usage");
+}
+
+#[test]
+fn cli_monitor_keeps_standard_and_extended_apart() {
+    let dir = temp("extmon");
+    // A made-up candump log: 123 standard and extended, two J1939-style IDs.
+    let log = dir.join("ext.log");
+    std::fs::write(
+        &log,
+        "(1700000000.000000) can0 123#01\n\
+         (1700000000.001000) can0 00000123#02\n\
+         (1700000000.002000) can0 18FEF100#03\n\
+         (1700000000.003000) can0 18FEF200#04\n",
+    )
+    .unwrap();
+    let l = log.to_str().unwrap();
+    let r = run(&["--adapter", "replay", "--file", l, "monitor"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let v = r.lines();
+    let ids: Vec<(String, bool)> = v[..4].iter().map(|f| (f["id"].as_str().unwrap().to_string(), f["ext"].as_bool().unwrap())).collect();
+    assert_eq!(
+        ids,
+        vec![("0x123".into(), false), ("0x00000123".into(), true), ("0x18FEF100".into(), true), ("0x18FEF200".into(), true)]
+    );
+    // J1939 by default; --ext-raw keeps the extended frames raw.
+    assert_eq!(v[1]["type"], "J1939", "{}", v[1]);
+    assert_eq!(v[2]["j1939"]["pgn"], 65265, "{}", v[2]);
+    let raw = run(&["--adapter", "replay", "--file", l, "monitor", "--ext-raw"]);
+    assert_eq!(raw.code, 0, "{}", raw.out);
+    let rv = raw.lines();
+    assert_eq!(rv[1]["type"], "Ext", "{}", rv[1]);
+    assert!(rv[2].get("j1939").is_none(), "--ext-raw: {}", rv[2]);
+    let frames = |args: &[&str]| {
+        let mut a = vec!["--adapter", "replay", "--file", l, "monitor"];
+        a.extend_from_slice(args);
+        let r = run(&a);
+        assert_eq!(r.code, 0, "{}", r.out);
+        r.lines()[..r.lines().len() - 1].iter().map(|f| f["data"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+    };
+    assert_eq!(frames(&["--id", "123"]), vec!["01"]);
+    assert_eq!(frames(&["--id", "123x"]), vec!["02"]);
+    assert_eq!(frames(&["--id", "18FEF100-18FEF1FF"]), vec!["03"]);
+    assert_eq!(frames(&["--id", "0-7FF"]), vec!["01"]);
+    assert_eq!(frames(&["--id", "0-1FFFFFFF"]).len(), 4);
+    fails(&["--adapter", "replay", "--file", l, "monitor", "--id", "20000000"], 2, "usage");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn cli_j1939_decode_id() {
+    let v = ok(&["j1939", "decode-id", "0x18FEF100"]);
+    assert_eq!(v["pgn"], 65265, "{v}");
+    assert_eq!(v["name"], "CCVS", "{v}");
+    assert_eq!((v["sa"].as_u64(), v["da"].as_u64(), v["priority"].as_u64(), v["pdu"].as_u64()), (Some(0), Some(255), Some(6), Some(2)), "{v}");
+    // PDU1: PS is the destination, not part of the PGN.
+    let v = ok(&["j1939", "decode-id", "18EA0021"]);
+    assert_eq!((v["pgn"].as_u64(), v["da"].as_u64(), v["sa"].as_u64(), v["pdu"].as_u64()), (Some(59904), Some(0), Some(33), Some(1)), "{v}");
+    // EDP and DP both set: not J1939.
+    let v = ok(&["j1939", "decode-id", "0x03000000"]);
+    assert_eq!(v["j1939"], false, "{v}");
+    fails(&["j1939", "decode-id", "0x20000000"], 2, "usage");
+    fails(&["j1939", "decode-id", "xyz"], 2, "usage");
+    fails(&["j1939", "decode-id"], 2, "usage");
+}
+
+#[test]
+fn cli_monitor_j1939_bam_dm1() {
+    let dir = temp("j1939mon");
+    // A made-up candump log: a DM1 with two faults by BAM from SA 0.
+    let log = dir.join("dm1.log");
+    std::fs::write(
+        &log,
+        "(1700000000.000000) can0 1CECFF00#200A0002FFCAFE00\n\
+         (1700000000.050000) can0 1CEBFF00#0104FF640001036E\n\
+         (1700000000.100000) can0 1CEBFF00#020000010000FFFF\n",
+    )
+    .unwrap();
+    let l = log.to_str().unwrap();
+    let r = run(&["--adapter", "replay", "--file", l, "monitor"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let v = r.lines();
+    assert_eq!(v[0]["j1939"]["pgn"], 60416, "{}", v[0]);
+    assert_eq!(v[0]["j1939"]["name"], "TP.CM", "{}", v[0]);
+    assert_eq!(v[0]["class"], "j1939", "{}", v[0]);
+    assert_eq!(v[2]["j1939"]["sa"], 0, "{}", v[2]);
+    let t = v[2]["text"].as_str().unwrap_or("");
+    assert!(t.contains("complete: PGN 65226 DM1, 10 bytes") && t.contains("SPN 100 FMI 1 OC 3, SPN 110 FMI 0 OC 1"), "{}", v[2]);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

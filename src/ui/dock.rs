@@ -38,16 +38,19 @@ pub(crate) enum Tab {
     Drive,
     /// Gauge widgets over the signals.
     Dashboard,
+    /// The J1939 parameter groups, addresses and DM1/DM2 faults.
+    J1939,
 }
 
 impl Tab {
     /// The tabs of the View menu, in menu order (trace tabs separately).
-    pub(crate) const VIEWS: [Tab; 15] = [
+    pub(crate) const VIEWS: [Tab; 16] = [
         Tab::Devices,
         Tab::Eds,
         Tab::Od,
         Tab::Network,
         Tab::Emergencies,
+        Tab::J1939,
         Tab::Messages,
         Tab::FindSignal,
         Tab::Graph,
@@ -78,6 +81,7 @@ impl Tab {
             Tab::EdsCheck => "EDS check".into(),
             Tab::Drive => "Drive (CiA 402)".into(),
             Tab::Dashboard => "Dashboard".into(),
+            Tab::J1939 => "J1939".into(),
         }
     }
 
@@ -99,6 +103,7 @@ impl Tab {
             Tab::EdsCheck => icon::CHECK_SQUARE,
             Tab::Drive => icon::ENGINE,
             Tab::Dashboard => icon::GAUGE,
+            Tab::J1939 => icon::TRUCK,
         }
     }
 }
@@ -208,7 +213,7 @@ pub(crate) fn open_tab(d: &mut DockState<Tab>, tab: Tab) {
         return;
     }
     let near = match tab {
-        Tab::Lss | Tab::Emergencies | Tab::Drive => leaf_of(d, Tab::Network),
+        Tab::Lss | Tab::Emergencies | Tab::J1939 | Tab::Drive => leaf_of(d, Tab::Network),
         Tab::Dcf | Tab::EdsCheck => leaf_of(d, Tab::Od),
         Tab::Dashboard => leaf_of(d, Tab::Graph),
         Tab::Trace(_) | Tab::Messages | Tab::FindSignal => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
@@ -289,6 +294,7 @@ impl TabViewer for Viewer<'_> {
             Tab::EdsCheck => self.app.edscheck_tab(ui),
             Tab::Drive => self.app.drive_tab(ui),
             Tab::Dashboard => self.app.dashboard_tab(ui),
+            Tab::J1939 => self.app.j1939_tab(ui),
         });
     }
 

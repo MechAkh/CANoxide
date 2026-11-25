@@ -150,7 +150,7 @@ fn v02_settings_defaults_round_trip_and_sanitize() {
     let t = TempDir::new("set");
     let s = Settings::default();
     assert_eq!((s.theme, s.ui_scale, s.sdo_block_size, s.scan_first, s.scan_last), (Theme::System, 1.0, 127, 1, 127));
-    assert_eq!((s.signal_capacity, s.pdo_scan_stop, s.confirm_before_write, s.lss_timeout_ms), (20_000, 4, true, 100));
+    assert_eq!((s.signal_capacity, s.pdo_scan_stop, s.confirm_before_write, s.lss_timeout_ms), (500_000, 4, true, 100));
     assert_eq!((s.timestamp_format, s.default_data_view), (TimestampFormat::Relative, DataView::Chronological));
     let mut c = s.clone();
     c.theme = Theme::Dark;

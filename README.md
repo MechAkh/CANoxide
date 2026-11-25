@@ -44,6 +44,9 @@ What it is for:
 - **Follow its emergencies.** A history of every EMCY on the bus with the
   CiA 301 code text and the error register bits, and the error history
   0x1003 of a node (read and clear).
+- **Read J1939 traffic.** 29-bit frames decoded as J1939: PGN, source
+  address, transport protocol, address claim and DM1 faults, in the Trace
+  and in a J1939 tab. Receive only.
 - **Control the network.** NMT start / stop / reset, node scan, network
   overview, SYNC, heartbeat set-up, and a transmit list of raw frames
   (manual, periodic or on reception).
@@ -179,6 +182,31 @@ menu:
   asks first and **Write anyway** writes it.
 - **Transmit list**: saved raw frames, sent once, periodically or on
   reception of a COB-ID.
+- **Extended (29-bit) IDs** everywhere a raw ID is shown or typed: Trace,
+  Messages, Graph, user signals, Find signal, the transmit list, the files
+  and the CLI. A standard ID shows as 3 hex digits (`123`), an extended ID
+  as 8 (`00000123`, `18FEF100`); a standard and an extended frame with the
+  same number are two different messages. Type an ID in hex: a value above
+  7FF, 8 digits or a trailing `x` (`123x`) is extended. The Trace filter
+  has an extended range and a frame format filter (all, standard only,
+  extended only). Setting **Simulator: extended-ID demo frames** makes the
+  simulator also act as a small J1939 node. Extended frames get no
+  CANopen meaning.
+- **J1939** (receive only; Settings, Connection: **Extended IDs are**
+  J1939, the default, or Raw frames, type `Ext`): a 29-bit frame is
+  decoded as SAE J1939: type `J1939`, the source address as the node, the
+  PGN with its name for the common groups (65280-65535: `PropB`), the
+  priority and the destination. The transport protocol (TP.CM / TP.DT,
+  BAM and RTS/CTS, timeouts 750 / 1250 ms) is followed per source and
+  destination; the last packet shows the reassembled message. Address
+  claim NAME, Request, Acknowledgement and DM1 / DM2 faults are decoded.
+  The Trace filters **PGN** and **Source address**; Messages shows
+  `PGN n NAME  SA n`. The **J1939** tab lists the parameter groups by PGN
+  and source address (select a row for a hex dump and the faults), the
+  addresses with their claimed NAME and the active DM1 faults (a fault
+  no longer reported stays dimmed until **Clear**), with the transport
+  counters and **Export CSV...**. A user signal or a DBC message can match
+  by its PGN from any source address (or one). Nothing is sent.
 - **LSS**: switch state, inquire, fastscan, configure node-ID and bit
   timing.
 - **DCF save / restore**: save a node to a DCF, compare a DCF with a node,
@@ -333,6 +361,21 @@ adapter was tested on one unit only; the Kvaser and SLCAN adapters are
 not tested on hardware at all. Try listen-only
 mode on a bench bus before you rely on the tool on a live system.
 
+## Update check
+
+The GUI asks GitHub whether a newer release exists: at start, at most once
+a day, and on **Help > Check for updates...**. This is the only network
+traffic of the program: one HTTPS GET of
+`https://api.github.com/repos/MechAkh/CANoxide/releases/latest` with the
+headers `User-Agent: CANoxide/<version>` and
+`Accept: application/vnd.github+json`, through the system proxy settings.
+Nothing else is sent: no ID, no settings, no machine or user name, no
+cookie, no logon. A newer release shows an **Update x.y.z** button at the
+right end of the menu bar; its window opens the release page in your
+browser. Nothing is downloaded or run. Turn the check at start off in
+Settings, Updates: **Check for updates at start**. The command-line tool
+never checks.
+
 ## Data folder
 
 All state of the GUI lives in one data folder: `settings.json`,
@@ -443,6 +486,12 @@ cargo build --release
 ## Limits (not built)
 
 - CAN FD.
+- J1939 sending: the decoder only receives. CANoxide sends no address
+  claim, no request and no CTS, so it does not take part in an RTS/CTS
+  transfer to its own address. Extended transport (ETP, more than 1785
+  bytes) is named, not reassembled. No SPN database: only the DM1 / DM2
+  fault fields (SPN, FMI, OC) and the PGN names of a short table. A user
+  signal reads a single frame, not a reassembled message.
 - Error frame display, application profiles such as CiA 447.
 - Multiplexed signals of a DBC file; scripting inside the tool.
 - Adapters other than PEAK, the CANfox, Kvaser, SLCAN and the simulator

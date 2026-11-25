@@ -144,6 +144,7 @@ Chip text = the type label, so the meaning never depends on colour alone.
 | LSS | `LSS` | `#E3D36B` | `#38382B` | 7.80 | `#6E6000` | `#EEECE0` | 5.31 |
 | Error frame / bus error | `ERR` | `#FF7A7A` | `#3D2A2E` | 5.30 | `#B42323` | `#F6E5E5` | 5.38 |
 | Other / raw | `RAW` | text.secondary | bg.button | 6.20 | text.secondary | bg.button | 6.42 |
+| J1939 (29-bit frame decoded as J1939) | `J1939` | `#79B8FF` (info) | `#283443` | 6.08 | `#1458B8` (info) | `#E3EBF6` | 5.61 |
 
 Row tint (trace setting "Colour by type = Row tint", and always for ERR and
 EMCY rows): row fill = type colour at 8 % (dark) / 6 % (light) over
@@ -383,14 +384,18 @@ Top to bottom (window 1280 × 800):
    bg.button.hover radius 4. Right side: theme quick switch, a frameless
    glyph button (`desktop` = System, `moon` = Dark, `sun` = Light) that
    cycles System → Dark → Light → System; tooltip e.g. `Theme: System
-   (click: Dark)`.
+   (click: Dark)`. Left of it, only when a newer release is known (and it
+   is not the skipped one, for the check at start): the update pill, a
+   small accent button `Update x.y.z` (fill accent, text on.accent, radius
+   10), tooltip `CANoxide x.y.z is available (you have <current>)`; a
+   click opens the Update available window.
    - File: `Open EDS...` (Ctrl+O), `Save trace as...` (saves the first
      trace tab), `Import DBC...` (tooltip "Import the signals of a DBC file
      as user signals", 8.11), `Program download...` (tooltip "Download a
      program file to a node (CiA 302-3, 0x1F50)", 8.16), `Open data
      folder`; separator; `Exit`.
    - View: one check box per view, in this order: Devices, EDS library,
-     Object dictionary, Network, Emergencies, Messages, Find signal, Graph,
+     Object dictionary, Network, Emergencies, J1939, Messages, Find signal, Graph,
      Dashboard, PDO configuration, Transmit list, LSS, DCF save / restore,
      EDS check, Drive (CiA 402); then `Trace 1` … `Trace 4`; separator;
      `New trace tab` (disabled at 4); separator; `Reset layout`; `Full
@@ -399,7 +404,29 @@ Top to bottom (window 1280 × 800):
      button, not a submenu.
    - Help: `Keyboard shortcuts` (writes the shortcut list into the status
      bar, section 10), `Copy display diagnostics` (tooltip "Window, screen
-     and DPI values for a bug report, to the clipboard"), `About CANoxide`.
+     and DPI values for a bug report, to the clipboard"), `Check for
+     updates...` (tooltip "Asks GitHub for the newest release; nothing is
+     downloaded"; always runs, whatever the setting and the time of the
+     last check), `About CANoxide`.
+   - Check for updates...: the status line shows `Checking for updates...`,
+     then `CANoxide x.y.z is available (you have <current>)` (and the
+     Update available window opens), `CANoxide <current> is the newest
+     version.`, or the error text (error colour), for example `Update
+     check: GitHub rate limit reached; try again later`. The check at
+     start (Settings, Updates; at most once a day) shows only the pill; a
+     failure there says nothing. The check runs in a worker thread: one
+     HTTPS GET of `api.github.com/repos/MechAkh/CANoxide/releases/latest`;
+     nothing is downloaded or run.
+   - Update available: a small window (`egui::Window`, centred, not
+     resizable, close `x`). A grid: `Available` x.y.z (mono), `You have`
+     (mono), `Release` (the release name, at most 80 characters),
+     `Published` (YYYY-MM-DD); a small secondary line `Nothing is
+     downloaded: the release page opens in your browser.`; buttons `Open
+     the release page` (primary; opens the `html_url` of the answer when
+     it is a page under `https://github.com/MechAkh/CANoxide/releases/`,
+     else that releases page), `Skip this version` (stores the version;
+     the pill goes away until a newer one) and `Close`. No release notes
+     are shown.
    - About CANoxide: modal 420 wide. The app icon 48 × 48, `CANoxide` in
      `title`, `Version x.y.z` mono, the line "A portable CANopen bench
      tool. Copyright (c) 2026 MechAkh. Licence: MIT.", the font and icon
@@ -499,6 +526,7 @@ the leaf.
 | DCF save / restore | `DCF save / restore` | `file-code` | no |
 | Find signal | `Find signal` | `magnifying-glass` | no |
 | Emergencies | `Emergencies` | `warning` | no |
+| J1939 | `J1939` | `truck` | no |
 | EDS check | `EDS check` | `check-square` | no |
 | Drive (CiA 402) | `Drive (CiA 402)` | `engine` | no |
 | Dashboard | `Dashboard` | `gauge` | no |
@@ -729,8 +757,25 @@ connected: send controls are disabled.`
   and the filters CSV, PEAK trace (version 1.1), Vector ASC; the
   extension picks the format.
 - Filters popup (min width 300): `Node ID` [48, hint `all`], `COB-ID 0x`
-  min .. max (70 each), `Text` [180], `Types (n/N)` with `All` / `None`
-  and a 3-column grid of type check boxes, `Reset filters`.
+  min .. max (80 each; hex, 3 digits standard, 8 digits or a trailing `x`
+  extended; an empty bound is open; all standard IDs sort before all
+  extended IDs; a bound that cannot be read shows the error in an error
+  row and counts as open), `Frame format` (`All formats` | `Standard
+  only` | `Extended only`, selectable buttons), `Text` [180], `PGN` [80,
+  hint `all`; decimal or `0x` hex, at most 0x3FFFF] and `Source address`
+  [48, hint `all`; 0..255] (J1939 frames only: with a value set, the tab
+  shows only the frames decoded as J1939 with that PGN / source address;
+  each counts in the badge), `Types (n/N)` with `All` / `None` and a
+  3-column grid of type check boxes, `Reset filters`. The `Node ID`
+  filter does not take J1939 frames (their node is the source address).
+- ID text: a standard ID is 3 hex digits (`123`), an extended ID 8
+  (`00000123`), in every column and label that shows a raw ID. With
+  Settings `Extended IDs are` = `J1939` (default) an extended frame has the
+  type `J1939`, the source address as its node and the Decoded text `PGN
+  n NAME  Pp  -> dest  detail` (the transport protocol adds `n/N` and, on
+  the last packet, `complete: PGN n NAME, k bytes` with the DM1 / DM2
+  faults); with `Raw frames` it has the type `Ext` and no node. A frame
+  with EDP and DP both set is always `Ext`.
 - Columns, Scroll mode: Time (`s`, or Delta in `ms`), Dir, COB-ID, DLC,
   Data, Type, Node, Decoded. Fixed mode: COB-ID, Dir, Count, Cycle `ms`,
   DLC, Data, Type, Node, Decoded.
@@ -760,7 +805,10 @@ connected: send controls are disabled.`
   range...`; pill `polling` while polling runs.
 - Hint line: `SDO signals record only while polling runs.` and the send
   hint.
-- Plot: `egui_plot::Plot`, x label `time (s)`, the egui legend.
+- Plot: `egui_plot::Plot`, x label `time (s)`, the egui legend. With
+  Follow on, the plot shows and draws the newest time window; with Follow
+  off, it draws the points of the visible range (plus 5 % on each side),
+  so a drag or zoom back shows every point still in the buffer.
 - Legend grid under the plot: swatch (14), `Show`, `Signal` (`name
   [unit]`), `Source`, `Last`, `Min`, `Max`, `Points`, `Remove`.
 - `Export range...` window: `From` / `To` (s), `Visible range`, the small
@@ -834,13 +882,17 @@ connected: send controls are disabled.`
 - Columns: Name (flex [140], inline editable), COB-ID (72, mono), DLC
   (40), Data (196, mono editable, 2 hex chars per byte), Trigger (130,
   combo `Manual`, `Periodic`, `On receive`), Period / Condition (120:
-  ms DragValue for Periodic; `on 0x181` mono for On receive; `—` for
-  Manual), Count (64, mono sent count), Action (88: Manual → `Send`
+  ms DragValue for Periodic; `on RX 181` mono for On receive, `on RX
+  18FEF100` for an extended ID; `—` for Manual), Count (64, mono sent count), Action (88: Manual → `Send`
   secondary button with `paper-plane-right`; Periodic/On receive →
   toggle `Start`/`Stop`; running = success pill `Running` inline left of
   the button).
 - Empty: icon `paper-plane-tilt`, "No frames", "Create a frame to send it
   by hand, periodically, or on receive.", button `New frame`.
+- Editor: `ID 0x` text (hex; above 7FF, 8 digits or a trailing `x` ticks
+  `Ext`; the text never clears the box) and the `Ext` check box; the On
+  receive ID field (80) reads the same forms and waits for that ID in its
+  own format. The COB-ID column shows 3 or 8 digits.
 
 ### 8.8 LSS (CiA 305 layer setting services)
 
@@ -1324,6 +1376,51 @@ collapsible, not resizable, centred, max width 520. Nothing is sent until
   `Lamp on above` checkbox + value (tooltip "Off: the lamp is on when the
   value is not 0"); `Save`, `Cancel`.
 
+### 8.19 J1939 (receive only)
+
+- Dock tab `J1939` (`truck` icon), closed by default, opens in the
+  Network leaf like Emergencies. It is fed by the bus worker from every
+  received 29-bit frame (live and replay), so it fills also while the tab
+  or the Trace is closed. Nothing is sent from it.
+- Toolbar (`theme::toolbar`): `trash` `Clear` (tooltip "Clear the tables
+  and the transport counters (nothing is sent)", disabled when empty); the
+  transport counters `TP: n complete, m incomplete, k errors` in
+  text.secondary (tooltip: BAM / RTS/CTS, the timeouts 750 / 1250 ms);
+  `Export CSV...` (`j1939.csv`, the parameter group table).
+- Strong `Parameter groups (n)`; a table (max scroll height 320, click a
+  row to select it, click again to unselect): PGN (56), Name (70, the
+  short PGN name or empty), SA (40), Dest (44, `all` or the address), Prio
+  (32), Length (48), Count (64), Cycle ms (64), Last data (220, at most 8
+  bytes then ` …`), Age (60). One row per (PGN, source address); a
+  reassembled transport message is one row with its full length. At most
+  4096 rows; then the warning `n frame(s) of new groups not listed`.
+- Detail box of the selected row: strong `PGN n NAME  SA n  -> dest  (k
+  bytes, reassembled)`, a hex dump (16 bytes per line, offset first) and,
+  for DM1 / DM2, `Lamps: …` and one line `SPN n  FMI n  OC n  CM n` per
+  fault (or `DM1: no active fault`).
+- Strong `Addresses (n)`; table: SA (40), Address claim (280, `NAME mfr m
+  fn f id i` or `-`; tooltip with the 64-bit NAME and every field), Frames
+  (72), Age (60).
+- Strong `Active faults (a active, n listed)`; table: SA, SPN, FMI, OC,
+  Lamps, State (`active`, or `cleared` in text.secondary when the last DM1
+  of that address no longer has it), Age. A cleared fault stays until
+  `Clear`. At most 1024 rows. None: `No DM1 fault received.` in
+  text.secondary.
+- Empty: icon `truck` 28, "No J1939 frame received yet." and "Each
+  received 29-bit frame is listed here by its parameter group (PGN) and
+  source address. Nothing is sent."
+- Off (Settings `Extended IDs are` = `Raw frames`): icon `truck` 28, "J1939
+  is off." and "Settings > Extended IDs are: Raw frames. Choose J1939 to
+  decode the 29-bit frames here."
+- Messages: the Decoded cell of a J1939 row is `PGN n NAME  SA n` (and the
+  user signal values).
+- Define signal (8.10): for an extended ID the check box `Match the PGN
+  (any source address)` and, when on, `Only source address` with a
+  DragValue 0..253 (preset from the ID); Import
+  DBC (8.11): for a file with extended messages the check box `Match by
+  PGN (J1939)` (preset when the file declares J1939; source address 254
+  of a message = any).
+
 ## 9. Settings dialog
 
 - Modal `egui::Window` 760 × 560 (min 640 × 480), centred, bg.popup,
@@ -1334,7 +1431,8 @@ collapsible, not resizable, centred, max width 520. Nothing is sent until
   `body`; selected = bg.selection + text.primary; hover bg.row.hover.
   Sections: Appearance (`palette`), Connection (`plugs`), SDO
   (`arrows-left-right`), LSS (`identification-card`), Scan (`broadcast`), Trace (`list-dashes`), Graph
-  (`chart-line`), Safety (`shield-check`), Data folder (`folder`).
+  (`chart-line`), Safety (`shield-check`), Updates (`arrow-circle-up`),
+  Data folder (`folder`).
 - Content: one long scroll list of all sections; clicking a nav item
   scrolls to it; the nav follows the scroll position. Section title
   `heading` + 1 px border.subtle under it, 16 gap before the next section.
@@ -1362,6 +1460,8 @@ Settings and defaults (`+` = added by the designer, not in the brief):
 | | Default bitrate | combo 10 k … 1 M | 250 kbit/s |
 | | Listen-only on start | checkbox | off |
 | | + Connect automatically on start | checkbox | off |
+| | + Simulator: extended-ID demo frames (a J1939 node: `0CF00400` 50 ms, `18FEF100` 100 ms, `18FEEE00` 1 s and `18FEEE21` 1 s, an address claim at the start, a DM1 with 2 faults by BAM every 1 s; used on the next Connect) | checkbox | off |
+| | Extended IDs are | selectable `J1939` / `Raw frames` | J1939 |
 | | + Restart CAN controller after bus-off | checkbox | on |
 | SDO | Timeout | DragValue ms 50 … 10 000 | 500 ms |
 | | Block size (block transfer) | DragValue 1 … 127 | 127 |
@@ -1375,14 +1475,14 @@ Settings and defaults (`+` = added by the designer, not in the brief):
 | | Timeout per node | DragValue ms 10 … 2 000 | 100 ms |
 | | + Scan after connect | checkbox | off |
 | | + Heartbeat lost after | DragValue ms (0 = 3 × producer time) | 0 (auto) |
-| Trace | Buffer size | combo 10 000 / 50 000 / 100 000 / 500 000 / 1 000 000 frames | 100 000 |
+| Trace | Buffer size | combo 10 000 / 50 000 / 100 000 / 500 000 / 1 000 000 frames | 500 000 |
 | | Timestamp format | combo Absolute / Relative / Delta | Relative |
 | | + Timestamp resolution | combo ms / µs | µs |
 | | Default data view | segmented Hex / Dec / ASCII | Hex |
 | | Colour by type | combo Off / Chips / Chips + row tint | Chips |
 | | + Autoscroll by default | checkbox | on |
 | | + Log file format | combo CSV / candump log | CSV |
-| Graph | Buffer size | combo points per series 10 000 / 100 000 / 1 000 000 | 100 000 |
+| Graph | Buffer size | combo points per series 10 000 / 50 000 / 100 000 / 500 000 / 1 000 000 (the Trace list; a stored value not in the list is shown and kept) | 500 000 |
 | | Default time window | combo 5 s / 10 s / 30 s / 1 min / 5 min | 10 s |
 | | + Line width | DragValue 1.0 … 3.0 | 1.5 |
 | | + Show cursor readout | checkbox | on |
@@ -1393,6 +1493,7 @@ Settings and defaults (`+` = added by the designer, not in the brief):
 | | Confirm before LSS node-ID or bit rate change (also Activate bit rate) | checkbox | on |
 | | Confirm before DCF restore | checkbox | on |
 | | + Block all transmit in listen-only (always on, shown read-only) | checkbox disabled, checked | on |
+| Updates | + Check for updates at start (help and tooltip: `Asks GitHub for the newest release, at most once a day. Nothing else is sent.`) | checkbox | on |
 | Data folder | Path | read-only mono text field + `Change…` + `Open` | `<exe folder>\CANoxide_data` |
 | | + DCF folder (Save / Restore default) | read-only mono field + `Change…` | `<data folder>\dcf` |
 | | + DCF file name pattern for Save | TextEdit mono | `{name}_{node}_{date}.dcf` |
@@ -1411,6 +1512,7 @@ commands, on purpose.
 | Icon | Where |
 |---|---|
 | `plugs` | Settings ▸ Connection |
+| `arrow-circle-up` | Settings ▸ Updates |
 | `sun`, `moon`, `desktop` | Theme quick switch (menu bar right) |
 | `gear-six` | Settings menu item |
 | `cpu` | Devices tab, Devices empty state |
@@ -1426,6 +1528,7 @@ commands, on purpose.
 | `paper-plane-tilt` | Transmit list tab, empty state |
 | `paper-plane-right` | Send button |
 | `warning` | Emergencies tab and empty state, caution buttons and notes, Drive "Motion (danger)" header |
+| `truck` | J1939 tab and its empty / off states |
 | `check-square` | EDS check tab; Drive status bit set |
 | `square` | Drive status bit clear |
 | `engine` | Drive (CiA 402) tab |

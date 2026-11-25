@@ -1,5 +1,5 @@
 use canoxide::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
-use canoxide::can::{Bitrate, CanFrame};
+use canoxide::can::{Bitrate, CanFrame, CanId};
 use canoxide::canopen::decode::{decode, DecodeContext, MsgClass};
 use canoxide::canopen::nmt::NodeState;
 use canoxide::canopen::sdo::{SdoError, SdoRequest};
@@ -37,7 +37,7 @@ fn ring_buffer_filter_and_fixed_view() {
     f = TraceFilter { text: "OPERATIONAL".into(), ..Default::default() };
     t.set_filter(f);
     assert_eq!(t.view_len(), 4);
-    t.set_filter(TraceFilter { node: Some(5), id_min: 0x180, id_max: 0x1FF, ..Default::default() });
+    t.set_filter(TraceFilter { node: Some(5), id_min: CanId::std(0x180), id_max: CanId::std(0x1FF), ..Default::default() });
     assert_eq!(t.view_len(), 1);
     t.set_filter(TraceFilter::default());
 
@@ -83,7 +83,7 @@ fn wait_for(bus: &BusHandle, timeout: Duration, mut f: impl FnMut(&BusEvent) -> 
 #[test]
 fn bus_worker_with_simulator() {
     let bus = BusHandle::spawn(Arc::new(|| {}));
-    bus.send(BusCommand::Connect { adapter: AdapterChoice::Sim { node_id: 7, od: None }, channel: 0, bitrate: Bitrate::K250, listen_only: false });
+    bus.send(BusCommand::Connect { adapter: AdapterChoice::Sim { node_id: 7, od: None, extended_demo: false }, channel: 0, bitrate: Bitrate::K250, listen_only: false });
     assert!(wait_for(&bus, Duration::from_secs(5), |e| matches!(e, BusEvent::Connected { .. })));
     // Boot-up of the simulated node arrives without any send.
     assert!(wait_for(&bus, Duration::from_secs(5), |e| matches!(e, BusEvent::Frames(v) if v.iter().any(|f| f.id == 0x707))));
@@ -110,7 +110,7 @@ fn bus_worker_with_simulator() {
 #[test]
 fn listen_only_sends_nothing() {
     let bus = BusHandle::spawn(Arc::new(|| {}));
-    bus.send(BusCommand::Connect { adapter: AdapterChoice::Sim { node_id: 3, od: None }, channel: 0, bitrate: Bitrate::K500, listen_only: true });
+    bus.send(BusCommand::Connect { adapter: AdapterChoice::Sim { node_id: 3, od: None, extended_demo: false }, channel: 0, bitrate: Bitrate::K500, listen_only: true });
     assert!(wait_for(&bus, Duration::from_secs(5), |e| matches!(e, BusEvent::Connected { listen_only: true, .. })));
     bus.send(BusCommand::Send(CanFrame::new(0x123, &[1])));
     bus.send(BusCommand::Sdo { tag: 1, node: 3, req: SdoRequest::Upload { index: 0x1000, sub: 0 } });

@@ -17,7 +17,7 @@ const NODE: u8 = 5;
 
 fn connect(listen_only: bool) -> BusHandle {
     let bus = BusHandle::spawn(Arc::new(|| {}));
-    bus.send(BusCommand::Connect { adapter: AdapterChoice::Sim { node_id: NODE, od: None }, channel: 0, bitrate: Bitrate::K250, listen_only });
+    bus.send(BusCommand::Connect { adapter: AdapterChoice::Sim { node_id: NODE, od: None, extended_demo: false }, channel: 0, bitrate: Bitrate::K250, listen_only });
     assert!(wait_for(&bus, Duration::from_secs(5), |e| matches!(e, BusEvent::Connected { .. })).is_some());
     bus
 }

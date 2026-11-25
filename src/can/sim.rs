@@ -1167,6 +1167,103 @@ impl SimNode {
     }
 }
 
+/// The cyclic extended-ID demo frames of the simulator: (ID, period in ms).
+/// The IDs are valid public J1939 IDs: EEC1, CCVS1 and ET1 of source address
+/// 0, and ET1 of source address 33 (0x21). The data is synthetic.
+pub const EXT_DEMO_FRAMES: [(u32, u64); 4] = [(0x0CF0_0400, 50), (0x18FE_F100, 100), (0x18FE_EE00, 1000), (0x18FE_EE21, 1000)];
+
+/// The address claim of the demo J1939 node (SA 0), sent once at connect.
+pub const EXT_DEMO_CLAIM_ID: u32 = 0x18EE_FF00;
+/// Its NAME (synthetic): identity 5678, manufacturer 123, function 4,
+/// arbitrary address capable.
+pub const EXT_DEMO_NAME: [u8; 8] = [0x2E, 0x16, 0x60, 0x0F, 0x00, 0x04, 0x00, 0x80];
+/// The DM1 of the demo node: a BAM (TP.CM to 255, then two TP.DT 50 ms
+/// apart) every `EXT_DEMO_DM1_MS`. Lamps: amber on; faults SPN 100 FMI 1
+/// OC 3 and SPN 110 FMI 0 OC 1 (synthetic).
+pub const EXT_DEMO_DM1_MS: u64 = 1000;
+pub const EXT_DEMO_DM1: [u8; 10] = [0x04, 0xFF, 0x64, 0x00, 0x01, 0x03, 0x6E, 0x00, 0x00, 0x01];
+
+/// State of the extended-ID demo source: the next due time and a counter
+/// per cyclic frame, the claim and the DM1 cycle.
+#[derive(Clone, Debug, Default)]
+struct ExtDemo {
+    due_ms: [u64; 4],
+    count: [u32; 4],
+    claimed: bool,
+    /// Start of the next DM1 BAM, and the TP frames of the running one.
+    dm1_due: u64,
+    dm1_step: u8,
+}
+
+impl ExtDemo {
+    fn frame(id: u32, data: &[u8], now_ms: u64) -> CanFrame {
+        let mut f = CanFrame::new(id, data);
+        f.extended = true;
+        f.dir = Dir::Rx;
+        f.timestamp_us = now_ms * 1000;
+        f
+    }
+
+    /// Frames due at `now_ms`. A source that fell behind sends one frame and
+    /// starts a new period (no burst).
+    fn tick(&mut self, now_ms: u64, out: &mut Vec<CanFrame>) {
+        if !self.claimed {
+            self.claimed = true;
+            out.push(Self::frame(EXT_DEMO_CLAIM_ID, &EXT_DEMO_NAME, now_ms));
+        }
+        for (i, &(id, period)) in EXT_DEMO_FRAMES.iter().enumerate() {
+            if now_ms < self.due_ms[i] {
+                continue;
+            }
+            let c = self.count[i];
+            self.count[i] = c.wrapping_add(1);
+            // Bytes 3-4: a 2-byte value that changes with each frame.
+            let v = c.wrapping_mul(97).wrapping_add(1000) as u16;
+            let data = [c as u8, (c >> 8) as u8, (c.wrapping_mul(7)) as u8, v as u8, (v >> 8) as u8, 0xFF, 0xFF, 0xFF];
+            out.push(Self::frame(id, &data, now_ms));
+            self.due_ms[i] += period;
+            if self.due_ms[i] <= now_ms {
+                self.due_ms[i] = now_ms + period;
+            }
+        }
+        self.dm1_tick(now_ms, out);
+    }
+
+    /// The DM1 BAM: TP.CM at the start, TP.DT 1 after 50 ms, TP.DT 2 after
+    /// 100 ms.
+    fn dm1_tick(&mut self, now_ms: u64, out: &mut Vec<CanFrame>) {
+        let n = EXT_DEMO_DM1.len();
+        let at = self.dm1_due + 50 * self.dm1_step as u64;
+        if now_ms < at {
+            return;
+        }
+        match self.dm1_step {
+            0 => {
+                let cm = [32, n as u8, (n >> 8) as u8, n.div_ceil(7) as u8, 0xFF, 0xCA, 0xFE, 0x00];
+                out.push(Self::frame(0x1CEC_FF00, &cm, now_ms));
+                self.dm1_step = 1;
+            }
+            s => {
+                let from = (s as usize - 1) * 7;
+                let mut dt = [0xFF; 8];
+                dt[0] = s;
+                let to = (from + 7).min(n);
+                dt[1..1 + to - from].copy_from_slice(&EXT_DEMO_DM1[from..to]);
+                out.push(Self::frame(0x1CEB_FF00, &dt, now_ms));
+                if to >= n {
+                    self.dm1_step = 0;
+                    self.dm1_due += EXT_DEMO_DM1_MS;
+                    if self.dm1_due <= now_ms {
+                        self.dm1_due = now_ms + EXT_DEMO_DM1_MS;
+                    }
+                } else {
+                    self.dm1_step = s + 1;
+                }
+            }
+        }
+    }
+}
+
 /// The simulator as an adapter: a virtual bus with one node.
 pub struct SimAdapter {
     node: SimNode,
@@ -1174,11 +1271,20 @@ pub struct SimAdapter {
     start: Instant,
     open: bool,
     listen_only: bool,
+    /// The extended-ID demo source (setting `sim_extended_demo`); `None`
+    /// when it is off.
+    ext_demo: Option<ExtDemo>,
 }
 
 impl SimAdapter {
     pub fn new(node: SimNode) -> SimAdapter {
-        SimAdapter { node, queue: VecDeque::new(), start: Instant::now(), open: false, listen_only: false }
+        SimAdapter { node, queue: VecDeque::new(), start: Instant::now(), open: false, listen_only: false, ext_demo: None }
+    }
+
+    /// Also send the cyclic extended-ID demo frames (`EXT_DEMO_FRAMES`).
+    pub fn with_extended_demo(mut self, on: bool) -> SimAdapter {
+        self.ext_demo = on.then(ExtDemo::default);
+        self
     }
 
     pub fn node(&self) -> &SimNode {
@@ -1204,6 +1310,9 @@ impl SimAdapter {
         let mut out = Vec::new();
         let now = self.now_ms();
         self.node.tick(now, &mut out);
+        if let Some(d) = &mut self.ext_demo {
+            d.tick(now, &mut out);
+        }
         self.queue.extend(out);
     }
 }
@@ -1221,6 +1330,9 @@ impl CanAdapter for SimAdapter {
         self.open = true;
         self.listen_only = listen_only;
         self.start = Instant::now();
+        if let Some(d) = &mut self.ext_demo {
+            *d = ExtDemo::default();
+        }
         // The node boots with the bus, before the first frame it handles.
         self.pump();
         Ok(())

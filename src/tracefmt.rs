@@ -656,6 +656,48 @@ mod tests {
         }
     }
 
+    /// Standard and extended frames with the same numbers.
+    fn same_numbers() -> Vec<CanFrame> {
+        vec![
+            f(0x123, false, false, &[1], 1_000_000, Dir::Rx),
+            f(0x123, true, false, &[2], 1_001_000, Dir::Rx),
+            f(0x7FF, false, false, &[3, 4], 1_002_000, Dir::Tx),
+            f(0x7FF, true, false, &[5, 6], 1_003_000, Dir::Tx),
+            f(0x0, false, false, &[7], 1_004_000, Dir::Rx),
+            f(0x0, true, false, &[8], 1_005_000, Dir::Rx),
+        ]
+    }
+
+    #[test]
+    fn trc_keeps_format_of_same_number() {
+        let fr = same_numbers();
+        let mut out = Vec::new();
+        write_trc(&mut out, &fr, 1_764_064_800_000_000).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains(" 0123 ") && text.contains(" 00000123 "), "{text}");
+        let log = parse_log(&text, None).unwrap();
+        assert_eq!((log.bad_lines, log.skipped), (0, 0), "{:?}", log.errors);
+        assert_eq!(log.frames.len(), fr.len());
+        for (a, b) in fr.iter().zip(&log.frames) {
+            same(a, b);
+        }
+    }
+
+    #[test]
+    fn asc_keeps_format_of_same_number() {
+        let fr = same_numbers();
+        let mut out = Vec::new();
+        write_asc(&mut out, &fr, 1_764_064_800_000_000).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains(" 123 ") && text.contains(" 123x "), "{text}");
+        let log = parse_log(&text, None).unwrap();
+        assert_eq!((log.bad_lines, log.skipped), (0, 0), "{:?}", log.errors);
+        assert_eq!(log.frames.len(), fr.len());
+        for (a, b) in fr.iter().zip(&log.frames) {
+            same(a, b);
+        }
+    }
+
     #[test]
     fn vector_date_pm() {
         // 2026-01-01 13:05:09.250 UTC, a Thursday.

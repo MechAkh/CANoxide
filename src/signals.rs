@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::path::Path;
 
-pub const DEFAULT_SIGNAL_CAPACITY: usize = 20_000;
+pub const DEFAULT_SIGNAL_CAPACITY: usize = 500_000;
 /// Shortest SDO poll period.
 pub const MIN_POLL_MS: u64 = 50;
 pub const SIGNALS_FILE: &str = "signals.json";
@@ -39,6 +39,21 @@ pub enum SignalSource {
     SdoPoll { node: u8, index: u16, sub: u8, period_ms: u64, data_type: Option<u16> },
     /// Bits of the frames with this identifier.
     Raw { cob_id: u32, extended: bool, start_bit: u32, bits: u32, raw_kind: RawKind, big_endian: bool },
+    /// Bits of the frames with the J1939 PGN of the 29-bit `cob_id` (any
+    /// priority, any source address, PDU1 any destination), only from
+    /// `source` when it is given. With J1939 off (setting "Extended IDs
+    /// are": Raw frames) the exact 29-bit ID.
+    J1939 { cob_id: u32, source: Option<u8>, start_bit: u32, bits: u32, raw_kind: RawKind, big_endian: bool },
+}
+
+/// True when frame `f_id`/`f_ext` belongs to a signal of `sig_id`: by the
+/// J1939 PGN (and source address) when `pgn` is set and J1939 is on, else
+/// by the exact ID and format.
+pub fn id_matches(sig_id: u32, sig_ext: bool, pgn: Option<Option<u8>>, f_id: u32, f_ext: bool, j1939_on: bool) -> bool {
+    match pgn {
+        Some(sa) if j1939_on => sig_ext && f_ext && crate::j1939::pgn_matches(sig_id, sa, f_id),
+        _ => sig_id == f_id && sig_ext == f_ext,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -377,6 +392,14 @@ impl SignalStore {
                 }
                 SignalSource::Raw { cob_id, extended, start_bit, bits, raw_kind, big_endian } => {
                     if *cob_id != f.id || *extended != f.extended {
+                        continue;
+                    }
+                    let Some(raw) = raw_bits(data, *start_bit, *bits, *big_endian) else { continue };
+                    let Some(v) = raw_number(raw, *bits, *raw_kind) else { continue };
+                    updates.push((s.id, v));
+                }
+                SignalSource::J1939 { cob_id, source, start_bit, bits, raw_kind, big_endian } => {
+                    if !id_matches(*cob_id, true, Some(*source), f.id, f.extended, ctx.j1939()) {
                         continue;
                     }
                     let Some(raw) = raw_bits(data, *start_bit, *bits, *big_endian) else { continue };

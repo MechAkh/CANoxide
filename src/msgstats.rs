@@ -4,7 +4,7 @@
 //! trace (also while a trace tab is paused); the memory is bounded by
 //! `MAX_IDS`. The UI only draws from it.
 
-use crate::can::{CanFrame, Dir};
+use crate::can::{CanFrame, CanId, Dir};
 use crate::canopen::decode::{Decoded, MsgClass};
 use std::collections::HashMap;
 
@@ -20,18 +20,9 @@ pub const NOISY_MIN_FRAMES: u64 = 10;
 const PERIOD_ALPHA: f64 = 0.2;
 
 /// The identifier of a row: an 11-bit and a 29-bit frame with the same
-/// number are different rows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MsgKey {
-    pub id: u32,
-    pub extended: bool,
-}
-
-impl MsgKey {
-    pub fn of(f: &CanFrame) -> MsgKey {
-        MsgKey { id: f.id, extended: f.extended }
-    }
-}
+/// number are different rows (the shared `CanId`; standard rows sort
+/// before extended rows).
+pub type MsgKey = CanId;
 
 /// The direction of the last change of a byte value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +74,7 @@ pub struct MsgEntry {
 impl MsgEntry {
     fn new(f: &CanFrame, d: &Decoded) -> MsgEntry {
         let node = d.node.map(|n| format!(" node {n}")).unwrap_or_default();
-        let search = format!("{:x} 0x{:x} {}{node}", f.id, f.id, d.label).to_lowercase();
+        let search = format!("{} {:x} 0x{:x} {}{node}", CanId::of(f), f.id, f.id, d.label).to_lowercase();
         MsgEntry {
             key: MsgKey::of(f),
             class: d.class,

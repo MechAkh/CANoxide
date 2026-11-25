@@ -3,6 +3,87 @@
 The notable changes of each release. The release pages on GitHub have the
 download files and their SHA-256 checksums.
 
+## Unreleased
+
+### New
+
+- **Extended (29-bit) IDs in every view:** the identity of a frame is its
+  number and its format, so a standard and an extended frame with the same
+  number are two rows in Messages, two Trace rows in fixed mode, and two
+  signals for the Graph, user signals and Find signal. A standard ID shows
+  as 3 hex digits, an extended ID as 8 (Trace, Messages, Graph, transmit
+  list, CLI output). An ID field reads hex: above 7FF, 8 digits or a
+  trailing `x` (`123x`) is extended; more than 29 bits is an error.
+- **Trace filter:** the COB-ID range takes extended IDs (all standard IDs
+  sort before all extended IDs), and a new **Frame format** filter shows
+  all frames, standard only or extended only.
+- **Transmit list:** extended entries from the ID text or the Ext box;
+  **On receive** waits for the typed ID in its own format.
+- **Simulator: extended-ID demo frames** (Settings, Connection, off by
+  default): the simulator also sends `0CF00400` every 50 ms, `18FEF100`
+  every 100 ms and `18FEEE00` every second, with changing data.
+- **CLI:** `send` and `monitor --id` read the same ID forms; `send 0x800`
+  now sends an extended frame (before: an error). `monitor --id` keeps the
+  two formats apart.
+- **J1939 decoder (receive only):** 29-bit frames are decoded as J1939 by
+  default (Settings, Connection: **Extended IDs are** J1939 or Raw frames).
+  The Trace shows type `J1939`, the source address as the node, and a text
+  with the PGN, its name for the common groups, the priority and the
+  destination; the transport protocol (TP.CM / TP.DT, BAM and RTS/CTS) is
+  followed per source and destination, and the last packet shows the
+  reassembled message. Address claim NAME, Request, Acknowledgement and
+  DM1 / DM2 faults are decoded. New Trace filters **PGN** and **Source
+  address**; Messages shows `PGN n NAME  SA n` per ID. Nothing is sent:
+  no address claim, no request, no CTS.
+- **J1939 tab** (View menu): the parameter groups by PGN and source
+  address (with a hex dump and the DM1 / DM2 faults of the selected row),
+  the addresses with their claimed NAME, the active faults (a fault that
+  is no longer reported stays dimmed until Clear), the transport counters
+  and `Export CSV...`.
+- **User and Graph signals by PGN:** Define signal has **Match the PGN
+  (any source address)** with an optional source address; a DBC file with
+  J1939 messages offers **Match by PGN (J1939)** on import (a message with
+  source address 254 matches any address).
+- **Simulator:** the extended-ID demo is a small J1939 node: EEC1, CCVS and
+  ET1 from address 0, ET1 from address 33, an address claim at the start
+  and a DM1 with two faults by BAM every second.
+- **CLI:** `monitor` adds a `j1939` field (`pgn`, `name`, `priority`, `sa`,
+  `da`) to each J1939 frame and has the class `j1939`; `--ext-raw` decodes
+  29-bit frames as raw frames. New `j1939 decode-id <id>` (no bus).
+- **Update notice:** at start (at most once a day) and on **Help > Check
+  for updates...**, the app asks GitHub for the latest release: one HTTPS
+  GET of `https://api.github.com/repos/MechAkh/CANoxide/releases/latest`
+  with the headers `User-Agent: CANoxide/<version>` and
+  `Accept: application/vnd.github+json`, through the system proxy settings.
+  Nothing else is sent (no ID, no settings, no machine or user name), no
+  cookie is kept and no redirect is followed. A newer release shows an
+  **Update x.y.z** button in the menu bar; it opens a window with the two
+  versions, the release name and date, **Open the release page** (in your
+  browser), **Skip this version** and **Close**. Nothing is downloaded or
+  run. Turn the check at start off in Settings, Updates: **Check for
+  updates at start**. A failed check at start says nothing; the CLI never
+  checks.
+
+### Changed
+
+- Buffer sizes: the Graph buffer has the same choices as the Trace buffer (10 000 to 1 000 000); the default of both is 500 000 (before: Trace 100 000 frames, Graph 20 000 points per signal). A stored setting keeps its value.
+
+### Fixed
+
+- Graph: with Follow off, the points older than the time window were not drawn after a drag or zoom back; they are drawn as long as they are in the buffer (Settings: Buffer size).
+
+- The transmit list **On receive** trigger lost the extended format of its
+  ID when an entry was edited, and took a standard ID above 7FF as
+  extended only by its value.
+- Find signal with a typed ID searched the standard and the extended frame
+  of that number together.
+- A raw Graph signal of an extended frame was named and listed like the
+  standard frame of the same number.
+- `canoxide-cli send` printed an extended ID with 3 digits; the bus status
+  line of a failed send did the same.
+- Old `txlist.json` files without the `extended` fields load as standard
+  entries.
+
 ## 0.5.2 (2026-11-26)
 
 ### Fixed

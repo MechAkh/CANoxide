@@ -107,7 +107,7 @@ fn settings_round_trip_and_defaults() {
     fs::write(t.0.join("settings.json"), "{\"sdo_timeout_ms\": 3}").unwrap();
     let (s4, _) = Settings::load(&t.0);
     assert_eq!(s4.sdo_timeout_ms, 10, "clamped");
-    assert_eq!(s4.trace_capacity, 100_000, "missing keys get defaults");
+    assert_eq!(s4.trace_capacity, 500_000, "missing keys get defaults");
     // A settings file of v0.3.3 (no CANfox fields) loads; the CANfox kind
     // round-trips with its own net number.
     fs::write(t.0.join("settings.json"), "{\"adapter\": \"Peak\", \"channel\": 82}").unwrap();

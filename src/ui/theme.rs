@@ -150,6 +150,8 @@ pub(crate) fn class_colours(p: &Palette, class: MsgClass) -> (Color32, Color32) 
         SdoReq | SdoResp => (0x79B8FF, 0x283443, 0x1458B8, 0xE3EBF6),
         Heartbeat => (0xF49AD0, 0x3B2F3B, 0xA1286A, 0xF4E5ED),
         Lss => (0xE3D36B, 0x38382B, 0x6E6000, 0xEEECE0),
+        // The palette's info tokens (no new colour).
+        J1939 => return (p.info, p.info_tint),
         Other => return (p.text_secondary, p.bg_button),
     };
     if p.dark {

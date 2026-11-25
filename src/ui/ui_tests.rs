@@ -701,9 +701,9 @@ fn s3_trace() {
 
     // Type filter: no heartbeat rows.
     open_filters(&mut h);
-    assert!(has_exact(&h, "Types (11/11)"), "type count\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "Types (12/12)"), "type count\nUI:\n{}", dump(&h));
     click_role(&mut h, Role::CheckBox, "Heartbeat");
-    assert!(has_exact(&h, "Types (10/11)"), "type count\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, "Types (11/12)"), "type count\nUI:\n{}", dump(&h));
     let (shown, buf, _) = trace_counts(&h);
     assert!(shown < buf, "type filter: {shown} of {buf} rows");
     assert!(last_row(&h, "701").is_none(), "heartbeat row shown with the Heartbeat type off\nUI:\n{}", dump(&h));
@@ -1888,6 +1888,62 @@ fn s27_messages_view() {
     click(&mut h, "Reset all statistics");
     assert!(h.state().msgs.is_empty());
     assert!(has_exact(&h, "No frames yet. Connect to see one row per COB-ID."));
+}
+
+/// Extended (29-bit) IDs: the simulator demo frames in the Trace (8 hex
+/// digits, format filter) and the Messages view, and an extended entry in
+/// the transmit list.
+#[test]
+fn s28_extended_ids() {
+    let tmp = TempDir::new("s28");
+    // Raw frames: the extended rows are type Ext (J1939: see s52).
+    preset(&tmp.data(), Settings { sim_extended_demo: true, ext_protocol: crate::settings::ExtProtocol::Raw, ..Settings::default() });
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Trace(1)]);
+    connect(&mut h);
+    wait_for(&mut h, "demo rows", |h| has_exact(h, "0CF00400") && has_exact(h, "18FEF100") && has_exact(h, "18FEEE00"));
+    assert!(has_exact(&h, "Ext"), "type of an extended row\nUI:\n{}", dump(&h));
+    wait_for(&mut h, "heartbeat row", |h| last_row(h, "701").is_some());
+    // Format filter: extended only hides the CANopen frames.
+    open_filters(&mut h);
+    click(&mut h, "Extended only");
+    wait_for(&mut h, "extended only", |h| last_row(h, "701").is_none() && has_exact(h, "18FEF100"));
+    click(&mut h, "Standard only");
+    wait_for(&mut h, "standard only", |h| last_row(h, "701").is_some() && !has_exact(h, "18FEF100") && !has_exact(h, "0CF00400"));
+    click(&mut h, "All formats");
+    // An extended range: 18FEF100..18FEFFFF shows only 18FEF100.
+    let lo = right_of(&h, "COB-ID 0x", Role::TextInput);
+    let hi = right_of(&h, "..", Role::TextInput);
+    set_text(&mut h, lo, "18FEF100");
+    set_text(&mut h, hi, "18FEFFFF");
+    wait_for(&mut h, "extended range", |h| has_exact(h, "18FEF100") && !has_exact(h, "18FEEE00") && last_row(h, "701").is_none());
+    click(&mut h, "Reset filters");
+
+    // Messages: one row per ID, in the 8-digit form.
+    only(&mut h, vec![Tab::Messages]);
+    wait_for(&mut h, "message rows", |h| has_exact(h, "18FEF100") && has_exact(h, "0CF00400") && has_exact(h, "701"));
+    assert!(h.state().msgs.get(crate::can::CanId::ext(0x18FE_F100)).is_some_and(|s| s.count >= 1));
+    assert!(h.state().msgs.get(crate::can::CanId::std(0x100)).is_none(), "an extended frame counted as standard");
+
+    // Transmit list: "123x" is an extended entry, listed as 00000123.
+    only(&mut h, vec![Tab::TxList]);
+    let id = right_of(&h, "ID 0x", Role::TextInput);
+    set_text(&mut h, id, "123x");
+    let data = right_of(&h, "Data", Role::TextInput);
+    set_text(&mut h, data, "01 02");
+    click(&mut h, "Manual");
+    click(&mut h, "Add to list");
+    wait_for(&mut h, "extended entry", |h| has_exact(h, "00000123"));
+    let entry = |h: &H| h.state().bus.shared.lock().unwrap().txlist.iter().find(|e| e.id == 0x123).cloned();
+    wait_for(&mut h, "entry in the bus worker", |h| entry(h).is_some());
+    let e = entry(&h).unwrap();
+    assert!(e.extended, "entry not extended: {e:?}");
+    let row = top_by_label(&h, "00000123", None);
+    let send = button_on_row(&h, row, "Send");
+    click_id(&mut h, send);
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_for(&mut h, "Tx row 00000123", |h| last_row(h, "00000123").is_some());
+    assert_eq!(cell_text(&h, last_row(&h, "00000123").unwrap(), "Dir"), tx_glyph());
 }
 
 // ------------------------------------------------------------ screenshots
@@ -3460,6 +3516,125 @@ fn row_faults(h: &H, rows: Vec<(egui::Rect, egui::Rect)>, what: &str) -> Vec<Str
     out
 }
 
+/// Graph with Follow off: the points older than the time window are drawn
+/// when the visible range is moved back over them (a zoom out); with Follow
+/// on only the newest window is drawn, as before.
+#[test]
+fn s51_graph_follow_off_draws_old_points() {
+    let tmp = TempDir::new("s51");
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Graph]);
+    let id = h.state_mut().add_signal(raw_def("Battery voltage", 0)).unwrap();
+    h.state_mut().settings.graph_window_s = 10.0;
+    if let Ok(mut s) = h.state().bus.signals.lock() {
+        for i in 0..=600 {
+            s.push_raw(id, i as f64 * 0.1, (i % 50) as f64);
+        }
+    }
+    // Pause fixes the end of the window at 60 s (the worker moves now_us).
+    h.state_mut().graph.paused_at = Some(60.0);
+    step2(&mut h);
+    step2(&mut h);
+    let drawn = |h: &H| h.state().graph.drawn.first().copied().unwrap_or((0, None));
+    let (n, first) = drawn(&h);
+    assert!(h.state().graph.follow, "Follow is not on at the start");
+    assert!(n > 0 && first.is_some_and(|t| t >= 49.0), "Follow on: {n} points from {first:?}, expected the window 50..60 s");
+    // Zoom out: Follow goes off and the range covers the older points.
+    for _ in 0..12 {
+        click(&mut h, "Zoom out");
+        step2(&mut h);
+    }
+    step2(&mut h);
+    assert!(!h.state().graph.follow, "Zoom out did not switch Follow off");
+    let (n, first) = drawn(&h);
+    assert!(n > 0 && first.is_some_and(|t| t < 40.0), "Follow off: {n} points from {first:?}, expected points older than 40 s");
+    // Follow on again: the newest window as before.
+    click(&mut h, "Follow");
+    step2(&mut h);
+    step2(&mut h);
+    assert!(h.state().graph.follow);
+    let (n, first) = drawn(&h);
+    assert!(n > 0 && first.is_some_and(|t| t >= 49.0), "Follow on again: {n} points from {first:?}");
+}
+
+/// J1939 (the default for 29-bit IDs): the simulator demo frames in the
+/// Trace with type J1939 and the decoded texts (PGN name, address claim
+/// NAME, BAM and the reassembled DM1), and the PGN / SA filters with the
+/// badge count.
+#[test]
+fn s52_j1939_trace() {
+    let tmp = TempDir::new("s52");
+    preset(&tmp.data(), Settings { sim_extended_demo: true, ..Settings::default() });
+    let mut h = build_sized(&tmp.data(), 1600.0, 900.0);
+    only(&mut h, vec![Tab::Trace(1)]);
+    connect(&mut h);
+    wait_for(&mut h, "EEC1 row", |h| has_exact(h, "0CF00400") && has(h, "PGN 61444 EEC1"));
+    assert!(has_exact(&h, "J1939"), "type of a J1939 row\nUI:\n{}", dump(&h));
+    assert!(!has_exact(&h, "Ext"), "an extended row is still type Ext\nUI:\n{}", dump(&h));
+    // The DM1 by BAM: only the TP.DT frames (PGN 60160).
+    open_filters(&mut h);
+    let pgn = right_of(&h, "PGN", Role::TextInput);
+    set_text(&mut h, pgn, "60160");
+    wait_for(&mut h, "reassembled DM1", |h| has(h, "complete: PGN 65226 DM1, 10 bytes") && has(h, "SPN 100 FMI 1 OC 3, SPN 110 FMI 0 OC 1; lamps: amber"));
+    assert!(last_row(&h, "0CF00400").is_none(), "PGN filter shows EEC1");
+    assert_eq!(super::trace_view::active_filters(&h.state().traces[&1]), 1);
+    // PGN 65262 (ET1) from SA 33 only.
+    set_text(&mut h, pgn, "0xFEEE");
+    let sa = right_of(&h, "Source address", Role::TextInput);
+    set_text(&mut h, sa, "33");
+    wait_for(&mut h, "ET1 of SA 33", |h| last_row(h, "18FEEE21").is_some() && last_row(h, "18FEEE00").is_none());
+    assert_eq!(super::trace_view::active_filters(&h.state().traces[&1]), 2);
+    click(&mut h, "Reset filters");
+    wait_for(&mut h, "filters reset", |h| last_row(h, "18FEEE00").is_some());
+    assert_eq!(super::trace_view::active_filters(&h.state().traces[&1]), 0);
+    // The address claim of SA 0.
+    open_filters(&mut h);
+    let pgn = right_of(&h, "PGN", Role::TextInput);
+    set_text(&mut h, pgn, "60928");
+    wait_for(&mut h, "address claim", |h| has(h, "NAME mfr 123 fn 4 id 5678"));
+}
+
+/// The J1939 tab: the parameter groups of SA 0 and 33, the address claim,
+/// the two DM1 faults; Clear empties it. With Raw frames it is off.
+#[test]
+fn s53_j1939_tab() {
+    let tmp = TempDir::new("s53");
+    preset(&tmp.data(), Settings { sim_extended_demo: true, ..Settings::default() });
+    let mut h = build_sized(&tmp.data(), 1600.0, 1000.0);
+    only(&mut h, vec![Tab::J1939]);
+    assert!(has_exact(&h, "No J1939 frame received yet."), "empty state\nUI:\n{}", dump(&h));
+    connect(&mut h);
+    wait_for(&mut h, "J1939 tables", |h| has_exact(h, "61444") && has_exact(h, "EEC1") && has_exact(h, "65262") && has_exact(h, "33") && has(h, "NAME mfr 123 fn 4 id 5678"));
+    wait_for(&mut h, "DM1 faults", |h| has_exact(h, "Active faults (2 active, 2 listed)") && has_exact(h, "100") && has_exact(h, "110"));
+    assert!(has(&h, "TP: ") && !has(&h, "TP: 0 complete"), "TP counters\nUI:\n{}", dump(&h));
+    {
+        let s = h.state().bus.shared.lock().unwrap();
+        let pgs: Vec<(u32, u8)> = s.j1939.pgs().map(|r| (r.pgn, r.sa)).collect();
+        for k in [(61444, 0), (65265, 0), (65262, 0), (65262, 33), (60928, 0), (65226, 0)] {
+            assert!(pgs.contains(&k), "no row {k:?} in {pgs:?}");
+        }
+    }
+    // The DM1 row selected: the detail box shows the faults.
+    h.state_mut().j1v.selected = Some((65226, 0));
+    wait_for(&mut h, "DM1 detail", |h| has(h, "SPN 100  FMI 1  OC 3") && has(h, "Lamps: "));
+    click(&mut h, "Disconnect");
+    wait_for(&mut h, "disconnected", |h| has_exact(h, "Connect"));
+    click(&mut h, &format!("{} Clear", egui_phosphor::regular::TRASH));
+    wait_for(&mut h, "cleared", |h| has_exact(h, "No J1939 frame received yet."));
+
+    // Raw frames: the tab says J1939 is off, the frames are type Ext.
+    let tmp = TempDir::new("s53raw");
+    preset(&tmp.data(), Settings { sim_extended_demo: true, ext_protocol: crate::settings::ExtProtocol::Raw, ..Settings::default() });
+    let mut h = build_sized(&tmp.data(), 1600.0, 1000.0);
+    only(&mut h, vec![Tab::Trace(1)]);
+    connect(&mut h);
+    wait_for(&mut h, "Ext rows", |h| has_exact(h, "18FEF100") && has_exact(h, "Ext"));
+    only(&mut h, vec![Tab::J1939]);
+    step2(&mut h);
+    assert!(has_exact(&h, "J1939 is off."), "Raw: tab not off\nUI:\n{}", dump(&h));
+    assert!(h.state().bus.shared.lock().unwrap().j1939.is_empty(), "Raw: the monitor has rows");
+}
+
 /// Show `tab` alone at window widths 300..=1400 (every 20 points) and
 /// collect the toolbar faults of each width.
 fn sweep_toolbars(h: &mut H, tab: Tab, name: &str, expect_rows: usize) -> Vec<String> {
@@ -3501,10 +3676,12 @@ fn toolbar_rows_do_not_overlap() {
     add(sweep_toolbars(&mut h, Tab::Graph, "Graph", 1));
     add(sweep_toolbars(&mut h, Tab::Network, "Network", 5));
     add(sweep_toolbars(&mut h, Tab::TxList, "Transmit list", 3));
+    add(sweep_toolbars(&mut h, Tab::J1939, "J1939", 1));
     assert!(n == 0, "{n} toolbar fault(s), the first of each view:\n{}", faults.join("\n"));
 }
 
-/// The connection bar and the status bar draw no widget over another one
+/// The menu bar (also with the Update pill), the connection bar and the
+/// status bar draw no widget over another one
 /// and none outside the window, at window widths from the smallest one of
 /// the app (`MIN_WINDOW`) to 2000 points: with the control of each adapter
 /// kind (with a long driver note), disconnected and connected (Simulator,
@@ -3532,7 +3709,7 @@ fn window_bars_do_not_overlap() {
             theme::toolbar_rects::clear(&h.ctx);
             step2(h);
             let rows = theme::toolbar_rects::last_bars(&h.ctx);
-            assert_eq!(rows.len(), 2, "{name} at {w}: the connection bar and the status bar are not both recorded");
+            assert_eq!(rows.len(), 3, "{name} at {w}: the menu bar, the connection bar and the status bar are not all recorded");
             v.extend(row_faults(h, rows, &format!("{name} at {w}")));
         }
         n += v.len();
@@ -3561,5 +3738,238 @@ fn window_bars_do_not_overlap() {
     connect(&mut h);
     h.state_mut().set_status(long, false);
     sweep(&mut h, "Simulator connected");
+    // The Update pill at the right end of the menu bar, left of the theme button.
+    {
+        let app = h.state_mut();
+        app.upd.known = Some(release("v10.20.30"));
+        app.upd.show = true;
+    }
+    step2(&mut h);
+    assert!(has_exact(&h, "Update 10.20.30"), "no pill\nUI:\n{}", dump(&h));
+    sweep(&mut h, "Simulator connected, update pill");
     assert!(n == 0, "{n} bar fault(s), the first of each case:\n{}", faults.join("\n"));
+}
+
+// ------------------------------------------------------------ update notice
+
+/// A release of this repository with the tag `tag`.
+fn release(tag: &str) -> crate::update::Release {
+    crate::update::Release {
+        tag: tag.to_string(),
+        html_url: format!("https://github.com/MechAkh/CANoxide/releases/tag/{tag}"),
+        name: format!("CANoxide {tag}"),
+        published_at: "2026-11-20T10:00:00Z".to_string(),
+        draft: false,
+        prerelease: false,
+    }
+}
+
+/// A fetcher that counts its calls and gives `answer` (no network).
+fn fake_fetch(answer: Result<crate::update::Release, String>) -> (crate::update::Fetcher, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c = n.clone();
+    let f: crate::update::Fetcher = std::sync::Arc::new(move || {
+        c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        answer.clone()
+    });
+    (f, n)
+}
+
+fn fetches(n: &std::sync::atomic::AtomicUsize) -> usize {
+    n.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// `build` with an injected update fetcher.
+fn build_fetch(dir: &Path, fetch: crate::update::Fetcher) -> H {
+    let mut boot = Boot::load_dir(dir.to_path_buf());
+    assert_eq!(boot.settings.adapter, AdapterKind::Simulator, "a UI test must never use the PEAK or the CANfox adapter");
+    boot.update_fetch = fetch;
+    Harness::builder().with_size(egui::Vec2::new(1600.0, 1000.0)).build_eframe(move |cc| App::new(cc, boot))
+}
+
+/// Wait until no update check is running (its result is taken).
+fn wait_update(h: &mut H) {
+    wait_for(h, "update check done", |h| h.state().upd.pending.is_none());
+    step2(h);
+}
+
+fn check_now(h: &mut H) {
+    click_role(h, Role::Button, "Help");
+    click(h, "Check for updates...");
+    wait_update(h);
+}
+
+/// The automatic check at start: none when the setting is off or the last
+/// successful check is younger than 24 h; one when it is older, and then
+/// the time of the check is stored.
+#[test]
+fn u1_update_check_at_start() {
+    let now = crate::update::now_utc();
+    for (name, s, expect) in [
+        ("off", Settings { update_check: false, ..Settings::default() }, 0),
+        ("recent", Settings { update_last_check: Some(now - 3600), ..Settings::default() }, 0),
+        ("old", Settings { update_last_check: Some(now - 25 * 3600), ..Settings::default() }, 1),
+        ("never", Settings::default(), 1),
+    ] {
+        let tmp = TempDir::new(&format!("u1{name}"));
+        preset(&tmp.data(), s);
+        let (f, n) = fake_fetch(Ok(release("v99.0.0")));
+        let mut h = build_fetch(&tmp.data(), f);
+        if expect == 0 {
+            assert!(h.state().upd.pending.is_none(), "{name}: a check was started");
+            run_for(&mut h, Duration::from_millis(200));
+        } else {
+            wait_update(&mut h);
+        }
+        assert_eq!(fetches(&n), expect, "{name}: fetches");
+        assert_eq!(has_exact(&h, "Update 99.0.0"), expect == 1, "{name}: pill\nUI:\n{}", dump(&h));
+        if expect == 1 {
+            assert!(h.state().settings.update_last_check.is_some_and(|t| t + 60 >= now), "{name}: time of the check not stored");
+            assert_eq!(h.state().status, "Ready. Nothing is sent until you press a button.", "{name}: the automatic check changed the status");
+        }
+    }
+}
+
+/// A newer version: the pill, its hover text, the window with both versions,
+/// the name and the date; Open the release page gives the checked URL to the
+/// browser; Skip this version hides the pill, also after a save and a new
+/// start; a still newer version shows it again.
+#[test]
+fn u2_update_pill_window_skip() {
+    let tmp = TempDir::new("u2");
+    let (f, n) = fake_fetch(Ok(release("v9.9.0")));
+    let mut h = build_fetch(&tmp.data(), f);
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_update(&mut h);
+    assert_eq!(fetches(&n), 1);
+    let pill = top_by_label(&h, "Update 9.9.0", Some(Role::Button));
+    // In the menu bar row, right of Help.
+    let help = rect_id(&h, top_by_label(&h, "Help", Some(Role::Button)));
+    let pr = rect_id(&h, pill);
+    assert!((cy(&pr) - cy(&help)).abs() < 6.0 && pr.x0 > help.x1, "pill not in the menu bar row: {pr:?} / Help {help:?}");
+    node(&h, pill).hover();
+    step2(&mut h);
+    assert!(has(&h, &format!("CANoxide 9.9.0 is available (you have {})", crate::VERSION)), "hover text\nUI:\n{}", dump(&h));
+    click_id(&mut h, pill);
+    assert!(has_exact(&h, "Update available"), "window\nUI:\n{}", dump(&h));
+    for t in ["9.9.0", crate::VERSION, "CANoxide v9.9.0", "2026-11-20", "Open the release page", "Skip this version"] {
+        assert!(has_exact(&h, t), "{t:?} not in the window\nUI:\n{}", dump(&h));
+    }
+    click(&mut h, "Open the release page");
+    assert_eq!(h.state().upd.opened.as_deref(), Some("https://github.com/MechAkh/CANoxide/releases/tag/v9.9.0"));
+    click(&mut h, "Skip this version");
+    assert!(!has_exact(&h, "Update 9.9.0") && !has_exact(&h, "Update available"), "still shown after Skip\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().settings.update_skip_version, "9.9.0");
+    h.state_mut().save_settings();
+    drop(h);
+    let (mut s, _) = Settings::load(&tmp.data());
+    assert_eq!(s.update_skip_version, "9.9.0", "skip not saved");
+    // A new start with a due check: the skipped version shows no pill.
+    s.update_last_check = None;
+    preset(&tmp.data(), s.clone());
+    let (f, n) = fake_fetch(Ok(release("v9.9.0")));
+    let mut h = build_fetch(&tmp.data(), f);
+    wait_update(&mut h);
+    assert_eq!(fetches(&n), 1);
+    assert!(!has(&h, "Update 9.9.0"), "skipped version shown at start\nUI:\n{}", dump(&h));
+    drop(h);
+    // A newer one than the skipped: shown.
+    preset(&tmp.data(), s);
+    let (f, _) = fake_fetch(Ok(release("v9.10.0")));
+    let mut h = build_fetch(&tmp.data(), f);
+    wait_update(&mut h);
+    assert!(has_exact(&h, "Update 9.10.0"), "newer than the skipped not shown\nUI:\n{}", dump(&h));
+}
+
+/// Help > Check for updates... runs with the setting off, a check a minute
+/// ago and the version skipped: the pill, the window and the status.
+#[test]
+fn u3_manual_check_ignores_skip_and_time() {
+    let tmp = TempDir::new("u3");
+    let now = crate::update::now_utc();
+    preset(&tmp.data(), Settings { update_check: false, update_last_check: Some(now - 60), update_skip_version: "9.9.0".into(), ..Settings::default() });
+    let (f, n) = fake_fetch(Ok(release("v9.9.0")));
+    let mut h = build_fetch(&tmp.data(), f);
+    only(&mut h, vec![Tab::Trace(1)]);
+    run_for(&mut h, Duration::from_millis(100));
+    assert_eq!(fetches(&n), 0, "automatic check with the setting off");
+    check_now(&mut h);
+    assert_eq!(fetches(&n), 1);
+    assert!(has_exact(&h, "Update 9.9.0") && has_exact(&h, "Update available"), "manual check\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().status, format!("CANoxide 9.9.0 is available (you have {})", crate::VERSION));
+    assert!(!h.state().status_error);
+    click_role(&mut h, Role::Button, "Close");
+    assert!(!has_exact(&h, "Update available") && has_exact(&h, "Update 9.9.0"), "Close\nUI:\n{}", dump(&h));
+}
+
+/// The texts of a manual check: an error in the status line (an automatic
+/// failure says nothing), "the newest version" for the same version and for
+/// a draft or a prerelease; an html_url outside the releases of the
+/// repository opens the fixed releases page.
+#[test]
+fn u4_update_check_texts() {
+    let tmp = TempDir::new("u4");
+    let rate = crate::update::status_text(429);
+    let (f, n) = fake_fetch(Err(rate.clone()));
+    let mut h = build_fetch(&tmp.data(), f);
+    only(&mut h, vec![Tab::Trace(1)]);
+    wait_update(&mut h);
+    assert_eq!(fetches(&n), 1);
+    assert_eq!(h.state().status, "Ready. Nothing is sent until you press a button.", "automatic failure shown");
+    assert!(!h.state().status_error);
+    assert!(h.state().settings.update_last_check.is_none(), "a failed check stored as successful");
+    check_now(&mut h);
+    assert_eq!(h.state().status, rate);
+    assert!(h.state().status_error);
+    assert!(has(&h, "rate limit"), "\nUI:\n{}", dump(&h));
+
+    let newest = format!("CANoxide {} is the newest version.", crate::VERSION);
+    let mut draft = release("v99.0.0");
+    draft.draft = true;
+    let mut pre = release("v99.0.0");
+    pre.prerelease = true;
+    for (name, r) in [("same", release(&format!("v{}", crate::VERSION))), ("older", release("v0.0.1")), ("draft", draft), ("prerelease", pre)] {
+        h.state_mut().upd.fetch = fake_fetch(Ok(r)).0;
+        check_now(&mut h);
+        assert_eq!(h.state().status, newest, "{name}");
+        assert!(!h.state().status_error, "{name}");
+        assert!(!has(&h, "Update 99.0.0"), "{name}: pill\nUI:\n{}", dump(&h));
+    }
+
+    let mut odd = release("v99.0.0");
+    odd.html_url = "https://example.com/MechAkh/CANoxide/releases/tag/v99.0.0".into();
+    odd.name = "x".repeat(300);
+    h.state_mut().upd.fetch = fake_fetch(Ok(odd)).0;
+    check_now(&mut h);
+    assert!(has_exact(&h, "Update available"), "\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, &format!("{}…", "x".repeat(79))), "name not cut to 80 characters\nUI:\n{}", dump(&h));
+    click(&mut h, "Open the release page");
+    assert_eq!(h.state().upd.opened.as_deref(), Some(crate::update::RELEASES_PAGE));
+}
+
+/// Settings: Check for updates at start (on by default) is saved.
+#[test]
+fn u5_update_setting() {
+    let tmp = TempDir::new("u5");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    assert!(h.state().settings.update_check);
+    click_role(&mut h, Role::Button, "Settings");
+    assert!(has(&h, "  Updates") && has_exact(&h, "Check for updates at start"), "\nUI:\n{}", dump(&h));
+    assert!(has(&h, "Asks GitHub for the newest release, at most once a day. Nothing else is sent."));
+    if let Some(d) = h.state_mut().settings_dlg.as_mut() {
+        d.search = "Check for updates".into();
+    }
+    step2(&mut h);
+    // The check box of the row: right of its label, at most one row lower.
+    let l = rect_id(&h, top_by_label(&h, "Check for updates at start", Some(Role::Label)));
+    let boxes: Vec<NodeId> = h.query_all_by_role(Role::CheckBox).filter(|n| (rect_of(n).x0 > l.x1) && (rect_of(n).y0 - l.y0).abs() < 40.0).map(|n| n.id()).collect();
+    assert_eq!(boxes.len(), 1, "one check box in the row\nUI:\n{}", dump(&h));
+    assert!(toggled(&h, boxes[0]));
+    click_id(&mut h, boxes[0]);
+    click_role(&mut h, Role::Button, "Save");
+    assert!(!h.state().settings.update_check);
+    drop(h);
+    let (s, _) = Settings::load(&tmp.data());
+    assert!(!s.update_check, "setting not saved");
 }

@@ -41,7 +41,8 @@ raw-window-handle = "0.6"
 # lock (through winit), so no second copy is compiled.
 # Also the COM port of the SLCAN adapter (Devices_Communication,
 # Storage_FileSystem, System_IO, Security) and its port list (System_Registry).
-windows-sys = { version = "0.59", features = ["Wdk_System_SystemServices", "Win32_Devices_Communication", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+# The update check (Networking_WinHttp, update.rs): one HTTPS GET, no new crate.
+windows-sys = { version = "0.59", features = ["Wdk_System_SystemServices", "Win32_Devices_Communication", "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.build-dependencies]
 # App icon and version resource of both exes (build.rs); uses rc.exe of the

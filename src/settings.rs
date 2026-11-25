@@ -192,6 +192,39 @@ pub struct Settings {
     // ---- 0.5 + ----
     /// Messages view: where the bit view of the selected row is shown.
     pub msg_detail_pos: DetailPos,
+    /// The simulator also sends extended-ID demo frames (a J1939 node).
+    pub sim_extended_demo: bool,
+    /// How extended (29-bit) IDs are decoded.
+    pub ext_protocol: ExtProtocol,
+    // ---- update notice ----
+    /// Ask GitHub for the newest release at start, at most once a day
+    /// (Help > Check for updates... works whatever this is).
+    pub update_check: bool,
+    /// The last successful update check, UTC seconds since 1970-01-01.
+    pub update_last_check: Option<u64>,
+    /// The version (`x.y.z`) of "Skip this version"; empty: none.
+    pub update_skip_version: String,
+}
+
+/// How extended (29-bit) IDs are decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ExtProtocol {
+    /// SAE J1939 (PGN, source address, transport protocol).
+    #[default]
+    J1939,
+    /// Raw frames, no decode.
+    Raw,
+}
+
+impl ExtProtocol {
+    pub const ALL: [ExtProtocol; 2] = [ExtProtocol::J1939, ExtProtocol::Raw];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ExtProtocol::J1939 => "J1939",
+            ExtProtocol::Raw => "Raw frames",
+        }
+    }
 }
 
 /// Where the bit view (the detail of the selected row) of the Messages view
@@ -263,7 +296,7 @@ impl Default for Settings {
         Settings {
             sdo_timeout_ms: 1000,
             scan_timeout_ms: 100,
-            trace_capacity: 100_000,
+            trace_capacity: 500_000,
             adapter: AdapterKind::Simulator,
             channel: 0x51,
             bitrate_kbit: 250,
@@ -314,6 +347,11 @@ impl Default for Settings {
             slcan_tcp: String::new(),
             kvaser_channel: 0,
             msg_detail_pos: DetailPos::Bottom,
+            sim_extended_demo: false,
+            ext_protocol: ExtProtocol::J1939,
+            update_check: true,
+            update_last_check: None,
+            update_skip_version: String::new(),
         }
     }
 }
@@ -402,6 +440,62 @@ mod tests {
         assert!(err.is_none(), "{err:?}");
         assert!(old.msg_decimal);
         assert_eq!(old.msg_detail_pos, DetailPos::Bottom);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extended_demo_saved_and_old_file() {
+        let dir = temp("extdemo");
+        assert!(!Settings::default().sim_extended_demo);
+        Settings { sim_extended_demo: true, ..Settings::default() }.save(&dir).unwrap();
+        let (back, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert!(back.sim_extended_demo);
+        // A 0.5.2 file has no field: off.
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"msg_detail_pos": "Right"}"#).unwrap();
+        let (old, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert!(!old.sim_extended_demo);
+        assert_eq!(old.msg_detail_pos, DetailPos::Right);
+        // A saved frame of an old file without "extended" is standard.
+        let f: SavedFrame = serde_json::from_str(r#"{"name": "a", "id": 291, "dlc": 1, "data": "01", "period_ms": 100}"#).unwrap();
+        assert!(!f.extended);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ext_protocol_saved_and_old_file() {
+        let dir = temp("extproto");
+        assert_eq!(Settings::default().ext_protocol, ExtProtocol::J1939);
+        Settings { ext_protocol: ExtProtocol::Raw, ..Settings::default() }.save(&dir).unwrap();
+        let (back, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(back.ext_protocol, ExtProtocol::Raw);
+        // A file without the field: J1939.
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"sim_extended_demo": true}"#).unwrap();
+        let (old, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert!(old.sim_extended_demo);
+        assert_eq!(old.ext_protocol, ExtProtocol::J1939);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_fields_saved_and_old_file() {
+        let dir = temp("update");
+        let d = Settings::default();
+        assert!(d.update_check && d.update_last_check.is_none() && d.update_skip_version.is_empty());
+        Settings { update_check: false, update_last_check: Some(1_800_000_000), update_skip_version: "0.6.0".into(), ..Settings::default() }.save(&dir).unwrap();
+        let (back, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert!(!back.update_check);
+        assert_eq!(back.update_last_check, Some(1_800_000_000));
+        assert_eq!(back.update_skip_version, "0.6.0");
+        // A file of 0.5.2 has none of the fields: the check is on.
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"msg_decimal": true}"#).unwrap();
+        let (old, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert!(old.msg_decimal && old.update_check && old.update_last_check.is_none() && old.update_skip_version.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

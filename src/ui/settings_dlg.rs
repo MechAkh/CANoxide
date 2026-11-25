@@ -8,11 +8,11 @@ use crate::bus::BusCommand;
 use crate::can::Bitrate;
 use crate::canopen::sdo::TransferMode;
 use crate::canopen::types::DisplayMode;
-use crate::settings::{AdapterKind, RowDensity, Settings, Theme, TimestampFormat, TraceColour};
+use crate::settings::{AdapterKind, ExtProtocol, RowDensity, Settings, Theme, TimestampFormat, TraceColour};
 use eframe::egui;
 use egui_phosphor::regular as icon;
 
-const SECTIONS: [(&str, &str); 9] = [
+const SECTIONS: [(&str, &str); 10] = [
     ("Appearance", icon::PALETTE),
     ("Connection", icon::PLUGS),
     ("SDO", icon::ARROWS_LEFT_RIGHT),
@@ -21,12 +21,14 @@ const SECTIONS: [(&str, &str); 9] = [
     ("Trace", icon::LIST_DASHES),
     ("Graph", icon::CHART_LINE),
     ("Safety", icon::SHIELD_CHECK),
+    ("Updates", icon::ARROW_CIRCLE_UP),
     ("Data folder", icon::FOLDER),
 ];
 
 const SCALES: [f32; 8] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
-const TRACE_SIZES: [usize; 5] = [10_000, 50_000, 100_000, 500_000, 1_000_000];
-const GRAPH_SIZES: [usize; 3] = [10_000, 100_000, 1_000_000];
+/// The choices of the Trace and the Graph buffer size (frames / points per
+/// signal). A stored value outside the list stays until another is picked.
+const BUFFER_SIZES: [usize; 5] = [10_000, 50_000, 100_000, 500_000, 1_000_000];
 const WINDOWS: [(f32, &str); 5] = [(5.0, "5 s"), (10.0, "10 s"), (30.0, "30 s"), (60.0, "1 min"), (300.0, "5 min")];
 
 pub(crate) struct SettingsDlg {
@@ -107,6 +109,10 @@ impl App {
     /// stores, and save.
     pub(crate) fn apply_settings(&mut self, mut new: Settings) {
         new.sanitize();
+        // The state of the update notice is not edited here: a check that
+        // ended while the dialog was open is kept.
+        new.update_last_check = self.settings.update_last_check;
+        new.update_skip_version = self.settings.update_skip_version.clone();
         let old = std::mem::replace(&mut self.settings, new);
         let s = &self.settings;
         if s.trace_capacity != old.trace_capacity {
@@ -128,6 +134,9 @@ impl App {
         }
         if s.lss_switch_delay_ms != old.lss_switch_delay_ms {
             self.lssv.delay_ms = s.lss_switch_delay_ms;
+        }
+        if s.ext_protocol != old.ext_protocol {
+            self.rebuild_decode();
         }
         self.style_key = None;
         self.save_settings();
@@ -179,7 +188,7 @@ impl App {
                 ui.vertical(|ui| egui::ScrollArea::vertical().id_salt("settings_scroll").max_height(height - 70.0).auto_shrink([false, false]).show(ui, |ui| {
                     let d = &mut dlg.draft;
                     let goto = dlg.goto.take();
-                    let mut tops = [0.0f32; 9];
+                    let mut tops = [0.0f32; SECTIONS.len()];
                     let mut sec = |ui: &mut egui::Ui, i: usize| {
                         let r = section_title(ui, SECTIONS[i].0, SECTIONS[i].1);
                         tops[i] = r.rect.top();
@@ -260,6 +269,32 @@ impl App {
                     }) {
                         d.connect_on_start = def.connect_on_start;
                     }
+                    if row(
+                        ui,
+                        &search,
+                        "Simulator: extended-ID demo frames",
+                        "The simulator also acts as a J1939 node at address 0 (EEC1 50 ms, CCVS 100 ms, ET1 1 s, an address claim, a DM1 with 2 faults as BAM every 1 s) and address 33 sends ET1 every 1 s: extended (29-bit) frames with synthetic data. Used on the next Connect.",
+                        d.sim_extended_demo != def.sim_extended_demo,
+                        |ui| {
+                            ui.checkbox(&mut d.sim_extended_demo, "");
+                        },
+                    ) {
+                        d.sim_extended_demo = def.sim_extended_demo;
+                    }
+                    if row(
+                        ui,
+                        &search,
+                        "Extended IDs are",
+                        "J1939: 29-bit frames are decoded as SAE J1939 (PGN, source address, transport protocol, the J1939 view). Raw frames: no decode.",
+                        d.ext_protocol != def.ext_protocol,
+                        |ui| {
+                            for p in ExtProtocol::ALL {
+                                ui.selectable_value(&mut d.ext_protocol, p, p.label());
+                            }
+                        },
+                    ) {
+                        d.ext_protocol = def.ext_protocol;
+                    }
                     // ---- SDO
                     sec(ui, 2);
                     if row(ui, &search, "Timeout", "Wait for an SDO answer.", d.sdo_timeout_ms != def.sdo_timeout_ms, |ui| {
@@ -317,7 +352,7 @@ impl App {
                     sec(ui, 5);
                     if row(ui, &search, "Buffer size", "Frames kept in memory.", d.trace_capacity != def.trace_capacity, |ui| {
                         egui::ComboBox::from_id_salt("set_tcap").selected_text(format!("{} frames", d.trace_capacity)).show_ui(ui, |ui| {
-                            for n in TRACE_SIZES {
+                            for n in BUFFER_SIZES {
                                 ui.selectable_value(&mut d.trace_capacity, n, format!("{n} frames"));
                             }
                         });
@@ -376,7 +411,7 @@ impl App {
                     sec(ui, 6);
                     if row(ui, &search, "Buffer size", "Points kept per signal.", d.signal_capacity != def.signal_capacity, |ui| {
                         egui::ComboBox::from_id_salt("set_gcap").selected_text(format!("{} points", d.signal_capacity)).show_ui(ui, |ui| {
-                            for n in GRAPH_SIZES {
+                            for n in BUFFER_SIZES {
                                 ui.selectable_value(&mut d.signal_capacity, n, format!("{n} points"));
                             }
                         });
@@ -434,8 +469,16 @@ impl App {
                         let mut on = true;
                         ui.add_enabled(false, egui::Checkbox::new(&mut on, ""));
                     });
-                    // ---- Data folder
+                    // ---- Updates
                     sec(ui, 8);
+                    let tip = "Asks GitHub for the newest release, at most once a day. Nothing else is sent.";
+                    if row(ui, &search, "Check for updates at start", tip, d.update_check != def.update_check, |ui| {
+                        ui.checkbox(&mut d.update_check, "").on_hover_text(tip);
+                    }) {
+                        d.update_check = def.update_check;
+                    }
+                    // ---- Data folder
+                    sec(ui, 9);
                     row(ui, &search, "Path", "Fixed by the portable data folder rule.", false, |ui| {
                         let t = match (&data_dir, &data_error) {
                             (_, Some(e)) => e.clone(),

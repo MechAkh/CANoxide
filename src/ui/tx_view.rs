@@ -5,7 +5,7 @@
 
 use super::{theme, App};
 use crate::bus::{BusCommand, BusHandle};
-use crate::can::CanFrame;
+use crate::can::{CanFrame, CanId};
 use crate::canopen::types::{parse_text, DataType};
 use crate::library::Library;
 use crate::settings::SavedFrame;
@@ -45,12 +45,6 @@ impl Default for TxView {
     }
 }
 
-fn parse_hex_u32(s: &str) -> Option<u32> {
-    let t = s.trim();
-    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
-    u32::from_str_radix(t, 16).ok()
-}
-
 /// Build the CAN frame of a frame description.
 pub(crate) fn build_frame(s: &SavedFrame) -> Result<CanFrame, String> {
     let max = if s.extended { 0x1FFF_FFFF } else { 0x7FF };
@@ -79,7 +73,7 @@ fn trigger_text(t: &Trigger) -> String {
     match t {
         Trigger::Manual => "manual".to_string(),
         Trigger::Periodic { period_ms } => format!("every {period_ms} ms"),
-        Trigger::OnRx { cob_id, extended } => format!("on RX {}{cob_id:X}", if *extended { "x" } else { "" }),
+        Trigger::OnRx { cob_id, extended } => format!("on RX {}", CanId::new(*cob_id, *extended)),
     }
 }
 
@@ -131,9 +125,14 @@ impl App {
             ui.label("Name");
             ui.add(egui::TextEdit::singleline(&mut self.txv.edit.name).desired_width(100.0));
             ui.label("ID 0x");
-            if ui.add(egui::TextEdit::singleline(&mut self.txv.id_text).desired_width(80.0)).changed() {
-                if let Some(v) = parse_hex_u32(&self.txv.id_text) {
-                    self.txv.edit.id = v;
+            ui.add(egui::TextEdit::singleline(&mut self.txv.id_text).desired_width(80.0))
+                .on_hover_text("Hex ID: above 7FF, 8 digits or a trailing x (123x) is an extended (29-bit) ID");
+            // The text and the Ext box agree: an ID that the text makes
+            // extended ticks the box; the box makes a small ID extended.
+            if let Ok(c) = CanId::parse(&self.txv.id_text) {
+                self.txv.edit.id = c.id;
+                if c.extended {
+                    self.txv.edit.extended = true;
                 }
             }
             ui.checkbox(&mut self.txv.edit.extended, "Ext");
@@ -154,17 +153,20 @@ impl App {
                 }
                 TrigKind::OnRx => {
                     ui.label("of COB-ID 0x");
-                    ui.add(egui::TextEdit::singleline(&mut self.txv.rx_text).desired_width(70.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.txv.rx_text).desired_width(80.0))
+                        .on_hover_text("Hex ID: above 7FF, 8 digits or a trailing x (123x) is an extended (29-bit) ID");
                 }
                 TrigKind::Manual => {}
             }
         });
-        let id_ok = parse_hex_u32(&self.txv.id_text).is_some();
-        let built = if id_ok { build_frame(&self.txv.edit) } else { Err("ID: hex value".to_string()) };
+        let built = match CanId::parse(&self.txv.id_text) {
+            Ok(_) => build_frame(&self.txv.edit),
+            Err(e) => Err(format!("ID: {e}")),
+        };
         let trigger = match self.txv.trig {
             TrigKind::Manual => Ok(Trigger::Manual),
             TrigKind::Periodic => Ok(Trigger::Periodic { period_ms: self.txv.edit.period_ms.max(1) as u64 }),
-            TrigKind::OnRx => parse_hex_u32(&self.txv.rx_text).map(|c| Trigger::OnRx { cob_id: c, extended: c > 0x7FF }).ok_or_else(|| "on receive: COB-ID in hex".to_string()),
+            TrigKind::OnRx => CanId::parse(&self.txv.rx_text).map(|c| Trigger::OnRx { cob_id: c.id, extended: c.extended }).map_err(|e| format!("on receive: {e}")),
         };
         theme::toolbar(ui, |ui| {
             if self.send_button(ui, built.is_ok(), "Send once").clicked() {
@@ -248,7 +250,7 @@ impl App {
                             ui.add(egui::Label::new(&e.name).truncate());
                         });
                         row.col(|ui| {
-                            ui.monospace(format!("{}{:X}", if e.extended { "x" } else { "" }, e.id));
+                            ui.monospace(CanId::new(e.id, e.extended).to_string());
                         });
                         row.col(|ui| {
                             ui.monospace(e.dlc.to_string());
@@ -317,13 +319,13 @@ impl App {
                     _ => self.txv.edit.period_ms,
                 },
             };
-            self.txv.id_text = format!("{:X}", e.id);
+            self.txv.id_text = CanId::new(e.id, e.extended).to_string();
             match e.trigger {
                 Trigger::Manual => self.txv.trig = TrigKind::Manual,
                 Trigger::Periodic { .. } => self.txv.trig = TrigKind::Periodic,
-                Trigger::OnRx { cob_id, .. } => {
+                Trigger::OnRx { cob_id, extended } => {
                     self.txv.trig = TrigKind::OnRx;
-                    self.txv.rx_text = format!("{cob_id:X}");
+                    self.txv.rx_text = CanId::new(cob_id, extended).to_string();
                 }
             }
         }

@@ -1,6 +1,6 @@
 //! Trace views and the continuous CSV log (A4).
 
-use canoxide::can::{CanFrame, Dir};
+use canoxide::can::{CanFrame, CanId, Dir};
 use canoxide::canopen::decode::{decode, DecodeContext};
 use canoxide::canopen::types::DisplayMode;
 use canoxide::trace::*;
@@ -38,7 +38,7 @@ fn several_views_share_one_buffer() {
     assert_eq!(t.fixed_rows_of(v1).len(), 2);
     assert_eq!(t.fixed_rows().len(), 3);
     // A filter on view 0 does not change the others.
-    t.set_filter(TraceFilter { id_min: 0x700, id_max: 0x77F, ..Default::default() });
+    t.set_filter(TraceFilter { id_min: CanId::std(0x700), id_max: CanId::std(0x77F), ..Default::default() });
     assert_eq!((t.view_len(), t.view_len_of(v1)), (1, 3));
     assert_eq!(t.view_filter(v1).node, Some(5));
     // Ring trim drops rows from every view.
@@ -87,11 +87,91 @@ fn continuous_log_file_content() {
     assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 13);
     // A filtered log.
     let p2 = dir.join("log2.csv");
-    let mut log = TraceLogger::start(&p2, DisplayMode::Hex, Some(TraceFilter { id_min: 0x700, id_max: 0x7FF, ..Default::default() }), 0).unwrap();
+    let mut log = TraceLogger::start(&p2, DisplayMode::Hex, Some(TraceFilter { id_min: CanId::std(0x700), id_max: CanId::std(0x7FF), ..Default::default() }), 0).unwrap();
     log.write(&e1, 0).unwrap();
     log.write(&e2, 0).unwrap();
     assert_eq!(log.stop().unwrap(), 1);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn push_ext(t: &mut TraceStore, id: u32, data: &[u8], us: u64) {
+    let mut f = CanFrame::new(id, data);
+    f.extended = true;
+    f.dir = Dir::Rx;
+    f.timestamp_us = us;
+    // Settings > Extended IDs are: Raw frames.
+    let mut ctx = DecodeContext::default();
+    ctx.set_j1939(false);
+    let d = decode(&f, &ctx);
+    t.push(f, d);
+}
+
+/// J1939 (the default): the PGN and source address filters take J1939
+/// frames only; the node filter does not take them.
+#[test]
+fn j1939_pgn_and_source_address_filters() {
+    let mut t = TraceStore::new(100);
+    push(&mut t, 0x701, &[5], 0);
+    for (i, id) in [0x0CF0_0400u32, 0x18FE_EE00, 0x18FE_EE21, 0x18EA_0021].into_iter().enumerate() {
+        let mut f = CanFrame::new(id, &[1, 2, 3]);
+        f.extended = true;
+        f.dir = Dir::Rx;
+        f.timestamp_us = 10 + i as u64;
+        let d = decode(&f, &DecodeContext::default());
+        t.push(f, d);
+    }
+    let ids = |t: &TraceStore| (0..t.view_len()).map(|i| id_text(&t.view_row(i).unwrap().frame)).collect::<Vec<_>>();
+    t.set_filter(TraceFilter { pgn: Some(65262), ..Default::default() });
+    assert_eq!(ids(&t), vec!["18FEEE00", "18FEEE21"]);
+    t.set_filter(TraceFilter { pgn: Some(65262), sa: Some(0x21), ..Default::default() });
+    assert_eq!(ids(&t), vec!["18FEEE21"]);
+    t.set_filter(TraceFilter { sa: Some(0x21), ..Default::default() });
+    assert_eq!(ids(&t), vec!["18FEEE21", "18EA0021"]);
+    // PDU1: the PGN has no destination byte.
+    t.set_filter(TraceFilter { pgn: Some(59904), ..Default::default() });
+    assert_eq!(ids(&t), vec!["18EA0021"]);
+    // Node 0 is not the J1939 source address 0.
+    t.set_filter(TraceFilter { node: Some(0), ..Default::default() });
+    assert_eq!(t.view_len(), 0);
+}
+
+#[test]
+fn standard_and_extended_with_same_number_stay_apart() {
+    let mut t = TraceStore::new(100);
+    push(&mut t, 0x123, &[1], 0);
+    push_ext(&mut t, 0x123, &[2], 1);
+    push(&mut t, 0x123, &[3], 2);
+    push_ext(&mut t, 0x18FE_F100, &[4], 3);
+    push_ext(&mut t, 0x18FE_F1FF, &[5], 4);
+    push_ext(&mut t, 0x18FE_F200, &[6], 5);
+    // Fixed mode: one row per pair, standard rows first.
+    let rows = t.fixed_rows();
+    let ids: Vec<String> = rows.iter().map(|r| id_text(&r.last.frame)).collect();
+    assert_eq!(ids, vec!["123", "00000123", "18FEF100", "18FEF1FF", "18FEF200"]);
+    assert_eq!(rows[0].count, 2);
+    assert_eq!(rows[1].count, 1);
+    // The Type column of an extended frame is the neutral class.
+    assert_eq!(rows[1].last.decoded.label, "Ext");
+    // Format filter.
+    t.set_filter(TraceFilter { format: FrameFormat::Standard, ..Default::default() });
+    assert_eq!(t.view_len(), 2);
+    assert!((0..2).all(|i| !t.view_row(i).unwrap().frame.extended));
+    t.set_filter(TraceFilter { format: FrameFormat::Extended, ..Default::default() });
+    assert_eq!(t.view_len(), 4);
+    assert_eq!(t.fixed_rows().len(), 4);
+    // A range of extended IDs.
+    t.set_filter(TraceFilter { id_min: CanId::ext(0x18FE_F100), id_max: CanId::ext(0x18FE_F1FF), ..Default::default() });
+    assert_eq!(t.view_len(), 2);
+    // A standard range does not hold the extended 123.
+    t.set_filter(TraceFilter { id_min: CanId::std(0x123), id_max: CanId::std(0x123), ..Default::default() });
+    assert_eq!(t.view_len(), 2);
+    t.set_filter(TraceFilter { id_min: CanId::ext(0x123), id_max: CanId::ext(0x123), ..Default::default() });
+    assert_eq!(t.view_len(), 1);
+    assert_eq!(t.view_row(0).unwrap().frame.data[0], 2);
+    // The text filter finds the 8-digit form.
+    t.set_filter(TraceFilter { text: "00000123".into(), ..Default::default() });
+    assert_eq!(t.view_len(), 1);
+    assert!(TraceFilter::default().is_empty());
 }
 
 #[test]

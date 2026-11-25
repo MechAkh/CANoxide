@@ -3,10 +3,11 @@
 //! pause. Rows are virtualised; each frame is decoded once on receive.
 
 use super::{theme, App};
+use crate::can::CanId;
 use crate::canopen::decode::MsgClass;
 use crate::canopen::types::{format_bytes, parse_int, DisplayMode};
 use crate::settings::{DataView, Settings, TimestampFormat, TraceColour};
-use crate::trace::{id_text, TraceEntry, TraceFilter, ViewId};
+use crate::trace::{id_text, FrameFormat, TraceEntry, TraceFilter, ViewId};
 use crate::tracefmt as canoxide_fmt;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder, TableRow};
@@ -22,6 +23,9 @@ pub(crate) struct TraceView {
     node_text: String,
     id_min_text: String,
     id_max_text: String,
+    /// J1939 filters: PGN (decimal or 0x hex) and source address.
+    pgn_text: String,
+    sa_text: String,
     /// Frames received when the view was paused.
     paused_at: u64,
     /// Top row while auto-scroll is off: its sequence number and the pixels
@@ -103,6 +107,8 @@ impl TraceView {
             node_text: String::new(),
             id_min_text: String::new(),
             id_max_text: String::new(),
+            pgn_text: String::new(),
+            sa_text: String::new(),
             paused_at: 0,
             anchor: None,
             body_h: 0.0,
@@ -111,10 +117,18 @@ impl TraceView {
     }
 }
 
-fn parse_hex(s: &str) -> Option<u32> {
-    let t = s.trim();
-    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
-    u32::from_str_radix(t, 16).ok()
+/// The bounds of the COB-ID range filter: an empty or unreadable text is the
+/// open end (standard 000 .. extended 1FFFFFFF).
+fn id_range(tv: &TraceView) -> (CanId, CanId) {
+    let d = TraceFilter::default();
+    let lo = CanId::parse(&tv.id_min_text).unwrap_or(d.id_min);
+    let hi = CanId::parse(&tv.id_max_text).unwrap_or(d.id_max);
+    (lo, hi)
+}
+
+/// The parser's text for a bound that cannot be read.
+fn id_range_error(tv: &TraceView) -> Option<String> {
+    [&tv.id_min_text, &tv.id_max_text].into_iter().filter(|t| !t.trim().is_empty()).find_map(|t| CanId::parse(t).err())
 }
 
 /// A small combo box without a side label: `name` is its accessible name
@@ -136,9 +150,17 @@ pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: impl std::hash
 }
 
 /// Number of filters that differ from "show everything".
-fn active_filters(tv: &TraceView) -> usize {
+pub(super) fn active_filters(tv: &TraceView) -> usize {
     let all_types = MsgClass::ALL.iter().all(|c| tv.filter.class_enabled(*c));
-    [!tv.node_text.trim().is_empty(), !tv.id_min_text.trim().is_empty() || !tv.id_max_text.trim().is_empty(), !all_types, !tv.filter.text.trim().is_empty()]
+    [
+        !tv.node_text.trim().is_empty(),
+        !tv.id_min_text.trim().is_empty() || !tv.id_max_text.trim().is_empty(),
+        tv.filter.format != FrameFormat::All,
+        !all_types,
+        !tv.filter.text.trim().is_empty(),
+        !tv.pgn_text.trim().is_empty(),
+        !tv.sa_text.trim().is_empty(),
+    ]
         .iter()
         .filter(|b| **b)
         .count()
@@ -163,13 +185,33 @@ fn filters_button(ui: &mut egui::Ui, tv: &mut TraceView, n: u8) {
             ui.end_row();
             ui.label("COB-ID 0x");
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut tv.id_min_text).desired_width(70.0).hint_text("min"));
+                let tip = "Hex ID: above 7FF, 8 digits or a trailing x (123x) is an extended (29-bit) ID. Standard IDs come before extended IDs: 700..7FF holds standard frames only, 18FEF100..18FEF1FF extended frames only";
+                ui.add(egui::TextEdit::singleline(&mut tv.id_min_text).desired_width(80.0).hint_text("min")).on_hover_text(tip);
                 ui.label("..");
-                ui.add(egui::TextEdit::singleline(&mut tv.id_max_text).desired_width(70.0).hint_text("max"));
+                ui.add(egui::TextEdit::singleline(&mut tv.id_max_text).desired_width(80.0).hint_text("max")).on_hover_text(tip);
             });
             ui.end_row();
+            ui.label("Frame format");
+            ui.horizontal(|ui| {
+                for f in FrameFormat::ALL {
+                    ui.selectable_value(&mut tv.filter.format, f, f.label());
+                }
+            });
+            ui.end_row();
+            if let Some(e) = id_range_error(tv) {
+                ui.label("");
+                ui.colored_label(theme::pal(ui).error, e);
+                ui.end_row();
+            }
             ui.label("Text");
             ui.add(egui::TextEdit::singleline(&mut tv.filter.text).desired_width(180.0));
+            ui.end_row();
+            let tip = "J1939 frames only: with a value set, the tab shows only the 29-bit frames decoded as J1939 (Settings: Extended IDs are J1939)";
+            ui.label("PGN");
+            ui.add(egui::TextEdit::singleline(&mut tv.pgn_text).desired_width(80.0).hint_text("all")).on_hover_text(format!("{tip}. Decimal or 0x hex (65226 or 0xFECA)"));
+            ui.end_row();
+            ui.label("Source address");
+            ui.add(egui::TextEdit::singleline(&mut tv.sa_text).desired_width(48.0).hint_text("all")).on_hover_text(format!("{tip}. 0 to 255"));
             ui.end_row();
         });
         ui.separator();
@@ -200,6 +242,8 @@ fn filters_button(ui: &mut egui::Ui, tv: &mut TraceView, n: u8) {
             tv.node_text.clear();
             tv.id_min_text.clear();
             tv.id_max_text.clear();
+            tv.pgn_text.clear();
+            tv.sa_text.clear();
         }
     });
 }
@@ -316,8 +360,9 @@ impl App {
         // Apply the filter (recomputed only when it changed).
         let mut f = tv.filter.clone();
         f.node = parse_int(tv.node_text.trim(), false).and_then(|v| u8::try_from(v).ok());
-        f.id_min = parse_hex(&tv.id_min_text).unwrap_or(0);
-        f.id_max = parse_hex(&tv.id_max_text).unwrap_or(0x1FFF_FFFF);
+        (f.id_min, f.id_max) = id_range(tv);
+        f.pgn = parse_int(tv.pgn_text.trim(), false).and_then(|v| u32::try_from(v).ok()).filter(|&v| v <= 0x3_FFFF);
+        f.sa = parse_int(tv.sa_text.trim(), false).and_then(|v| u8::try_from(v).ok());
         self.trace.set_view_filter(tv.view, f);
         ui.separator();
 
