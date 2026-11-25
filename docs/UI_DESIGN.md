@@ -1,10 +1,10 @@
-# CANoxide v0.3 — UI design specification
+# CANoxide 0.5 — UI design specification
 
-For: the coder who builds the v0.3 UI in Rust with `egui` 0.31, `egui_dock`
-and `egui_plot` (the v0.2 design plus the v0.3 sections marked as such). This file is complete on its own; the design canvas only
-illustrates it. All sizes are egui logical points at UI scale 100 %
-(1 pt = 1 px at 100 % Windows scaling). Hex colours are sRGB, opaque unless
-an alpha is given.
+This file describes the user interface of CANoxide 0.5.0, built in Rust
+with `egui` 0.31, `egui_dock` 0.16 and `egui_plot`. It is complete on its
+own; the design canvas only illustrates it. All sizes are egui logical
+points at UI scale 100 % (1 pt = 1 px at 100 % Windows scaling). Hex
+colours are sRGB, opaque unless an alpha is given.
 
 Design name: **"Bench"**. Cool neutral greys, one blue accent, colour only
 where it carries meaning (message type, node state, result). Flat fills,
@@ -27,7 +27,7 @@ where it carries meaning (message type, node state, result). Flat fills,
   Punctuation + Arrows + Box Drawing with `pyftsubset` (about 90 KB each).
   Keep egui's default emoji fallback out of the build if it is not needed.
 - Licence texts go into `licenses/` and the About dialog.
-- App icon (v0.3): `assets/icon/` (see its README). Both exes carry
+- App icon: `assets/icon/` (see its README). Both exes carry
   `canoxide.ico` as icon group 1 (build.rs, winresource); the window icon
   and the About dialog use the embedded `canoxide_64.png`. The installer
   uses the same `.ico` as its setup icon.
@@ -376,44 +376,134 @@ Every icon-only button has a tooltip with the action and its shortcut.
 
 Top to bottom (window 1280 × 800):
 
-1. **Native window title bar** (OS). Title `CANoxide 0.5.0` (the version), the app icon.
+1. **Native window title bar** (OS). Title `CANoxide 0.5.0` (`CANoxide`
+   and the version), the app icon.
 2. **Menu bar** — height 28, fill bg.frame, bottom 1 px border.subtle.
    Items `File  View  Settings  Help`, `body`, padding 10, hover fill
-   bg.button.hover radius 4. Right side: theme quick switch (icon button
-   `sun`/`moon`/`desktop`, cycles System→Dark→Light).
-   - File: Open EDS…, Recent EDS ▸, Save trace as…, Export object dictionary (CSV)…, Open data folder, Exit.
-   - View: list of panels with check marks (Devices, EDS library, Object dictionary, Network, Trace 1…4, Graph, PDO configuration, Transmit list, LSS, DCF save / restore); separator; New trace tab (disabled at 4); separator; Reset layout; Full screen F11.
-   - Settings: opens the Settings dialog (Ctrl+,) — it is a direct menu item, not a submenu.
-   - Help: User guide, Keyboard shortcuts, Open log folder, About CANoxide (modal 420 wide: the app icon 48 × 48 and app name `CANoxide` in `title`, version `x.y.z` mono, licence, font and icon licences, project link).
-3. **Connection bar** — height 38, fill bg.frame, bottom 1 px border.strong.
-   Left to right, gap 8, separators 1 px border.subtle × 20 between groups:
-   - `Adapter` label (small, secondary) + ComboBox 150 (`Simulator`, `PEAK PCAN`, `CANfox`, `Kvaser`, `SLCAN (serial)`, `SLCAN (TCP)`, `Log file (replay)`).
-   - `Channel` + ComboBox 120 (`virtual bus`).
-   - `Bitrate` + ComboBox 110 (`250 kbit/s`).
-   - Checkbox `Listen only`.
-   - Primary button `Connect` (icon `plugs-connected`), width 110; when
-     connected becomes secondary `Disconnect` (icon `plugs`).
-   - Separator. Right-aligned group: bus-state pill (`Error active` =
-     success, `Error passive` = warning, `Bus off` = error, `Not connected`
-     = unknown); `Load` label + a 60 × 6 meter (fill bg.button, value
-     accent; > 70 % warning, > 90 % error) + `12.4 %` mono; `fr/s` label +
-     `1 284` mono, width 56 right-aligned.
-4. **Dock area** — `DockArea` filling the rest, background bg.frame (shows
+   bg.button.hover radius 4. Right side: theme quick switch, a frameless
+   glyph button (`desktop` = System, `moon` = Dark, `sun` = Light) that
+   cycles System → Dark → Light → System; tooltip e.g. `Theme: System
+   (click: Dark)`.
+   - File: `Open EDS...` (Ctrl+O), `Save trace as...` (saves the first
+     trace tab), `Import DBC...` (tooltip "Import the signals of a DBC file
+     as user signals", 8.11), `Program download...` (tooltip "Download a
+     program file to a node (CiA 302-3, 0x1F50)", 8.16), `Open data
+     folder`; separator; `Exit`.
+   - View: one check box per view, in this order: Devices, EDS library,
+     Object dictionary, Network, Emergencies, Messages, Find signal, Graph,
+     Dashboard, PDO configuration, Transmit list, LSS, DCF save / restore,
+     EDS check, Drive (CiA 402); then `Trace 1` … `Trace 4`; separator;
+     `New trace tab` (disabled at 4); separator; `Reset layout`; `Full
+     screen` (F11).
+   - Settings: opens the Settings dialog (Ctrl+,). It is a direct menu
+     button, not a submenu.
+   - Help: `Keyboard shortcuts` (writes the shortcut list into the status
+     bar, section 10), `Copy display diagnostics` (tooltip "Window, screen
+     and DPI values for a bug report, to the clipboard"), `About CANoxide`.
+   - About CANoxide: modal 420 wide. The app icon 48 × 48, `CANoxide` in
+     `title`, `Version x.y.z` mono, the line "A portable CANopen bench
+     tool. Copyright (c) 2026 MechAkh. Licence: MIT.", the font and icon
+     licences, the link `https://github.com/MechAkh/CANoxide`, button
+     `Close`.
+3. **Connection bar** — min height 30, fill bg.frame, bottom 1 px
+   border.strong. While connected, the adapter, channel and bitrate
+   controls are locked. Left to right:
+   - `Adapter` label (small, secondary) + ComboBox 150 with the entries
+     `Simulator`, `PEAK PCAN`, `CANfox`, `Kvaser`, `SLCAN (serial)`,
+     `SLCAN (TCP)`, `Log file (replay)`.
+   - The second label follows the adapter: `File` (log file), `Port`
+     (SLCAN serial), `Address` (SLCAN TCP), else `Channel`. The control
+     after it:
+
+     | Adapter | Control |
+     |---|---|
+     | Simulator | Text `virtual bus`. |
+     | PEAK PCAN | ComboBox 120: the available channels as `name (available)`, a separator, the label `Manual choice` and the PCAN-USB channels. With no list: `No available channel reported`. |
+     | CANfox | ComboBox 150 (`CANfox net N`): the connected nets, then `Manual choice` with the default net. With no list: `No device list reported`. |
+     | Kvaser | ComboBox 180: the channel list, then `Manual choice` `Channel 0` … `Channel 3`. With no list: `No channel list reported`. |
+     | SLCAN (serial) | ComboBox 110 (`Choose a port` until one is chosen). With no port: `No COM port found`. |
+     | SLCAN (TCP) | TextEdit 150, hint `host:port`, tooltip "The address of the SLCAN gateway, for example 192.168.1.10:2001"; warning text `not host:port` when the input does not parse. |
+     | Log file (replay) | The file name (or `no file chosen` in secondary) and `Browse...` (`folder-open`, tooltip "A trace CSV written by CANoxide, a candump log, a PEAK .trc or a Vector .asc file"); file dialog `Log file to play back` (csv, log, txt, trc, asc). While the file loads: progress bar 110 `Loading n %`. |
+
+   - PEAK PCAN, CANfox, Kvaser and SLCAN (serial) have a small refresh
+     button `arrow-counter-clockwise` after the combo. It asks the driver
+     for its list and sends nothing; tooltips: "Ask the driver which
+     channels are available (sends nothing)" (PEAK), "... which CANfox
+     nets are connected (opens no net, sends nothing)", "... which
+     channels exist (opens no channel, sends nothing)" (Kvaser), "List the
+     COM ports of this PC again (opens no port, sends nothing)" (SLCAN).
+   - A channel note, if any, in warning colour.
+   - `Bitrate` + ComboBox 110.
+   - Checkbox `Listen only` (tooltip "Open the channel in listen-only
+     mode; every send control is disabled").
+   - Primary button `Connect` (accent fill, no icon), min width 110,
+     tooltip "Opens the channel only; nothing is sent"; when connected it
+     becomes a plain `Disconnect` (min width 110).
+   - Send button `Scan nodes` (tooltip "SDO read of 0x1000 on nodes a..b,
+     one at a time"); it starts the scan and opens Network. While the scan
+     runs: a progress bar 90 `done / total` and `Cancel scan`.
+   - Right-aligned group: bus-state pill (`Not connected` secondary on no
+     fill; connected: `Error active`, or `Bus: <status>` in error colour
+     for bus off / connection lost, warning for error passive / warning,
+     else success); an info pill `Replay: nothing is sent` or `Listen
+     only` when it applies; `Load` label + a 60 × 6 meter (fill bg.button,
+     value text_accent; > 70 % warning, > 90 % error) + `12.4 %` mono;
+     `fr/s` label + the frame rate mono.
+4. **Replay transport bar** — only during a log replay, under the
+   connection bar (8.12).
+5. **Dock area** — `DockArea` filling the rest, background bg.frame (shows
    in the 4 px gaps), 4 px margin to the window edge left/right.
-5. **Status bar** — height 24, fill bg.frame, top 1 px border.subtle,
-   `small` text. Left: connection summary (`Connected · Simulator ·
-   virtual bus · 250 kbit/s` or `Not connected. Nothing is sent until you
-   press a button.`). Middle: last action result with semantic icon
-   (`check-circle` success / `warning-circle` error), e.g. `SDO read
-   6064:00 = 100 000 (2 ms)`. Right: `Trace 41 % of 100 000` and the data
-   folder name (click opens the folder; full path in tooltip).
+6. **Status bar** — height 24, fill bg.frame, top 1 px border.subtle,
+   `small` text.
+   - Left: connection summary: `Replay · <file> · nothing is sent`,
+     `Connected · <adapter> · <channel> · <bitrate>` (with ` · listen only`
+     when it applies; the channel is `virtual bus`, `net N`, `channel N`,
+     the COM port, `host:port` or the PCAN channel name), or `Not
+     connected. Nothing is sent until you press a button.`
+   - Then a separator and the last action result with a semantic icon
+     (`check-circle` text.primary / `warning-circle` error), e.g. `SDO
+     read 6064:00 = 100 000 (2 ms)`; long texts are truncated.
+   - Right: a frameless button `folder-open <folder name> (<mode>)` that
+     opens the data folder (tooltip `Data folder (<mode>): <path>`);
+     `Trace n % of <capacity>`; while the SDO queue is not empty, `SDO n
+     iiii:ss done / total bytes` or `SDO queue q` and a small `Cancel SDO`
+     button.
+7. **Confirm dialog** (used by every "asks first" in this file): modal,
+   max width 420, heading, wrapped text, the action button (danger or
+   accent fill) first, then `Cancel`. Cancel writes `Cancelled; nothing
+   sent` into the status bar.
 
 ## 7. Default dock layouts
 
 Chosen on first start (no saved layout) by window inner width:
-< 1600 → layout A; ≥ 1600 → layout B. The layout is saved (serde) in the
-data folder on exit and restored on start. View ▸ Reset layout rebuilds
-the default for the current width. `*` = active tab of the leaf.
+< 1600 → layout A; ≥ 1600 → layout B. The layout is saved (serde) in
+`layout.json` in the data folder on exit and restored on start; a file
+that cannot be read gives a note and the default layout. View ▸ Reset
+layout rebuilds the default for the current width. `*` = active tab of
+the leaf.
+
+### Tabs
+
+| Tab | Title | Icon | Open by default |
+|---|---|---|---|
+| Devices | `Devices` | `cpu` | yes |
+| EDS library | `EDS library` | `books` | yes |
+| Object dictionary | `Object dictionary` | `list-magnifying-glass` | yes |
+| Network | `Network` | `graph` | yes |
+| Trace | `Trace 1` … `Trace 4` | `list-dashes` | Trace 1 only |
+| Messages | `Messages` | `table` | yes |
+| Transmit list | `Transmit list` | `paper-plane-tilt` | yes |
+| Graph | `Graph` | `chart-line` | yes |
+| PDO configuration | `PDO configuration` | `sliders-horizontal` | yes |
+| LSS | `LSS` | `identification-card` | no |
+| DCF save / restore | `DCF save / restore` | `file-code` | no |
+| Find signal | `Find signal` | `magnifying-glass` | no |
+| Emergencies | `Emergencies` | `warning` | no |
+| EDS check | `EDS check` | `check-square` | no |
+| Drive (CiA 402) | `Drive (CiA 402)` | `engine` | no |
+| Dashboard | `Dashboard` | `gauge` | no |
+
+The tab title is `<icon>  <name>`.
 
 ### Layout A (1280 × 800)
 
@@ -423,7 +513,7 @@ Horizontal
 └── 0.79  Vertical
     ├── 0.56  Leaf [Object dictionary*, Network, PDO configuration]
     └── 0.44  Horizontal
-        ├── 0.58  Leaf [Trace 1*, Transmit list]
+        ├── 0.58  Leaf [Trace 1*, Messages, Transmit list]
         └── 0.42  Leaf [Graph*]
 ```
 Approximate pixel sizes in the 1272 × 710 dock area: Devices 264 wide;
@@ -437,7 +527,7 @@ Horizontal
 └── 0.85  Horizontal
     ├── 0.60  Vertical                          (= 0.51 of the window)
     │   ├── 0.55  Leaf [Object dictionary*, PDO configuration]
-    │   └── 0.45  Leaf [Trace 1*, Transmit list]
+    │   └── 0.45  Leaf [Trace 1*, Messages, Transmit list]
     └── 0.40  Vertical                          (= 0.34 of the window)
         ├── 0.40  Leaf [Network*]
         └── 0.60  Leaf [Graph*]
@@ -445,59 +535,63 @@ Horizontal
 
 ### Building it with egui_dock
 
-`egui_dock` splits are binary. In `split_left/right/above/below(parent,
-fraction, tabs)` the `fraction` is the share the **existing (old)** node
-keeps; the new tabs get `1 − fraction`. Check this against the egui_dock
-version in Cargo.lock before relying on it. Sketch for layout A:
+`egui_dock` splits are binary. In egui_dock 0.16, the `fraction` of
+`split_left/right/above/below(parent, fraction, tabs)` is the share of the
+first child (left or top): with `split_left` that is the **new** node,
+with `split_right` and `split_below` the **existing** node. Layout A:
 
 ```rust
-let mut dock = DockState::new(vec![Tab::ObjectDictionary, Tab::Network, Tab::PdoConfig]);
+let mut dock = DockState::new(vec![Tab::Od, Tab::Network, Tab::Pdo]);
 let s = dock.main_surface_mut();
-let [main, _devices] = s.split_left(NodeIndex::root(), 0.79, vec![Tab::Devices, Tab::EdsLibrary]);
-let [_od, bottom]    = s.split_below(main, 0.56, vec![Tab::Trace(1), Tab::TransmitList]);
+let [main, _devices] = s.split_left(NodeIndex::root(), 0.21, vec![Tab::Devices, Tab::Eds]);
+let [_od, bottom]    = s.split_below(main, 0.56, vec![Tab::Trace(1), Tab::Messages, Tab::TxList]);
 let [_trace, _graph] = s.split_right(bottom, 0.58, vec![Tab::Graph]);
 ```
 Layout B:
 ```rust
-let mut dock = DockState::new(vec![Tab::ObjectDictionary, Tab::PdoConfig]);
+let mut dock = DockState::new(vec![Tab::Od, Tab::Pdo]);
 let s = dock.main_surface_mut();
-let [mid, _dev]      = s.split_left(NodeIndex::root(), 0.85, vec![Tab::Devices, Tab::EdsLibrary]);
+let [mid, _dev]      = s.split_left(NodeIndex::root(), 0.15, vec![Tab::Devices, Tab::Eds]);
 let [mid, right]     = s.split_right(mid, 0.60, vec![Tab::Network]);
-let [_od, _trace]    = s.split_below(mid, 0.55, vec![Tab::Trace(1), Tab::TransmitList]);
+let [_od, _trace]    = s.split_below(mid, 0.55, vec![Tab::Trace(1), Tab::Messages, Tab::TxList]);
 let [_net, _graph]   = s.split_below(right, 0.40, vec![Tab::Graph]);
 ```
 
-### LSS and DCF save / restore in the default layouts
+### Where a closed tab opens
 
-Both are **closed by default** in layouts A and B (commissioning work, not
-everyday monitoring; the LSS actions can take a device off the bus).
-View ▸ LSS opens it as a new tab in the leaf that holds **Network**
-(layout A: beside Object dictionary / Network / PDO configuration; layout
-B: beside Network). View ▸ DCF save / restore opens it as a new tab in the
-leaf that holds **Object dictionary**. If that leaf no longer exists, the
-largest leaf is used. Once opened or moved, the saved layout keeps them
-where the user put them.
+The tabs that are closed by default are commissioning or analysis work,
+not everyday monitoring. A View menu check box opens a tab as follows:
+
+- A tab that is open already comes to the front.
+- LSS, Emergencies and Drive (CiA 402): a new tab in the leaf that holds
+  **Network**.
+- DCF save / restore and EDS check: in the leaf that holds **Object
+  dictionary**.
+- Dashboard: in the leaf that holds **Graph**.
+- Trace n, Messages and Find signal: in the leaf of the first open trace
+  tab.
+- Otherwise, or when that leaf no longer exists: a new tab in the largest
+  leaf; with no leaf at all, a new root.
+
+Once opened or moved, the saved layout keeps a tab where the user put it.
 
 ### Tab rules
 
-- Every view is closable; View menu reopens it into the leaf where it was
-  last, else as a new tab in the largest leaf.
-- Trace tabs: up to 4 (`Trace 1`…`Trace 4`), each with its own filter,
-  mode and pause state; renameable. The 4th disables "New trace tab".
-- Tab icons: Devices `cpu`, EDS library `books`, Object dictionary
-  `list-magnifying-glass` (fallback `table`), Network `graph` (Phosphor
-  "graph" = node diagram), Trace `list-dashes`, Graph `chart-line`, PDO
-  configuration `sliders-horizontal`, Transmit list `paper-plane-tilt`,
-  LSS `identification-card`, DCF save / restore `file-code`.
-- Tab titles may carry a status dot: Trace shows a 6 px accent dot while
-  paused; PDO configuration shows a 6 px warning dot while changes are
-  pending.
+- Every view is closable. Tabs cannot be torn out into windows.
+- Trace tabs: up to 4 (`Trace 1` … `Trace 4`), each with its own filter,
+  mode and pause state. The name is fixed. The 4th disables `New trace
+  tab`.
+- Tab content has a margin of 8 × 6; the dock adds no scroll bars, each
+  view scrolls itself.
+- A tab title carries ` •` after the name when the view needs attention:
+  a paused trace tab, a PDO configuration with pending changes.
 
 ## 8. Views
 
 Column widths are starting widths in px; `flex` = takes the rest
 (`Column::remainder()`), min given in brackets. All tables are resizable
-unless noted.
+unless noted. Sections 8.1 to 8.9 keep their numbers (the code cites
+them); the views added later follow from 8.10.
 
 ### 8.1 Devices (and EDS library)
 
@@ -518,228 +612,220 @@ unless noted.
 
 ### 8.2 Object dictionary
 
-- Toolbar (left → right): active device combo (`Node 1 · Motor drive`,
-  200); filter box (220, hint `Filter index or name`); segmented
-  `Hex | Dec | Text` (value format); separator; `Read all` (secondary,
-  icon `download-simple`, reads visible readable objects), `Write pending`
-  (primary, icon `upload-simple`, enabled when new values exist, shows
-  count badge); separator; ghost `Expand all` (`arrows-out-line-vertical`)
-  and `Collapse all` (`arrows-in-line-vertical`); right: overflow
-  `dots-three` menu (Export CSV, Show only changed, Show EDS defaults).
-- Second row, collapsible `Manual SDO` (header `caret-right` + `small`
-  label): Node (DragValue 48), Index `0x` (mono 64), Sub (mono 40), Type
-  combo (110), Value (mono 160), `Read`, `Write` buttons, and the last
+- Toolbar (left → right): strong `<device>, node n` (or `No active
+  device, node n`); filter box 140 (hint `index or name`); `Values` with
+  selectable `Hex | Decimal | String`; icon button `download-simple`
+  `Read all 0xIIII` (reads the selected object; `Read all (select an
+  object)` without a selection); icon buttons `caret-double-down` `Expand
+  all` and `caret-double-up` `Collapse all`; warning text `listen only:
+  SDO disabled` or `not connected` when no SDO can be sent.
+- Collapsing `Manual SDO` (open by default): `Node n`, Index `0x` (50),
+  Sub (36), Type combo (`raw bytes` and the data types) with a small `Type
+  from EDS`, Value (140, hint `dec, 0x hex, text`), `Read`, `Write` (asks
+  first: `Write object`); separator; `Transfer` combo 100 (`auto`,
+  `segmented`, `block`), `Upload to file...`, `Download from file...`;
+  a warning `index: hex 0..FFFF, sub: 0..255` for a bad address; the last
   result text.
-- Table columns: Index (64, mono; tree caret in the column for objects
-  with subs), Sub (40, mono), Name (flex [180]), Type (96, `small` mono,
-  e.g. `UNSIGNED32`, shortened `U32` when the column < 80), Access (52,
-  `ro`/`rw`/`wo`/`const` small; `ro`/`const` with `lock-simple` 10 pt),
-  Value (120, mono, right-aligned for decimal, left for hex), New value
-  (120, inline TextEdit mono; non-empty → pending.fill + pending.border),
-  Actions (56: ghost icon buttons `arrow-clockwise` Read, `upload-simple`
-  Write; Write disabled for ro/const and when no new value).
-- Object rows (index level) use `table` text in text.primary; sub rows
-  are indented 16 in the Name column and their Index cell is empty.
-  Record/array header rows show the name and `(record)`/`(array)` in
-  text.secondary in the Type column and no value.
-- Value states: unread `—` text.disabled; reading `…` with spinner 10 pt;
-  read OK text.primary (fresh read flashes bg.row.hover for 600 ms — hover
-  colour only, no animation curve needed); error → 5.9.
-- Write confirmation (setting on): a small popup anchored to the button
-  "Write 0x01F4 to 1017:00 on node 1?" with `Write` (primary) and
-  `Cancel`.
+- While an SDO file transfer runs: progress bar 200 `SDO node n
+  0xIIII:SS: done / t bytes` and `Cancel transfer`.
+- Table, inside a horizontal scroll area (when the columns need more than
+  the view, the whole table scrolls sideways, so that the action column is
+  never cut off; when the view gets narrower and the columns no longer
+  fit, the widths start again from the start values). Start widths follow
+  the view width (`rest` = view width minus the fixed columns, at least
+  420):
+
+  | Column | Start width | Content |
+  |---|---|---|
+  | Index | 76 [60] | object row: tree caret (`caret-right` / `caret-down`, frameless, named Expand / Collapse) + selectable `IIII`; sub row of a VAR: selectable `IIII`, else weak `IIII` |
+  | Sub | 30 [26] | object row: the number of subs; sub row: `SS` |
+  | Name | flex [80] | object row: strong name; sub row: name, tooltip the full name |
+  | Type | 13 % of rest [56] | object row: object type; sub row: data type name |
+  | Access | 48 [36] | the access label |
+  | Value | 22 % of rest [70] | mono value in the chosen format |
+  | Default | 13 % of rest [50] | the EDS default |
+  | New value | 18 % of rest [64] | TextEdit (hint `dec / 0x hex`) for a writable entry |
+  | (actions) | fixed, measured from its two buttons | object row: icon button `download-simple` `Read all`; sub row: `download-simple` `Read` and `upload-simple` `Write` |
+
+- The action buttons are always shown; Read is enabled for a readable
+  entry and Write for a writable one, both only while SDO can be sent.
+- Value states: unread `—` in text.disabled (tooltip `not read yet`);
+  reading `...` (weak); read OK mono text.primary with the value as
+  tooltip; error text in error colour.
+- Empty (no EDS): icon `list-magnifying-glass` 32, "No object dictionary.
+  Select a device with an EDS file in the Devices view, or add an EDS file
+  in the EDS library." and "The manual SDO box above works without an
+  EDS."
 
 ### 8.3 Network
 
-- Toolbar: `Scan` (secondary, icon `broadcast`), range text `1–127`
-  (small secondary), separator; NMT group label `NMT` then buttons
-  `Start` (`play`), `Stop` (`stop`), `Pre-op` (`pause`), `Reset node`
-  (`arrow-counter-clockwise`), `Reset comm` (`arrows-clockwise`) — they act
-  on the selected nodes; separator; `All nodes…` danger button (opens a
-  confirm with the command list). Right: `5 nodes · 4 operational` small.
-- While scanning: 4 px progress bar under the toolbar, `Scanning 37 / 127`
-  text, Scan becomes `Stop scan`.
-- Columns: checkbox (24), ID (44, mono, `0x01` + tooltip decimal; setting
-  shows `1`), Name (flex [140]), State (120, pill), Device type (96,
-  mono `0x00020192`), Err reg (64, mono; non-zero in warning with
-  tooltip of the set bits), Identity (150, mono `00AB:1234 r1.2 #A1F3`
-  vendor:product rev serial), Last EMCY (180, `small`: code mono + text,
-  e.g. `FF10 generic` in EMCY colour, `—` when none), Last seen (84, mono
-  right-aligned `0.4 s`; > heartbeat timeout → error).
-- Empty: icon `graph`, "No nodes seen", "Run a scan or wait for
-  heartbeats.", button `Scan 1–127`.
+A vertical scroll of groups. At the top, a warning line when no command
+can be sent: `Listen only: every send control is disabled.` or `Not
+connected: send controls are disabled.`
+
+- **NMT** (strong):
+  - Row `Node n` (label 72) + buttons `Start`, `Stop`, `Enter
+    pre-operational`, `Reset node`, `Reset communication` for the active
+    node; separator; `Program download...` (tooltip "Open the program
+    download wizard for this node (CiA 302-3); nothing is sent yet",
+    8.16).
+  - Row `All nodes` + the same five commands, sent to node 0. Each asks
+    first (`NMT to all nodes`, "Send NMT X to all nodes (node 0)?");
+    `Reset node` and `Stop` use the danger action button.
+  - Collapsing `More` (closed): `Send SYNC`; on the simulator also
+    `Simulator EMCY code 0x` [48] `reg 0x` [28] `Trigger EMCY`.
+- **Parameters** (strong), objects 0x1010 / 0x1011:
+  - `Node n` + sub combo 190. The entries are the subs that the node
+    reported (else 1 to 3), shown as `<name> (sub s)` with the names `All
+    parameters`, `Communication parameters`, `Application parameters`,
+    `Manufacturer specific`.
+  - Caution button `Store (0x1010)` (writes `save`); it asks first
+    (`Store parameters`) when the confirm setting is on.
+  - Danger button `Restore defaults (0x1011)` (writes `load`); it always
+    asks first (`Restore default parameters`: the saved parameters are
+    lost, the defaults are active after a reset node or a power cycle).
+  - Send button `Read supported` (tooltip "Read 0x1010 and 0x1011 (sub 0
+    and each sub) by SDO"); then the small lines `0x1010: ...` and
+    `0x1011: ...` with `on command`, `autonomous` or `not supported` per
+    sub, and a note line.
+- **Network overview** (strong):
+  - `Refresh node info` (tooltip "Read 0x1000, 0x1001, 0x1018 and 0x1008
+    of every known node by SDO"); `Heartbeat of all nodes` DragValue 0 …
+    65 000 ms (default 1000) + `Set heartbeat` (writes 0x1017 on every
+    known node, asks first: `Heartbeat of all nodes`); `Cancel` while a
+    task runs.
+  - Table (horizontal scroll): Node (44), State (150, pill with the state
+    glyph), Last seen (80, `x.x s ago`), Device type (110, `0x%08X`), Err
+    reg (60, `0x%02X`, error colour when not zero), Identity (170, vendor
+    / product / rev / serial), Name (120, tooltip with read errors), Last
+    EMCY (flex, warning colour `0xCODE text`).
+  - Empty: icon `graph` 28, "No node seen yet. Nodes appear when they
+    send a heartbeat, an EMCY or an SDO answer." and "Scan nodes or
+    Refresh node info read them by SDO."
+- **Scan nodes** (strong):
+  - "SDO read of 0x1000 on nodes a..b, one at a time, timeout" +
+    DragValue 20 … 2000 ms; `Scan nodes` (or `Cancel` while it runs) and
+    a progress bar `done / total`.
+  - Result grid per answering node: `Node n`, `device type 0x... (profile
+    p)` or `answered: <error>`, then `Device: <name>` for a known device
+    or a small `Add as device` button (tooltip "Open Add device with this
+    node"; opens the device dialog with the node, the name and the
+    selected EDS).
 
 ### 8.4 Trace (up to 4 tabs)
 
-- Toolbar order: toggle `Pause` (`pause`/`play`, shortcut Space), `Clear`
-  (`trash`), separator, Mode segmented `Scroll | Fixed` (Fixed = one row
-  per COB-ID updated in place), Time combo (`Absolute`, `Relative`,
-  `Delta`; 96), Data segmented `Hex | Dec | ASCII`, separator, filter box
-  (200, hint `Filter: id 0x181, type sdo, node 2`), funnel button
-  `Filters` with count badge (opens a popup: per-type checkboxes with the
-  chips, Rx/Tx, node range, ID range), separator, toggle `Autoscroll`
-  (`arrow-line-down`); right side: `Log` toggle (`record` icon, red
-  `error` dot while logging, tooltip = file path), frame counter
-  `12 483 frames` small mono.
-- Columns: Time (104, mono, `12.304512` s; Delta shows `+0.000278`),
-  Dir (44, glyph + `Rx`/`Tx`), COB-ID (64, mono `0x181`), Type (60, chip),
-  Node (40, mono decimal), DLC (36, mono), Data (196, mono, bytes separated
-  by single spaces, 8 bytes = 23 chars), Decoded (flex [200], `table`,
-  e.g. `Upload resp 6064:00 = 100 000`).
+- Toolbar (wraps when narrow): icon toggle `Pause` (`pause` / `play`,
+  tooltip "Pause: stop adding rows to this trace tab"), icon toggle
+  `arrow-line-down` `Auto-scroll`; separator; combos Display mode
+  (`Scroll | Fixed`, 64; Fixed = one row per COB-ID updated in place),
+  Time format (`Absolute | Delta`, 76), Data format (`Hex | Decimal |
+  String`, 70); separator; icon button `trash` `Clear` (tooltip "Clear the
+  buffer of every trace tab"), `floppy-disk` `Save trace...`, `plus` `New
+  trace tab` (at most 4); separator; `funnel  Filters` with a count badge;
+  right: small counters `n shown, m in buffer (max c), r received` and,
+  while paused, the warning `paused, n frame(s) not recorded`.
+- `Save trace...` (tooltip "Save the rows of this tab as CSV, PEAK .trc
+  (version 1.1) or Vector .asc"): file dialog with the name `trace.csv`
+  and the filters CSV, PEAK trace (version 1.1), Vector ASC; the
+  extension picks the format.
+- Filters popup (min width 300): `Node ID` [48, hint `all`], `COB-ID 0x`
+  min .. max (70 each), `Text` [180], `Types (n/N)` with `All` / `None`
+  and a 3-column grid of type check boxes, `Reset filters`.
+- Columns, Scroll mode: Time (`s`, or Delta in `ms`), Dir, COB-ID, DLC,
+  Data, Type, Node, Decoded. Fixed mode: COB-ID, Dir, Count, Cycle `ms`,
+  DLC, Data, Type, Node, Decoded.
 - Rows: neutral fill with zebra; chips carry the type colour; ERR and
-  EMCY rows get the row tint (3.5). Selected row bg.selection. Hover
-  tooltip on Decoded shows the full decode.
-- Up to 100 000 rows: use `TableBuilder::body().rows()` (virtualised).
-- Empty: icon `list-dashes`, "No frames yet", "Connect to an adapter to
-  start the trace.", button `Connect`. When paused with new frames
-  arriving: banner info "Paused — 1 204 new frames. Resume" .
-- Autoscroll (v0.3): on = the view follows the newest row; a user scroll up
+  EMCY rows get the row tint (3.5). Selected row bg.selection. The
+  Decoded cell has one tooltip with the full decode.
+- Up to the buffer size: use `TableBuilder::body().rows()` (virtualised).
+- Empty: icon `list-dashes` 32, `No frames yet.` when connected, else `No
+  frames. Connect to see the bus traffic.`
+- Auto-scroll: on = the view follows the newest row; a user scroll up
   (wheel, drag, Arrow/Page Up, Home with the pointer over the table)
   leaves the bottom, a scroll back to the end (or End) follows again. Off =
   the top visible row stays anchored by its sequence number, also while
   the ring buffer drops old rows.
 
-### 8.4a Messages (v0.3)
-
-- Dock tab `Messages` (`table` icon), opened beside a trace tab; one row
-  per COB-ID (11-bit and 29-bit apart, at most 2048 IDs).
-- Toolbar: filter box (hint `Filter: COB-ID, type, node`), `Sort by`
-  combo (`COB-ID | Count | Age`), checkbox `Mute noisy bytes` (a byte that
-  changes on more than 90 % of at least 10 frames gets no tint), `Reset
-  all statistics`, ID counter `3 IDs` small.
-- Columns: COB-ID (mono), Type (chip, 3.5), Node, Count, Cycle (mean
-  period, ms), DLC, B0..B7 (mono hex), Age (s since the last frame).
-- Change tint: a changed byte cell gets `change_tint` (value up = blue,
-  value down = red), mixed into the row background and fading to it over
-  the fade time (Settings, default 2 s). Text keeps AA contrast at every
-  step. With `Reduce colour`, a caret up / down mark is drawn instead.
-  Repaint at 30 Hz only while a tint fades.
-- Detail pane under the table for the selected row: header `181 TPDO1
-  node 1`, frame counts, `Reset statistics` (row; keeps the last data),
-  selection text `Selected: bit s, l bit`, `Add to Graph` (adds a Raw-bits
-  signal, Intel, unsigned; status message, no tab switch).
-- Bit grid: rows `Byte 0..7` (button selects the whole byte), columns bit
-  7..0 and Hex; cell fill `bit_heat` by toggle rate; outline in the series
-  colour of each mapped PDO signal, accent outline for the selection;
-  click selects one bit, Shift-click extends; tooltip = bit number, value,
-  toggle count.
-- Mapped list right of the grid: one line per mapped object with swatch,
-  index:sub, name and the decoded value.
-- Empty: "No frames yet. Connect to see one row per COB-ID."
-
-0.3 additions to the detail pane (default height 460, resizable):
-
-- Selection: a drag over the cells selects bits, also across byte rows.
-  Segmented `LE | BE` after the selection text sets how the selection
-  runs: LE in bit order (start = the lowest bit), BE in grid reading order
-  (start = the first cell, the MSB; text `Selected: bit s (MSB), l bit,
-  big endian`). Buttons after it: `Add to Graph`, `Define signal...`,
-  `Find similar bits` (one bit only).
-- User signals: an inner 1.5 pt outline in the signal colour (shrunk 3.5,
-  inside the PDO outline, so both show), the names in small text in their
-  colour after the Hex cell of each byte they touch.
-- Value list right of the grid: `User signals` (small secondary) with a
-  10 pt colour square, `name = value unit`, an 84 × 16 sparkline, small
-  buttons `Edit`, `Delete` and, for a 1-bit signal, `Similar bits`; then
-  the mapped list, each line also with a sparkline. A sparkline is a
-  1.5 pt line of the last `sparkline_s` seconds (Settings, default 10 s),
-  auto-scaled, from a fixed ring of 128 points per signal.
-- History under the grid: `History` (strong), checkbox `Filter`, signal
-  combo, operator combo (`= != > <`), value field, `Export CSV...`; a
-  virtualised table (newest first): `Time (s)`, `Δt (ms)`, `Data` (mono),
-  one column per signal (PDO-mapped first, then user signals). It fills
-  the pane down to its bottom edge.
-- `Define signal` / `Edit signal` window (movable, like Add signal): grid
-  Name, COB-ID 0x + `Ext`, Start bit, Length, Byte order (`Little endian |
-  Big endian`), Type (`Unsigned | Signed | Float32`), Factor, Offset, Unit,
-  Colour (8 swatches, the chosen one outlined); a small note on the start
-  bit; error text in `error`; `Save`, `Cancel`. Escape closes it.
-- `Similar bits` window: progress and `Cancel` while it runs, then a table
-  `COB-ID | Bit | Match | Inverted | Toggles` (best first); a click on a
-  row selects that message and bit in the Messages view.
-
-### 8.4b Log replay (v0.3)
-
-- Adapter combo entry `Log file (replay)`; the channel field becomes the
-  file name with a `Choose...` button.
-- Transport bar under the connection bar, only during a replay: play /
-  pause, step back / forward, `Replay speed` combo (0.25x to 16x, `As
-  fast as possible`), `Loop`, a scrubber slider over the log time, the
-  clock `t / total s` (mono) and `frame n / N`; the note `Replay: nothing
-  is sent` in secondary. A log with bad lines asks first (`Load the good
-  frames` or cancel), naming the first bad lines.
-
-### 8.4c Find signal (v0.3)
-
-- Dock tab `Find signal` (`magnifying-glass` icon), View menu, opened
-  beside a trace tab.
-- Settings row: `Sizes` checkboxes (1, 8, 16, 32 bit), `Byte aligned`,
-  `Little endian | Big endian`, `Signed`; `COB-IDs` field (hint `all (or
-  hex: 181, 281)`) and `Start` (later `Reset`).
-- Step row: `Step` combo (= != > < between increased decreased changed
-  unchanged), one or two DragValues for the value steps, `Apply step`,
-  `Undo step` (8 levels).
-- `n candidates` (strong) and `after s1, then s2` (secondary); a warning
-  line when the start set was cut at 200 000. At 50 candidates or fewer, a
-  table `COB-ID | Start bit | Bits | Value` with `Define signal...` per
-  row (opens the Define signal window filled in).
-
 ### 8.5 Graph
 
-- Toolbar: toggle `Pause`, `Add signal` (secondary, `plus`), window combo
-  (`5 s`, `10 s`, `30 s`, `1 min`, `5 min`, `All`; 80), toggle `Auto Y`
-  (`arrows-vertical`), `Fit` (`corners-out`), `Clear` (`trash`); right:
-  `Export CSV` ghost.
-- Plot: `egui_plot::Plot` with x = seconds (relative to now, right edge 0
-  in rolling mode), grid on, legend off (custom legend below), cursor
-  readout on hover (vertical accent line + values in a tooltip).
-- Legend table under the plot (or right of it when the leaf is wider
-  than 900 px): rows 22 high: visibility checkbox (20), swatch (24: a 16 px
-  line sample in the series colour and style), Name (flex [120]), Last
-  (80, mono right), Min (72, mono.small right), Max (72, mono.small
-  right), Unit (40, small), remove `x` ghost (24). Clicking a row toggles
-  bold line (2.5 pt) for that series.
-- Add-signal dialog (window 480 × 420 over a scrim, movable by its title
-  bar, kept inside the app window; Escape or `x` closes it): segmented
-  `PDO signal | SDO poll | Raw bits`;
-  - PDO signal: device combo, list of mapped objects with search
-    (Name, Index:Sub, Type; TPDOs first, then RPDOs, each entry prefixed
-    `TPDOn` / `RPDOn`), scale (DragValue, default 1), offset, unit. The
-    name is filled from the entry until the user edits it.
-  - SDO poll: node, index/sub, type, poll period (ms, default 100), scale,
-    unit; note in small secondary "Each poll adds 2 frames to the bus".
-  - Raw bits: COB-ID (mono), start bit (0–63), length (1–64), byte order
-    (`Intel | Motorola`), signed checkbox, scale, offset, unit.
-  - Footer: series colour preview (next free of the 8), `Cancel`,
-    `Add` (primary).
-- Empty: icon `chart-line`, "No signals", "Add a PDO signal, an SDO poll
-  or raw bits.", button `Add signal`.
-- v0.3: the Add signal dialog has a fourth source `User signal` (a combo
-  of the user signals of the Messages view). Toolbar icon button `Export
-  range...` (`export`) opens a small window: `From` / `To` (s), `Visible
-  range`, a note on the layout, `Save...`, `Cancel`. The CSV has
-  `time_s` and one `name [unit]` column per shown signal, one row per
-  distinct sample time, an empty cell where a signal has no sample.
+- Toolbar: `plus` `Add signal...`; separator; `stop` `Stop polling` /
+  `play` `Start polling`; toggle `pause` `Pause` ("Freeze the picture; the
+  signals keep recording"); toggle `arrow-line-right` `Follow` ("Follow the
+  newest points (off: drag and zoom; a click, drag or scroll in the plot
+  switches it off)"); `magnifying-glass-plus` Zoom in and
+  `magnifying-glass-minus` Zoom out ("also Ctrl + scroll in the plot;
+  switches Follow off"); separator; `clock` + time window DragValue 1 …
+  3600 s; separator; `trash` `Clear` ("Delete the recorded points");
+  `floppy-disk` `Export CSV...` (`signals.csv`); `export` `Export
+  range...`; pill `polling` while polling runs.
+- Hint line: `SDO signals record only while polling runs.` and the send
+  hint.
+- Plot: `egui_plot::Plot`, x label `time (s)`, the egui legend.
+- Legend grid under the plot: swatch (14), `Show`, `Signal` (`name
+  [unit]`), `Source`, `Last`, `Min`, `Max`, `Points`, `Remove`.
+- `Export range...` window: `From` / `To` (s), `Visible range`, the small
+  note "CSV: time_s, then one column per shown signal; one row per time
+  stamp, an empty cell where a signal has no sample.", `Save...`
+  (`signals_range.csv`), `Cancel`.
+- Add signal window (movable, over a scrim of black alpha 90; Escape
+  closes it). Source: `PDO object | SDO poll | Raw frame bits | User
+  signal`.
+  - PDO object / SDO poll: Node 1 … 127; `Mapped object` combo 260
+    (`TPDOn iiii:ss name`, TPDOs first, `(choose)`; a small note on
+    RPDOs); Index `0x` [60]; Sub (hex); Period ms (SDO poll only).
+  - Raw frame bits: COB-ID `0x` [80] + `Ext`, Start bit 0 … 63, Bits 1 …
+    64, Type `Unsigned | Signed | Float`, check box `Big endian`.
+  - User signal: a combo of the user signals, or the note "None yet:
+    define one in the Messages view (select bits, Define signal)."
+  - All sources: Name (hint `automatic`), Unit [60], Scale, Offset.
+  - SDO note "An SDO signal sends a read request each period, only while
+    polling runs."
+  - `Add`, `Cancel`.
+- The same window adds a widget to the Dashboard (8.18).
+- Empty: icon `chart-line` 28, "No signals." and "Press Add signal to plot
+  a PDO object, an SDO poll or raw frame bits."
 
 ### 8.6 PDO configuration
 
-- Toolbar: active device combo, `Read from device` (secondary,
-  `download-simple`), `Apply` (primary, `upload-simple`, count badge of
-  pending rows), `Discard` (ghost `arrow-u-up-left`), separator,
-  segmented `RPDO | TPDO | All`.
-- One row per PDO (row height 28 compact / 32 comfortable because of the
-  mapping chips): Enable checkbox (28), PDO (60, `TPDO1`), COB-ID (84,
-  mono TextEdit `0x181`), Trans. type (120, combo: `0 acyclic sync`,
-  `1–240 cyclic sync`, `254 event (mfr)`, `255 event (profile)`), Inhibit
-  (80, mono, unit `×100 µs` in header tooltip), Event timer (84, mono ms),
-  Mapping (flex [240]: chips `6041:00 Statusword 16` in `mono.small` on
-  bg.button radius 3, gap 4; trailing `pencil-simple` opens the mapping
-  editor; bit total `32 / 64 bit` right-aligned small secondary, error
-  colour when > 64).
-- Pending change: the changed cell gets pending.fill + 1 px
-  pending.border; the row's PDO cell shows a 6 px warning dot. After
-  Apply: success flash (bg.row.hover 600 ms) or error cell (5.9).
-- Disabled PDO rows: all cells in text.secondary except Enable.
+- Toolbar: `Node n`; send button `download-simple` `Read PDOs` (tooltip
+  "Read 0x1400..0x1BFF over SDO"); `Save to library`, `Load from library`
+  (tooltip "Use the saved configuration for decoding (sends nothing)");
+  separator; `Disable all TPDO`, `Enable all TPDO`, `Disable all RPDO`,
+  `Enable all RPDO`.
+- While reading: progress bar 200 and `Cancel`; then the last status
+  line, `Read <time>` (`, incomplete` when some reads failed) and the read
+  errors in warning colour.
+- Error banner after a failed step: "X was / were left disabled on the
+  device after a failed step: <error>" with the action `Read PDOs`.
+- Table: PDO (64), COB-ID (70, hex; an `x` prefix marks an extended ID),
+  State (76, pill `enabled` / `disabled` / `left disabled`), Transmission
+  (120), Inhibit (70, `x.x ms`), Event (70, `n ms`), Mapping (260, `n bit:
+  ...`), last column `Edit` and `Disable` / `Enable`.
+- Editor under the table (after `Edit`): heading `TPDOn of node n` + pill
+  `pending` while changes wait; grid `COB-ID 0x` [90], `Enabled` check
+  box `valid (bit 31 clear)`, `Transmission type` 0 … 255, `Inhibit time`
+  (`x 100 us`), `Event timer` (ms); strong `Mapping (n bit of 64)` with one
+  line per entry `nn  iiii:ss  nn bit` and `arrow-up` / `arrow-down` /
+  `Remove`; an add field [120, hint `6000:1:8`] + `Add entry`; error text;
+  `Apply`, `Revert`, `Close`.
+- PDO check, under the editor, updated while you edit: `PDO check: no
+  finding`, or strong `PDO check: n error(s), m warning(s)` and one line
+  per finding in error or warning colour (`error: entry i: <message>` or
+  `<severity>: <message>`). It checks: length over 64 bits; more than 64
+  mapping entries (more than 8 with byte mapping); an entry of length 0;
+  an object that is not in the EDS; a length that does not match the
+  EDS; an object with PDOMapping=0; the access (a TPDO object must be
+  readable, an RPDO object writable); a COB-ID in a range that CiA 301
+  restricts; the default COB-ID of another node; a duplicate COB-ID;
+  transmission type 241 … 251 (reserved); an RTR-only type on an RPDO.
+- Apply asks first (`Apply PDO change`). With an error it always asks
+  (`PDO mapping has errors`): the findings, "The node will likely refuse
+  the change, or it breaks the network.", the number of SDO writes, and
+  the danger button `Write anyway`.
+- A failed apply shows the modal `PDO change not complete` with the step
+  lines, "Read the PDOs again to see the state of the node." and `Close`.
+- Empty: icon `arrows-left-right` 28, "No PDO configuration of node n."
+  and "Press Read PDOs (connected), or Load from library."
 
 ### 8.7 Transmit list
 
@@ -888,6 +974,306 @@ Purpose: save a node's object values to a DCF, restore them, compare.
   "Restore 388 objects from motor_drive_2026-11-19.dcf to node 1?" with
   the options repeated as text, `Cancel` and `Restore` (caution).
 
+### 8.10 Messages
+
+- Dock tab `Messages` (`table` icon), in the trace leaf by default; one
+  row per COB-ID (11-bit and 29-bit apart, at most 2048 IDs).
+- Toolbar: filter box 200 (hint `Filter: COB-ID, type, node`), `Sort by`
+  combo (`COB-ID | Count | Age`); separator; selectable `Hex | Decimal`
+  for the data bytes (saved in the settings); `Mute noisy bytes` (tooltip
+  "No tint on a byte that changes in nearly every frame (for example a
+  counter)"); `Reset all statistics`; `Import DBC...` (8.11); ID counter
+  `n IDs`; a warning `n frames of further IDs not counted (limit 2048)`
+  when the ID limit is reached.
+- Columns: COB-ID (76, mono), Type (110, chip, 3.5), Node (40), Count
+  (70), Cycle (72, mean period, ms), DLC (34), B0..B7 (32 each, mono, hex
+  or decimal), Age (64, s since the last frame), Decoded (flex).
+- Change tint: a changed byte cell gets `change_tint` (value up = blue,
+  value down = red), mixed into the row background and fading to it over
+  the fade time (Settings, default 2 s). Text keeps AA contrast at every
+  step. With `Reduce colour`, a caret up / down mark is drawn instead.
+  Repaint at 30 Hz only while a tint fades.
+- Empty: "No frames yet. Connect to see one row per COB-ID."
+- Bit view: a bottom panel for the selected row, default height 460, min
+  120, resizable. A click on the selected row again closes it.
+  - Header row: `x` `Close` (tooltip "Close the bit view (also: click the
+    selected row again)"), strong `<id> <label> node n`, `n frames, m
+    compared`, `Reset statistics` (row; keeps the last data); separator;
+    the selection text, or "Drag over bits or click a byte or a bit
+    (Shift: extend) to select"; `LE | BE`; `Add to Graph` (adds a Raw-bits
+    signal; status message, no tab switch), `Define signal...`, `Find
+    similar bits` (one bit only).
+  - Selection: a drag over the cells selects bits, also across byte rows.
+    LE runs in bit order (start = the lowest bit), BE in grid reading
+    order (start = the first cell, the MSB; text `Selected: bit s (MSB),
+    l bit, big endian`).
+  - Bit grid: header `Bit` 7..0 and `Hex` (or `Dec`); cells 24 × 20; rows
+    start with a button `Byte n` (56) that selects the whole byte. Cell
+    fill `bit_heat` by toggle rate, with `bit_flash` over it: a bit that
+    changes is filled and then fades, and so is the Hex cell of its byte.
+    Outlines: 1.5 px in the series colour of each PDO-mapped signal; an
+    inner 1.5 px outline in the colour of each user signal (inside the PDO
+    outline, so both show); 2 px text_accent for the selection. Tooltip:
+    `Byte b bit i (bit k): v`, `Toggled t times in n compared frames (p
+    %)`, and `Mapped: ...` / `Signal: ...` when they apply. A frame with
+    DLC 0 shows `No data bytes`.
+  - Value list right of the grid: `User signals` (small secondary) with a
+    10 pt colour square, `name = value unit`, an 84 × 16 sparkline, small
+    buttons `Edit`, `Delete` and, for a 1-bit signal, `Similar bits`; then
+    the mapped list, each line also with a sparkline, or `No known PDO
+    mapping for this COB-ID.` A sparkline is a 1.5 pt line of the last
+    `sparkline_s` seconds (Settings, default 10 s), auto-scaled, from a
+    fixed ring of 128 points per signal.
+  - History under the grid: `History` (strong), checkbox `Filter`, signal
+    combo, operator combo (`= != > <`), value field, `Export CSV...`; a
+    virtualised table (newest first): `Time (s)`, `Δt (ms)`, `Data`
+    (mono), one column per signal (PDO-mapped first, then user signals).
+    It fills the pane down to its bottom edge.
+- `Define signal` / `Edit signal` window (movable, like Add signal): grid
+  Name, COB-ID 0x + `Ext`, Start bit, Length, Byte order (`Little endian |
+  Big endian`), Type (`Unsigned | Signed | Float32`), Factor, Offset, Unit,
+  Colour (8 swatches, the chosen one outlined); a small note on the start
+  bit; error text in `error`; `Save`, `Cancel`. Escape closes it.
+- `Similar bits` window: progress and `Cancel` while it runs, then a table
+  `COB-ID | Bit | Match | Inverted | Toggles` (best first); a click on a
+  row selects that message and bit in the Messages view.
+
+### 8.11 Import DBC dialog
+
+- Opened from File ▸ `Import DBC...` or the Messages toolbar. File dialog
+  `DBC file to import as user signals` (filters DBC, All files). A file
+  that cannot be read gives the status `DBC not read: <error>` and no
+  dialog.
+- Window `Import DBC` (in the foreground, not collapsible, not
+  resizable, centred):
+  - Strong file name.
+  - `n message(s) with m signal(s) to import (k message(s) in the file)`.
+  - `Nothing skipped.`, or a warning `Skipped: n[, m multiplexed]` and a
+    scroll list (max height 160) of small lines, one per skipped item.
+  - Small note: "Add keeps the user signals you have and skips a signal
+    whose name is already used on the same ID. Replace first removes every
+    user signal of the IDs in this file."
+  - Buttons `Add`, `Replace all signals of these IDs` (both need at least
+    one signal to import), `Cancel`. Escape closes the window.
+- After Add or Replace, the status bar shows `DBC file: <report>`.
+
+### 8.12 Log replay
+
+- Adapter combo entry `Log file (replay)`; the channel control becomes
+  the file name with `Browse...` (section 6). Formats: CANoxide CSV,
+  candump log, PEAK trace (`.trc`, versions 1.0 to 2.1) and Vector ASC
+  (`.asc`); the format is found from the content.
+- Nothing is sent during a replay: every send control is disabled, the
+  connection bar shows the pill `Replay: nothing is sent`.
+- Transport bar under the connection bar, only during a replay (min
+  height 28): info pill `film-strip` `Replay`; icon button Play / Pause;
+  `skip-forward` `Step` (one frame forward); `Speed` + combo 150
+  (`0.25x`, `0.5x`, `1x`, `2x`, `4x`, `8x`, `16x`, `As fast as possible`;
+  tooltip "Replay speed (log time per wall time)"); checkbox `Loop`
+  (tooltip "Start again at the end of the log"); the clock `t.ttt s /
+  T.TTT s` (mono) and small `frame n / N`; `Seeking n %` while it seeks;
+  a scrubber slider over the rest of the bar (tooltip "Drag or click to
+  move the replay; the views are rebuilt up to this time").
+- A log with bad lines asks first: modal (max width 520) `Log file with
+  bad lines`, "<name>: n line(s) could not be read; m frame(s) are good.",
+  up to 50 error lines (mono, small, error colour) and `... and n more`;
+  buttons `Load the good frames` (accent) and `Cancel`.
+
+### 8.13 Find signal
+
+- Dock tab `Find signal` (`magnifying-glass` icon), View menu, opened
+  beside a trace tab.
+- Settings row: `Sizes` checkboxes (1, 8, 16, 32 bit), `Byte aligned`,
+  `Little endian | Big endian`, `Signed`; `COB-IDs` field (hint `all (or
+  hex: 181, 281)`) and `Start` (later `Reset`).
+- Step row: `Step` combo (= != > < between increased decreased changed
+  unchanged), one or two DragValues for the value steps, `Apply step`,
+  `Undo step` (8 levels).
+- `n candidates` (strong) and `after s1, then s2` (secondary); a warning
+  line when the start set was cut at 200 000. At 50 candidates or fewer, a
+  table `COB-ID | Start bit | Bits | Value` with `Define signal...` per
+  row (opens the Define signal window filled in).
+
+### 8.14 Emergencies
+
+- Dock tab `Emergencies` (`warning` icon), closed by default, opens in
+  the Network leaf.
+- Toolbar: `Node` combo (`All nodes`, `Node n`); `trash` `Clear` (tooltip
+  "Clear the list (nothing is sent)"); `Export CSV...`
+  (`emergencies.csv`); the count `n EMCY` (or `k of n EMCY` with a node
+  filter) and `(n oldest dropped)` when the list is full.
+- Table, newest first (max scroll height 360): Time (96, `x.xxx s`), Node
+  (120, `n <name>`), Code (260: tone pill with the hex code, success for
+  an error reset, else warning, and the code text in the same
+  colour), Error register (200, the set bits in words, tooltip), Manufacturer
+  (130).
+- Empty: icon `warning` 28, "No emergency received yet." and "Each EMCY
+  frame on the bus (COB-ID 0x081..0x0FF) is listed here, newest first."
+- Separator, then strong `Error history (0x1003) of node n` (the filter
+  node, else the active node):
+  - `Read error history (0x1003)` (tooltip "Read 0x1003:00 and then each
+    entry by SDO"); caution button `Clear error history` (tooltip "Write
+    0 to 0x1003:00"; asks first: `Clear error history`, danger).
+  - Result: `Node n: the error history is empty.` or `Node n: k entries
+    (1 = newest)` and a table No. (44), Code (64), Text (flex), Info (64).
+    A read error in error colour.
+- On the simulator only: strong `Simulator`, `EMCY code 0x` [48] (default
+  `8130`), `reg 0x` [28] (default `11`), `Raise EMCY` (tooltip "The
+  simulated node sends this EMCY and adds it to its 0x1003"), `Reset EMCY`
+  (sends code 0x0000).
+
+### 8.15 EDS check
+
+- Dock tab `EDS check` (`check-square` icon), closed by default, opens in
+  the Object dictionary leaf.
+- Header: strong `Check node n against <EDS file>`; secondary "Reads each
+  entry by SDO and compares it with the EDS. Nothing is written."
+- Options row: checkbox `Skip DOMAIN entries` (default on); `Index from
+  0x` [44] `to 0x` [44] (defaults `0000`, `FFFF`); `Stop after`
+  DragValue 0 … 100 (default 3) `time-outs in a row (0 = never)`.
+- Send button `play` `Start`; next to it the send hint, or `No EDS:
+  select a device with an EDS file`. On the simulator without a device it
+  checks against the built-in simulator EDS.
+- While it runs: progress bar 220 `<label>: done / total` and `Cancel`.
+- Before the first run: `No check run yet. Press Start.`
+- Result:
+  - The summary line in error, warning or success colour; small `n
+    DOMAIN entries not read` when they were skipped.
+  - Checkbox `show ok entries`, `Export CSV...` (`nodeN_edscheck.csv`),
+    `Export JUnit XML...` (`nodeN_edscheck.xml`).
+  - Table: Index:sub (72), Name (220), Result (120, tone pill: pass
+    success, warning warning, fail error, skipped neutral), Detail (flex,
+    error colour for a fail). Result kinds: `ok`, `missing`,
+    `write_only_ok`, `access`, `size`, `value`, `abort`, `timeout`,
+    `not_checked`.
+  - With the ok entries hidden and nothing else: `Every entry is ok.`
+
+### 8.16 Program download (wizard)
+
+A window, not a dock tab: File ▸ `Program download...` or the Network
+view (NMT group, for the active node). Title `Program download`, not
+collapsible, not resizable, centred, max width 520. Nothing is sent until
+`Download program`.
+
+- Grid (locked while the download runs): `Node` DragValue 1 … 127;
+  `Program` 1 … 254 (tooltip "The sub-index of 0x1F50, 0x1F51, 0x1F56 and
+  0x1F57"); `File` TextEdit 300 (hint `program file`) + `Browse...`; the
+  size `n bytes` and the SHA-256 (mono, small), or the read error in error
+  colour; `Transfer` combo (`auto`, `segmented`, `block`).
+- Strong `Steps`, one checkbox per step, in this order (all on by default
+  except Clear):
+  1. `Read the program identification (0x1F56)`
+  2. `Stop the program (0x1F51 = 0)`
+  3. `Clear the program (0x1F51 = 3)` (default off)
+  4. `Download the file (0x1F50)`
+  5. `Wait for the flash (0x1F57)`
+  6. `Check the flash error code`
+  7. `Start the program (0x1F51 = 1)`
+  8. `Wait for the boot-up message` (enabled only with step 7)
+  9. `Read the new program identification`
+- Caution note: "The node stops its program for the download. A wrong file
+  can leave the device without a working program. Never download to a
+  machine in operation."
+- Buttons: danger `Download program` (tooltip "Run the enabled steps (asks
+  first)"); it always asks first (`Download program`: the file, its size,
+  the program and node, the list of enabled steps and the warning; action
+  button `Download`). `Cancel` while it runs, `Close` when it does not.
+- Report: progress bar `done / size bytes`; a grid of step name, tone
+  pill (`pending`, `running` info, `ok` success, `skipped`, `failed`
+  error, `cancelled` warning, `not run`) and a small detail; a final pill
+  `Download done`, `Download cancelled` or `Download failed: <step>`; the
+  line `Program identification 0x.. -> 0x.. (CRC-32 of the file 0x..)`.
+  A failed step stops the sequence.
+
+### 8.17 Drive (CiA 402)
+
+- Dock tab `Drive (CiA 402)` (`engine` icon), closed by default, opens in
+  the Network leaf. It works on the active node.
+- Warning line when no command can be sent: `Listen only: every command is
+  disabled.` or `Not connected: the commands are disabled.`
+- Poll row: strong `Node n`; checkbox `Poll` (tooltip "Read 6041, 6061,
+  6064, 606C, 6077 and 603F by SDO each period"); period DragValue 50 …
+  10 000 ms (default 200, tooltip `Poll period`); pill `polling` while it
+  runs. Polling stops when the tab is closed or nothing can be sent.
+- State: strong `State: unknown (not polled)`, `State: <name>` or `State:
+  no valid state (statusword 0x..)`. Under it a row of the 8 state pills:
+  `Not ready to switch on`, `Switch on disabled`, `Ready to switch on`,
+  `Switched on`, `Operation enabled`, `Quick stop active`, `Fault reaction
+  active`, `Fault`. The current state is a tone pill (Fault and Fault
+  reaction active error, Quick stop active warning, Operation enabled
+  info, the others success); the others are pills in text.disabled.
+- Values grid: `Statusword`, `Mode (6061)`, `Position (6064)`, `Velocity
+  (606C)`, `Torque (6077)`, `Error code (603F)`; `n/a` for an object the
+  drive does not have, `-` before the first read.
+- Status bits: `check-square` (set) or `square` (clear) + `Voltage
+  enabled`, `Warning`, `Remote`, `Target reached`, `Internal limit
+  active`.
+- Strong `Commands`:
+  - `Quick stop` and `Disable voltage`: the largest buttons of the view,
+    icon `hand-palm`, text size 16, white on danger.fill, min size 150 ×
+    34. They are enabled whenever a command can be sent (connected, not
+    listen-only), in every state and without the motion check box.
+    Tooltip "Write the controlword 0x.. (always allowed while
+    connected)".
+  - Send buttons `Shutdown`, `Switch on`, `Disable operation`, `Fault
+    reset`: enabled only when the current state allows the command;
+    disabled tooltip "Not allowed in this state (poll first)".
+  - `Mode of operation (6060)` combo 240 (default 3) with the modes 1
+    (pp), 3 (pv), 4 (tq), 6 (hm), 7 (ip), 8 (csp), 9 (csv), 10 (cst), each
+    shown as `<number> <name> (<short>)`, e.g. `3 Profile velocity (pv)`;
+    + `Write mode`. In Operation enabled, `Write mode` is disabled until the
+    motion check box is ticked (tooltip "Operation enabled: tick the check
+    box of the motion group first").
+- **Motion (danger)** group: a frame with a 1 px danger.fill stroke,
+  radius 4, margin 8.
+  - Header: `warning` + `Motion (danger)`, strong, error colour.
+  - Small secondary text: "These commands can make the drive move."
+  - Checkbox `I have checked that the drive can move safely`, enabled
+    while a command can be sent. The tick is not saved: it is cleared on
+    disconnect and when the node changes.
+  - The group is locked until the box is ticked (and a command can be
+    sent). Unlocked: danger button `Enable operation` (tooltip "Write the
+    controlword 0x000F"), then a grid `Target velocity (60FF)` DragValue +
+    danger `Write 0x60FF`, `Target position (607A)` + `Write 0x607A`,
+    `Target torque (6071)` + `Write 0x6071`.
+- A note line at the bottom (error colour for a failed command, else
+  secondary).
+
+### 8.18 Dashboard
+
+- Dock tab `Dashboard` (`gauge` icon), closed by default, opens in the
+  Graph leaf. The widgets show Graph signals; the layout is saved as
+  `dashboard.json` in the data folder.
+- Toolbar: `plus` `Add signal...` (tooltip "Add a widget for a signal (the
+  picker of the Graph)"; opens the Add signal window of the Graph, 8.5);
+  separator; `stop` `Stop polling` + pill `polling`, or `play` `Start
+  polling`.
+- Widgets in a wrapping grid, gap 8. A card: fill bg.panel, 1 px
+  border.subtle, radius 6, margin 8. Sizes: Small 170 × 130, Medium 240 ×
+  180, Large 340 × 250. Header: strong title, icon buttons `pencil-simple`
+  `Edit` and `trash` `Remove` at the right. `No value yet` before the
+  first sample.
+- Widget types (value text 22 / 30 / 42 for Small / Medium / Large):
+  - Value: the value, large, mono.
+  - Bar: a track in bg.button with the fill, 1.5 px marks at the
+    thresholds, the value at 0.75 of the size.
+  - Dial: a 270° arc, the needle, ticks at the thresholds, the value text.
+  - Lamp: a circle (success when on, bg.button when off) and `ON
+    (value)` / `OFF (value)`.
+- Colour by level: normal text_accent (text in text.primary), warning
+  warning, alarm error.
+- Stale value (older than 5 poll periods or 2 s, whichever is longer):
+  the colours are dimmed (gamma 0.35), the text is text.disabled, and a
+  small warning `clock` with the age is shown.
+- Empty: icon `gauge` 28, "No widgets." and "Press Add signal to show a
+  value as a number, a bar, a dial or a lamp."
+- Window `Dashboard widget` (Edit, and after Add signal): `Signal` (the
+  source, text), `Title` [200], `Type` combo `Value | Bar | Dial | Lamp`,
+  `Size` `Small | Medium | Large`, `Min`, `Max`, `Decimals` 0 … 6;
+  `Warning at` and `Alarm at`, each a checkbox + value; for a lamp only,
+  `Lamp on above` checkbox + value (tooltip "Off: the lamp is on when the
+  value is not 0"); `Save`, `Cancel`.
+
 ## 9. Settings dialog
 
 - Modal `egui::Window` 760 × 560 (min 640 × 480), centred, bg.popup,
@@ -964,67 +1350,74 @@ Settings and defaults (`+` = added by the designer, not in the brief):
 
 ## 10. Keyboard shortcuts (shown in tooltips and Help ▸ Keyboard shortcuts)
 
-Ctrl+, Settings · Ctrl+O Open EDS · (no shortcuts for LSS or DCF restore actions, on purpose) · Ctrl+F focus the filter of the focused
-view · Space pause/resume trace or graph of the focused view · Ctrl+L
-clear the focused trace · Ctrl+Enter connect/disconnect · F5 read selected
-object · Ctrl+S write pending · Ctrl+W close tab · Ctrl+Tab next tab in
-leaf · F11 full screen.
+Ctrl+, Settings · Ctrl+O Open EDS · Ctrl+Enter connect/disconnect · F11
+full screen. Help ▸ Keyboard shortcuts writes this line into the status
+bar. Escape closes the Add signal, Define signal and Import DBC windows.
+There are no shortcuts for LSS, DCF restore, program download or drive
+commands, on purpose.
 
 ## 11. Icon list (Phosphor Regular names)
 
 | Icon | Where |
 |---|---|
-| `plugs-connected` | Connect button |
-| `plugs` | Disconnect button, Settings ▸ Connection |
+| `plugs` | Settings ▸ Connection |
 | `sun`, `moon`, `desktop` | Theme quick switch (menu bar right) |
 | `gear-six` | Settings menu item |
 | `cpu` | Devices tab, Devices empty state |
 | `books` | EDS library tab |
-| `list-magnifying-glass` (fallback `table`) | Object dictionary tab |
+| `list-magnifying-glass` | Object dictionary tab, its empty state |
 | `graph` | Network tab, Network empty state |
 | `list-dashes` | Trace tab, Settings ▸ Trace, Trace empty |
+| `table` | Messages tab |
 | `chart-line` | Graph tab, Settings ▸ Graph, Graph empty |
 | `sliders-horizontal` | PDO configuration tab |
 | `paper-plane-tilt` | Transmit list tab, empty state |
 | `paper-plane-right` | Send button |
-| `plus` | Add device, Add signal, New frame |
-| `pencil-simple` | Edit device, edit mapping |
-| `trash` | Remove, Clear trace/graph |
+| `warning` | Emergencies tab and empty state, caution buttons and notes, Drive "Motion (danger)" header |
+| `check-square` | EDS check tab; Drive status bit set |
+| `square` | Drive status bit clear |
+| `engine` | Drive (CiA 402) tab |
+| `hand-palm` | Drive `Quick stop`, `Disable voltage` |
+| `gauge` | Dashboard tab, Dashboard empty state |
+| `film-strip` | Replay pill of the transport bar |
+| `skip-forward` | Replay `Step` |
+| `plus` | Add device, Add signal (Graph, Dashboard), New frame, New trace tab |
+| `pencil-simple` | Edit device, Dashboard widget Edit |
+| `trash` | Remove, Clear trace / graph / emergencies, Dashboard widget Remove |
 | `copy` | Duplicate frame, copy cell |
-| `magnifying-glass` | Filter boxes, settings search |
+| `magnifying-glass` | Find signal tab, filter boxes, settings search |
 | `funnel` | Trace filter popup button |
-| `x` | Close tab, clear filter, close dialog, remove legend row |
-| `caret-right`, `caret-down` | Tree expand, Manual SDO section |
+| `x` | Close tab, clear filter, close dialog, Messages bit view Close |
+| `caret-right`, `caret-down` | Tree expand / collapse in the Object dictionary |
 | `caret-up`, `caret-down` (10 pt) | Sort indicators, combo arrows |
-| `download-simple` | Read all, Read from device |
-| `upload-simple` | Write, Write pending, Apply |
-| `arrow-clockwise` | Read one object |
+| `caret-double-down`, `caret-double-up` | Object dictionary Expand all / Collapse all |
+| `download-simple` | Read, Read all (Object dictionary), Read PDOs |
+| `upload-simple` | Write (Object dictionary) |
+| `arrow-up`, `arrow-down` | Move a PDO mapping entry |
 | `arrow-u-up-left` | Discard pending changes |
-| `arrow-counter-clockwise` | Reset node (NMT), reset setting to default |
-| `arrows-clockwise` | Reset communication (NMT) |
-| `play`, `pause`, `stop` | NMT start/pre-op/stop; trace/graph pause; transmit start/stop |
-| `record` | Log to file toggle |
-| `arrow-line-down` | Autoscroll toggle |
-| `broadcast` | Scan, Settings ▸ Scan |
-| `arrows-out-line-vertical`, `arrows-in-line-vertical` | Expand all / Collapse all |
+| `arrow-counter-clockwise` | Refresh the channel / net / port list, reset setting to default |
+| `play`, `pause`, `stop` | Trace / graph pause; start / stop polling (Graph, Dashboard); EDS check Start; transmit start / stop; replay play / pause |
+| `record` | Node state operational |
+| `arrow-line-down` | Trace Auto-scroll toggle |
+| `arrow-line-right` | Graph Follow toggle |
+| `magnifying-glass-plus`, `magnifying-glass-minus` | Graph Zoom in / Zoom out; `magnifying-glass-plus` also LSS Fastscan |
+| `clock` | Graph time window, Dashboard stale-value age |
+| `floppy-disk` | Trace `Save trace...`, Graph `Export CSV...`, LSS Store configuration |
+| `broadcast` | Settings ▸ Scan |
 | `dots-three` | Overflow menus |
-| `arrows-vertical` | Auto Y |
-| `corners-out` | Fit plot |
-| `export` | Export CSV |
+| `export` | Graph `Export range...` |
 | `arrow-down-left`, `arrow-up-right` | Rx / Tx direction |
 | `lock-simple` | Read-only / const access |
 | `circle-dashed`, `circle-half`, `record`, `stop-circle`, `x-circle`, `question` | Node states boot-up, pre-op, operational, stopped, lost, unknown |
-| `check-circle`, `warning`, `warning-circle`, `info` | Success, warning, error, info messages |
+| `check-circle`, `warning`, `warning-circle`, `info` | Success, warning, error, info messages and pills |
 | `palette` | Settings ▸ Appearance |
-| `arrows-left-right` | Settings ▸ SDO |
+| `arrows-left-right` | Settings ▸ SDO, PDO configuration empty state |
 | `shield-check` | Settings ▸ Safety |
-| `folder`, `folder-open` | Settings ▸ Data folder, Open folder, DCF Browse… |
+| `folder`, `folder-open` | Settings ▸ Data folder; data folder button of the status bar, log file `Browse...`, DCF `Browse…` |
 | `identification-card` | LSS tab, Settings ▸ LSS |
 | `crosshair` | LSS Select (switch state selective), LSS state pill "Configuration (selective)" |
 | `wrench` | LSS state pill "Configuration (global)" |
-| `magnifying-glass-plus` | LSS Fastscan |
-| `lightning` | LSS Activate bit rate |
-| `floppy-disk` | LSS Store configuration |
+| `lightning` | Danger buttons (e.g. LSS Activate bit rate, Restore defaults, Download program, Enable operation) |
 | `file-code` | DCF save / restore tab, its empty state |
 | `eye` | DCF Dry run button |
 | `git-diff` | DCF Compare |

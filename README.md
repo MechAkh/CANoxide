@@ -76,12 +76,12 @@ first start ("More info" then "Run anyway").
 ## Comparison with CANopen Magic Professional
 
 CANopen Magic is the established commercial tool in this field. The table
-compares the features of CANoxide 0.4 with those of CANopen Magic
+compares the features of CANoxide 0.5 with those of CANopen Magic
 Professional, taken from the vendor's public product pages in November
 2026. Check the vendor's pages for the current and complete list.
 CANoxide is younger and has had far less use on real networks.
 
-| Feature | CANopen Magic Pro | CANoxide 0.4 |
+| Feature | CANopen Magic Pro | CANoxide 0.5 |
 |---|---|---|
 | Price and licence | Commercial licence | Free, MIT, open source |
 | EDS / DCF import, object dictionary browser | Yes | Yes |
@@ -98,10 +98,13 @@ CANoxide is younger and has had far less use on real networks.
 | PDO decoding from the device's real configuration | Yes | Yes |
 | PDO configuration window (read, edit, write) | Yes | Yes |
 | Graphical display of process data over time | Yes | Yes |
-| Process data gauges and instrument panels | Yes | No |
+| Process data gauges and instrument panels | Yes | Yes (Dashboard: value, bar, dial, lamp) |
 | Network overview (state, identity, last emergency) | Yes | Yes |
 | Emergency history | not stated | Yes (EMCY list with code texts, 0x1003 read and clear) |
 | Check of a node against its EDS | not stated | Yes (read only, CSV and JUnit XML) |
+| Store and restore parameters (0x1010, 0x1011) | not stated | Yes |
+| Program download (CiA 302-3) as a guided function | not stated | Yes (tested on the simulator only) |
+| CiA 402 drive panel | not stated | Yes (over SDO; tested on the simulator only) |
 | NMT, node scan, heartbeat set-up | Yes | Yes |
 | Bus load display | Yes | Yes |
 | Transmit list (manual, periodic, on reception) | Yes | Yes (no keyboard triggers) |
@@ -427,9 +430,8 @@ cargo build --release
 ## Limits (not built)
 
 - CAN FD.
-- Firmware download (CiA 302-3) as a guided function (a block download of
-  a file to an object is possible).
-- Gauges, error frame display, application profiles such as CiA 447.
+- Error frame display, application profiles such as CiA 447.
+- Multiplexed signals of a DBC file; scripting inside the tool.
 - Adapters other than PEAK, the CANfox, Kvaser, SLCAN and the simulator
   (the `CanAdapter` trait allows more backends later).
 
@@ -440,6 +442,6 @@ are under the SIL Open Font License, see `licenses\`. The icons are
 Phosphor icons (MIT). The licences of the Rust crates and fonts in the
 exes are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
 
-No driver file of PEAK, Sontheim or Kvaser is part of CANoxide. Product and company
-names in this file are trademarks of their owners and are used only to
-describe compatibility.
+No driver file of PEAK, Sontheim or Kvaser is part of CANoxide. Product
+and company names in this file are trademarks of their owners and are
+used only to describe compatibility.
