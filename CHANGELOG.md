@@ -3,7 +3,7 @@
 The notable changes of each release. The release pages on GitHub have the
 download files and their SHA-256 checksums.
 
-## Unreleased
+## 0.5.2 (2026-11-26)
 
 ### Fixed
 
