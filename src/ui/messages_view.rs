@@ -256,14 +256,14 @@ impl App {
     pub(crate) fn messages_tab(&mut self, ui: &mut egui::Ui) {
         let p = theme::pal(ui);
         // Toolbar.
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             let r = ui.add(egui::TextEdit::singleline(&mut self.msgv.filter).hint_text("Filter: COB-ID, type, node").desired_width(200.0));
             if r.changed() {
                 self.msgv.filter_lower = self.msgv.filter.trim().to_lowercase();
                 self.msgv.dirty = true;
             }
             let before = self.msgv.sort;
-            egui::ComboBox::from_label("Sort by").selected_text(self.msgv.sort.label()).show_ui(ui, |ui| {
+            theme::toolbar_combo(ui, "Sort by", Some("Sort by"), self.msgv.sort.label(), None, |ui| {
                 for s in MsgSort::ALL {
                     ui.selectable_value(&mut self.msgv.sort, s, s.label());
                 }
@@ -592,7 +592,7 @@ impl App {
         // The user signals of this COB-ID: (index, bits, colour).
         let usr: Vec<(usize, Vec<u32>, egui::Color32)> = self.an.usigs.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended)).map(|(i, s)| (i, s.bit_list(), analysis_view::colour32(s.colour))).collect();
         ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             if ui.button(format!("{}  Close", icon::X)).on_hover_text("Close the bit view (also: click the selected row again)").clicked() {
                 action = Some(DetailAction::Close);
             }

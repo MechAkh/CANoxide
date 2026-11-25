@@ -185,7 +185,7 @@ impl App {
         }
         egui::ScrollArea::vertical().id_salt("lss_scroll").show(ui, |ui| {
             ui.strong("State");
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 if self.send_button(ui, ok, "Switch all to configuration").clicked() {
                     self.lss_send(LssCommand::SwitchGlobal { configuration: true });
                 }
@@ -227,7 +227,7 @@ impl App {
                 ui.label(egui::RichText::new(cur).monospace()).on_hover_text("From Inquire node-ID");
                 ui.end_row();
             });
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 if self.send_button(ui, ok && valid, "Switch selective").on_hover_text("Switch state selective: only the device with this identity enters configuration").clicked() {
                     self.lss_send(LssCommand::SwitchSelective { identity: self.lssv.identity });
                 }
@@ -239,7 +239,7 @@ impl App {
             });
             ui.separator();
             ui.strong("Inquire and find");
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 if self.send_button(ui, ok, "Inquire identity").on_hover_text("Read the identity of the device in configuration state; fills the identity fields").clicked() {
                     self.lss_send(LssCommand::InquireIdentity);
                 }
@@ -255,7 +255,7 @@ impl App {
             });
             ui.separator();
             ui.strong("Configure (slave in configuration state)");
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label("New node-ID");
                 ui.add(egui::DragValue::new(&mut self.lssv.node_id).range(1..=127));
                 if self.styled_send_button(ui, ok, false, "Configure node-ID", "Set the node-ID of the device in configuration state").clicked() {
@@ -264,10 +264,10 @@ impl App {
             });
             theme::caution_note(ui, "The device answers on the new node-ID after a reset; it may leave this network configuration.");
             ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label("New bit rate");
                 let cur = bit_timing_kbit(self.lssv.bt_index).map(|k| format!("{k} kbit/s")).unwrap_or_else(|| "auto".to_string());
-                egui::ComboBox::from_id_salt("lss_bt").selected_text(cur).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "lss_bt", None, &cur, None, |ui| {
                     for i in 0..=8u8 {
                         if let Some(k) = bit_timing_kbit(i) {
                             ui.selectable_value(&mut self.lssv.bt_index, i, format!("{k} kbit/s"));
@@ -279,7 +279,7 @@ impl App {
                     self.lss_send(LssCommand::ConfigureBitTiming { table: 0, index: self.lssv.bt_index });
                 }
             });
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label("Switch delay");
                 ui.add(egui::DragValue::new(&mut self.lssv.delay_ms).range(1..=10_000).suffix(" ms"));
                 if self.styled_send_button(ui, ok, true, "Activate bit timing", "All devices in configuration state switch to the new bit rate after the delay").clicked() {
@@ -288,7 +288,7 @@ impl App {
             });
             theme::caution_note(ui, "Devices on another bit rate leave this bus. Set the adapter bit rate to match afterwards.");
             ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 let r = self.send_button(ui, ok, format!("{}  Store configuration", icon::FLOPPY_DISK)).on_hover_text("Device stores node-ID and bit rate in non-volatile memory");
                 let en = r.enabled();
                 r.widget_info(move || egui::WidgetInfo::labeled(egui::WidgetType::Button, en, "Store configuration"));

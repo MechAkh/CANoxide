@@ -121,7 +121,7 @@ fn parse_hex(s: &str) -> Option<u32> {
 /// and the tooltip says what it sets.
 pub(crate) fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: impl std::hash::Hash, name: &str, tip: &str, value: &mut T, options: &[(T, &str)], width: f32) {
     let current = options.iter().find(|(v, _)| v == value).map(|(_, l)| *l).unwrap_or("");
-    let ir = egui::ComboBox::from_id_salt(salt).width(width).selected_text(current).show_ui(ui, |ui| {
+    let ir = theme::toolbar_combo(ui, salt, None, current, Some(width), |ui| {
         for (v, l) in options {
             if ui.selectable_value(value, *v, *l).clicked() {
                 // Also closes the list after a keyboard or screen reader choice.
@@ -264,7 +264,7 @@ impl App {
         // Toolbar: one row (spec 8.4); the counters go to its right end, or
         // to a second row when there is no room.
         let mut counts_placed = false;
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             let (g, name) = if paused { (icon::PLAY, "Pause") } else { (icon::PAUSE, "Pause") };
             if theme::icon_toggle(ui, &mut paused, g, name, "Pause: stop adding rows to this trace tab").changed() {
                 self.trace.set_view_paused(tv.view, paused);
@@ -292,18 +292,17 @@ impl App {
             ui.separator();
             filters_button(ui, tv, n);
             // Counters at the right end when they fit.
-            let font = egui::TextStyle::Small.resolve(ui.style());
-            let w = ui.fonts(|f| f.layout_no_wrap(counts.clone(), font, p.text_secondary).size().x) + 8.0;
-            let extra = skipped_text.as_ref().map(|_| 200.0).unwrap_or(0.0);
-            if ui.available_width() >= w + extra {
-                counts_placed = true;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(&counts).small().color(p.text_secondary));
-                    if let Some(s) = &skipped_text {
-                        ui.label(egui::RichText::new(s).small().color(p.warning));
-                    }
-                });
+            let gap = ui.spacing().item_spacing.x;
+            let mut w = gap + theme::text_width(ui, &counts, egui::TextStyle::Small);
+            if let Some(s) = &skipped_text {
+                w += gap + theme::text_width(ui, s, egui::TextStyle::Small);
             }
+            counts_placed = theme::toolbar_end(ui, w, |ui| {
+                ui.label(egui::RichText::new(&counts).small().color(p.text_secondary));
+                if let Some(s) = &skipped_text {
+                    ui.label(egui::RichText::new(s).small().color(p.warning));
+                }
+            });
         });
         if !counts_placed {
             ui.horizontal(|ui| {

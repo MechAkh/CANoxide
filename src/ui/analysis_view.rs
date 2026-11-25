@@ -649,7 +649,7 @@ impl App {
         ui.label(egui::RichText::new("Narrow down an unknown signal: start with every field of the chosen sizes, then keep the ones whose newest value (live or at the replay cursor) passes each step.").color(p.text_secondary));
         ui.add_space(4.0);
         let fv = &mut self.an.find;
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.label("Sizes");
             for (bits, label) in [(1u32, "1 bit"), (8, "8 bit"), (16, "16 bit"), (32, "32 bit")] {
                 let mut on = fv.fs.settings.sizes.contains(&bits);
@@ -691,8 +691,8 @@ impl App {
         ui.separator();
         let mut apply = false;
         let mut undo = false;
-        ui.horizontal_wrapped(|ui| {
-            egui::ComboBox::from_label("Step").selected_text(fv.op.label()).show_ui(ui, |ui| {
+        theme::toolbar(ui, |ui| {
+            theme::toolbar_combo(ui, "Step", Some("Step"), fv.op.label(), None, |ui| {
                 for o in OpKind::ALL {
                     ui.selectable_value(&mut fv.op, o, o.label());
                 }
@@ -720,7 +720,7 @@ impl App {
             fv.fs.undo();
         }
         let n = fv.fs.candidates().len();
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.strong(format!("{n} candidates"));
             if !fv.fs.steps().is_empty() {
                 ui.label(egui::RichText::new(format!("after {}", fv.fs.steps().join(", then "))).color(p.text_secondary));
@@ -854,18 +854,18 @@ impl App {
             hv.col = 0;
         }
         let mut export = false;
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.strong("History");
             ui.checkbox(&mut hv.filter_on, "Filter").on_hover_text("Show only the frames whose signal value passes the test");
             ui.add_enabled_ui(hv.filter_on && !sigs.is_empty(), |ui| {
                 let cur = sigs.get(hv.col).map(|s| s.name.clone()).unwrap_or_else(|| "(no signal)".to_string());
-                egui::ComboBox::from_id_salt("hist_sig").selected_text(cur).width(160.0).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "hist_sig", None, &cur, Some(160.0), |ui| {
                     for (i, s) in sigs.iter().enumerate() {
                         ui.selectable_value(&mut hv.col, i, &s.name);
                     }
                 });
                 let op = hv.op.unwrap_or(CmpOp::Eq);
-                egui::ComboBox::from_id_salt("hist_op").selected_text(op.label()).width(48.0).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "hist_op", None, op.label(), Some(48.0), |ui| {
                     for o in CmpOp::ALL {
                         if ui.selectable_label(op == o, o.label()).clicked() {
                             hv.op = Some(o);

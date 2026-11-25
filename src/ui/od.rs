@@ -233,7 +233,7 @@ impl App {
         let dev = self.active_device().map(|d| d.name.clone());
 
         // Toolbar.
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             match &dev {
                 Some(n) => ui.strong(format!("{n}, node {node}")),
                 None => ui.strong(format!("No active device, node {node}")),
@@ -301,7 +301,7 @@ impl App {
 
     fn manual_box(&mut self, ui: &mut egui::Ui, node: u8, can_send: bool, od: Option<&Arc<ObjectDictionary>>) {
         egui::CollapsingHeader::new("Manual SDO").default_open(true).show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label(format!("Node {node}"));
                 ui.label("Index 0x");
                 ui.add(egui::TextEdit::singleline(&mut self.od.m_index).desired_width(50.0));
@@ -309,7 +309,7 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut self.od.m_sub).desired_width(36.0));
                 ui.label("Type");
                 let cur = self.od.m_type.map(|t| t.name().to_string()).unwrap_or_else(|| "raw bytes".to_string());
-                egui::ComboBox::from_id_salt("m_type").selected_text(cur).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "m_type", None, &cur, None, |ui| {
                     ui.selectable_value(&mut self.od.m_type, None, "raw bytes");
                     for t in DataType::ALL {
                         ui.selectable_value(&mut self.od.m_type, Some(t), t.name());
@@ -351,7 +351,7 @@ impl App {
                 ui.separator();
                 ui.label("Transfer");
                 let before = self.settings.sdo_transfer_mode;
-                egui::ComboBox::from_id_salt("od_mode").width(100.0).selected_text(self.settings.sdo_transfer_mode.label()).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "od_mode", None, self.settings.sdo_transfer_mode.label(), Some(100.0), |ui| {
                     for m in TransferMode::ALL {
                         ui.selectable_value(&mut self.settings.sdo_transfer_mode, m, m.label());
                     }
@@ -392,7 +392,7 @@ impl App {
             });
             if !self.od.m_result.is_empty() {
                 let c = if self.od.m_error { theme::pal(ui).error } else { theme::pal(ui).text_primary };
-                ui.horizontal_wrapped(|ui| {
+                theme::toolbar(ui, |ui| {
                     ui.colored_label(c, &self.od.m_result);
                     if let Some(d) = &self.od.m_data {
                         let v = format_value(self.od.m_type, d, self.settings.value_display);

@@ -198,7 +198,7 @@ impl App {
         let (now, polling_on) = self.bus.shared.lock().map(|s| (s.now_us as f64 / 1e6, s.signal_polling)).unwrap_or((0.0, false));
         let has_polls = self.bus.signals.lock().map(|s| s.has_polls()).unwrap_or(false);
         let mut arrange = false;
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             if ui.button(format!("{} Add signal...", icon::PLUS)).on_hover_text("Add a widget for a signal (the picker of the Graph)").clicked() {
                 self.graph.add = Some(AddDraft { node: self.active_node(), for_dashboard: true, ..AddDraft::default() });
             }

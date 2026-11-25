@@ -59,15 +59,18 @@ pub fn app_icon() -> Result<egui::IconData, String> {
     eframe::icon_data::from_png_bytes(ICON_PNG).map_err(|e| e.to_string())
 }
 
+/// The smallest inner size of the window (points).
+pub(crate) const MIN_WINDOW: [f32; 2] = [1024.0, 640.0];
+
 /// Start the GUI. Blocks until the window closes.
 pub fn run() -> eframe::Result {
     let boot = Boot::load();
-    let size = [boot.settings.window_width.max(1024.0), boot.settings.window_height.max(640.0)];
+    let size = [boot.settings.window_width.max(MIN_WINDOW[0]), boot.settings.window_height.max(MIN_WINDOW[1])];
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(format!("CANoxide {}", crate::VERSION))
         .with_inner_size(size)
         .with_maximized(boot.settings.window_maximized)
-        .with_min_inner_size([1024.0, 640.0])
+        .with_min_inner_size(MIN_WINDOW)
         .with_drag_and_drop(true);
     if let Some([x, y]) = boot.settings.window_pos.filter(|p| p[0] > -16.0 && p[1] > -16.0 && p[0] < 10_000.0 && p[1] < 10_000.0) {
         viewport = viewport.with_position([x, y]);
@@ -1022,13 +1025,33 @@ impl App {
         });
     }
 
+    /// The connection bar: the state and the bus load at the right end
+    /// (placed first), the adapter controls in the rest of the width, on
+    /// more rows when they do not fit in one.
     fn connection_bar(&mut self, ui: &mut egui::Ui) {
-        let p = theme::pal(ui);
-        ui.horizontal(|ui| {
+        #[cfg(test)]
+        let panel = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        let r = ui.horizontal(|ui| {
             ui.set_min_height(30.0);
-            let locked = self.connected;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.connection_bar_end(ui);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| self.connection_bar_start(ui));
+            });
+        });
+        #[cfg(test)]
+        theme::toolbar_rects::push_bar(ui.ctx(), panel, r.response.rect);
+        #[cfg(not(test))]
+        let _ = r;
+    }
+
+    /// The adapter controls of the connection bar, in a wrapping row. A
+    /// label and its control are one group, so that they wrap together.
+    fn connection_bar_start(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui);
+        let locked = self.connected;
+        let before = self.settings.adapter;
+        theme::toolbar_group(ui, "cb_adapter", |ui| {
             ui.label(egui::RichText::new("Adapter").small().color(p.text_secondary));
-            let before = self.settings.adapter;
             ui.add_enabled_ui(!locked, |ui| {
                 egui::ComboBox::from_id_salt("adapter").width(150.0).selected_text(self.settings.adapter.label()).show_ui(ui, |ui| {
                     for a in AdapterKind::ALL {
@@ -1036,25 +1059,28 @@ impl App {
                     }
                 });
             });
-            if self.settings.adapter != before {
-                self.channels.clear();
-                self.channel_note = None;
-                self.bus.send(BusCommand::ListChannels(self.settings.adapter));
-                self.mark_settings();
-            }
+        });
+        if self.settings.adapter != before {
+            self.channels.clear();
+            self.channel_note = None;
+            self.bus.send(BusCommand::ListChannels(self.settings.adapter));
+            self.mark_settings();
+        }
 
-            let replay = self.settings.adapter == AdapterKind::Replay;
-            let what = match self.settings.adapter {
-                AdapterKind::Replay => "File",
-                AdapterKind::SlcanSerial => "Port",
-                AdapterKind::SlcanTcp => "Address",
-                _ => "Channel",
-            };
+        let replay = self.settings.adapter == AdapterKind::Replay;
+        let what = match self.settings.adapter {
+            AdapterKind::Replay => "File",
+            AdapterKind::SlcanSerial => "Port",
+            AdapterKind::SlcanTcp => "Address",
+            _ => "Channel",
+        };
+        if replay {
             ui.label(egui::RichText::new(what).small().color(p.text_secondary));
-            if replay {
-                self.replay_file_picker(ui, locked);
-            } else if self.settings.adapter == AdapterKind::Peak {
-                let ch = self.settings.channel;
+            self.replay_file_picker(ui, locked);
+        } else if self.settings.adapter == AdapterKind::Peak {
+            let ch = self.settings.channel;
+            theme::toolbar_group(ui, "cb_channel", |ui| {
+                ui.label(egui::RichText::new(what).small().color(p.text_secondary));
                 ui.add_enabled_ui(!locked, |ui| {
                     egui::ComboBox::from_id_salt("channel").width(120.0).selected_text(pcan::channel_name(ch as u16)).show_ui(ui, |ui| {
                         if self.channels.is_empty() {
@@ -1073,14 +1099,17 @@ impl App {
                         self.bus.send(BusCommand::ListChannels(AdapterKind::Peak));
                     }
                 });
-                if self.settings.channel != ch {
-                    self.mark_settings();
-                }
-                if let Some(n) = &self.channel_note {
-                    ui.colored_label(p.warning, n);
-                }
-            } else if self.settings.adapter == AdapterKind::Canfox {
-                let net = self.settings.canfox_net;
+            });
+            if self.settings.channel != ch {
+                self.mark_settings();
+            }
+            if let Some(n) = &self.channel_note {
+                ui.colored_label(p.warning, n);
+            }
+        } else if self.settings.adapter == AdapterKind::Canfox {
+            let net = self.settings.canfox_net;
+            theme::toolbar_group(ui, "cb_channel", |ui| {
+                ui.label(egui::RichText::new(what).small().color(p.text_secondary));
                 ui.add_enabled_ui(!locked, |ui| {
                     egui::ComboBox::from_id_salt("canfox_net").width(150.0).selected_text(format!("CANfox net {net}")).show_ui(ui, |ui| {
                         if self.channels.is_empty() {
@@ -1097,15 +1126,18 @@ impl App {
                         self.bus.send(BusCommand::ListChannels(AdapterKind::Canfox));
                     }
                 });
-                if self.settings.canfox_net != net {
-                    self.mark_settings();
-                }
-                if let Some(n) = &self.channel_note {
-                    ui.colored_label(p.warning, n);
-                }
-            } else if self.settings.adapter == AdapterKind::Kvaser {
-                let ch = self.settings.kvaser_channel;
-                let cur = self.channels.iter().find(|c| c.handle == ch).map(|c| c.name.clone()).unwrap_or_else(|| format!("Channel {ch}"));
+            });
+            if self.settings.canfox_net != net {
+                self.mark_settings();
+            }
+            if let Some(n) = &self.channel_note {
+                ui.colored_label(p.warning, n);
+            }
+        } else if self.settings.adapter == AdapterKind::Kvaser {
+            let ch = self.settings.kvaser_channel;
+            let cur = self.channels.iter().find(|c| c.handle == ch).map(|c| c.name.clone()).unwrap_or_else(|| format!("Channel {ch}"));
+            theme::toolbar_group(ui, "cb_channel", |ui| {
+                ui.label(egui::RichText::new(what).small().color(p.text_secondary));
                 ui.add_enabled_ui(!locked, |ui| {
                     egui::ComboBox::from_id_salt("kvaser_channel").width(180.0).selected_text(cur).show_ui(ui, |ui| {
                         if self.channels.is_empty() {
@@ -1124,15 +1156,18 @@ impl App {
                         self.bus.send(BusCommand::ListChannels(AdapterKind::Kvaser));
                     }
                 });
-                if self.settings.kvaser_channel != ch {
-                    self.mark_settings();
-                }
-                if let Some(n) = &self.channel_note {
-                    ui.colored_label(p.warning, n);
-                }
-            } else if self.settings.adapter == AdapterKind::SlcanSerial {
-                let port = self.settings.slcan_port.clone();
-                let cur = if port.is_empty() { "Choose a port".to_string() } else { port.clone() };
+            });
+            if self.settings.kvaser_channel != ch {
+                self.mark_settings();
+            }
+            if let Some(n) = &self.channel_note {
+                ui.colored_label(p.warning, n);
+            }
+        } else if self.settings.adapter == AdapterKind::SlcanSerial {
+            let port = self.settings.slcan_port.clone();
+            let cur = if port.is_empty() { "Choose a port".to_string() } else { port.clone() };
+            theme::toolbar_group(ui, "cb_channel", |ui| {
+                ui.label(egui::RichText::new(what).small().color(p.text_secondary));
                 ui.add_enabled_ui(!locked, |ui| {
                     egui::ComboBox::from_id_salt("slcan_port").width(110.0).selected_text(cur).show_ui(ui, |ui| {
                         if self.channels.is_empty() {
@@ -1146,31 +1181,39 @@ impl App {
                         self.bus.send(BusCommand::ListChannels(AdapterKind::SlcanSerial));
                     }
                 });
-                if self.settings.slcan_port != port {
-                    self.mark_settings();
-                }
-                if let Some(n) = &self.channel_note {
-                    ui.colored_label(p.warning, n);
-                }
-            } else if self.settings.adapter == AdapterKind::SlcanTcp {
-                let before = self.settings.slcan_tcp.clone();
+            });
+            if self.settings.slcan_port != port {
+                self.mark_settings();
+            }
+            if let Some(n) = &self.channel_note {
+                ui.colored_label(p.warning, n);
+            }
+        } else if self.settings.adapter == AdapterKind::SlcanTcp {
+            let before = self.settings.slcan_tcp.clone();
+            theme::toolbar_group(ui, "cb_channel", |ui| {
+                ui.label(egui::RichText::new(what).small().color(p.text_secondary));
                 ui.add_enabled_ui(!locked, |ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.settings.slcan_tcp).hint_text("host:port").desired_width(150.0))
                         .on_hover_text("The address of the SLCAN gateway, for example 192.168.1.10:2001");
                 });
-                if self.settings.slcan_tcp != before {
-                    self.mark_settings();
-                }
-                let t = self.settings.slcan_tcp.trim();
-                if !t.is_empty() && !matches!(SlcanTarget::parse(t), Ok(SlcanTarget::Tcp(_))) {
-                    ui.colored_label(p.warning, "not host:port");
-                }
-            } else {
-                ui.label("virtual bus");
+            });
+            if self.settings.slcan_tcp != before {
+                self.mark_settings();
             }
+            let t = self.settings.slcan_tcp.trim();
+            if !t.is_empty() && !matches!(SlcanTarget::parse(t), Ok(SlcanTarget::Tcp(_))) {
+                ui.colored_label(p.warning, "not host:port");
+            }
+        } else {
+            theme::toolbar_group(ui, "cb_channel", |ui| {
+                ui.label(egui::RichText::new(what).small().color(p.text_secondary));
+                ui.label("virtual bus");
+            });
+        }
 
+        let br = self.settings.bitrate_kbit;
+        theme::toolbar_group(ui, "cb_bitrate", |ui| {
             ui.label(egui::RichText::new("Bitrate").small().color(p.text_secondary));
-            let br = self.settings.bitrate_kbit;
             ui.add_enabled_ui(!locked, |ui| {
                 let cur = Bitrate::from_kbit(br).map(|b| b.label()).unwrap_or_else(|| format!("{br} kbit/s"));
                 egui::ComboBox::from_id_salt("bitrate").width(110.0).selected_text(cur).show_ui(ui, |ui| {
@@ -1182,113 +1225,116 @@ impl App {
                     self.settings_dirty = true;
                 }
             });
-            if self.settings.bitrate_kbit != br {
-                self.mark_settings();
-            }
-
-            if self.connected {
-                if ui.add(egui::Button::new("Disconnect").min_size(egui::vec2(110.0, 0.0))).clicked() {
-                    self.bus.send(BusCommand::Disconnect);
-                }
-            } else {
-                let b = egui::Button::new(egui::RichText::new("Connect").color(p.on_accent)).fill(p.accent_fill).min_size(egui::vec2(110.0, 0.0));
-                if ui.add(b).on_hover_text("Opens the channel only; nothing is sent").clicked() {
-                    self.connect();
-                }
-            }
-
-            // The node scan of the Network view (one implementation): the
-            // Network tab comes to the front to show the result.
-            if self.scan_running() {
-                if let Some((done, total)) = self.scan_progress() {
-                    let frac = if total == 0 { 0.0 } else { done as f32 / total as f32 };
-                    ui.add(egui::ProgressBar::new(frac).desired_width(90.0).text(format!("{done} / {total}")));
-                }
-                if ui.button("Cancel scan").clicked() {
-                    self.cancel_scan();
-                }
-            } else {
-                let (a, b) = (self.settings.scan_first, self.settings.scan_last);
-                let r = self.send_button(ui, true, "Scan nodes");
-                let r = if self.can_send() { r.on_hover_text(format!("SDO read of 0x1000 on nodes {a}..{b}, one at a time")) } else { r };
-                if r.clicked() {
-                    self.start_scan();
-                    self.open_tab(Tab::Network);
-                }
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (status, load) = {
-                    let s = self.bus.shared.lock().unwrap_or_else(|x| x.into_inner());
-                    (s.status.clone(), s.bus_load)
-                };
-                ui.add(egui::Label::new(egui::RichText::new(format!("{:>6.0}", load.frames_per_s)).monospace()));
-                ui.label(egui::RichText::new("fr/s").small().color(p.text_secondary));
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new(format!("{:.1} %", load.current_pct)).monospace());
-                let frac = (load.current_pct / 100.0).clamp(0.0, 1.0) as f32;
-                let col = if load.current_pct > 90.0 {
-                    p.error
-                } else if load.current_pct > 70.0 {
-                    p.warning
-                } else {
-                    p.text_accent
-                };
-                let (r, _) = ui.allocate_exact_size(egui::vec2(60.0, 6.0), egui::Sense::hover());
-                ui.painter().rect_filled(r, 3.0, p.bg_button);
-                let mut f = r;
-                f.set_width(r.width() * frac);
-                ui.painter().rect_filled(f, 3.0, col);
-                ui.label(egui::RichText::new("Load").small().color(p.text_secondary));
-                ui.add_space(6.0);
-                if self.replay_active {
-                    theme::pill(ui, format!("{}  Replay: nothing is sent", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
-                } else if self.listen_only_active {
-                    theme::pill(ui, format!("{}  Listen only", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
-                }
-                if self.connected {
-                    let s = status.to_ascii_lowercase();
-                    let (fg, bg) = if s.contains("off") || s.contains("connection lost") {
-                        (p.error, p.error_tint)
-                    } else if s.contains("passive") || s.contains("warn") {
-                        (p.warning, p.warning_tint)
-                    } else {
-                        (p.success, p.success_tint)
-                    };
-                    let text = if status.is_empty() { "Error active".to_string() } else { format!("Bus: {status}") };
-                    theme::pill(ui, text, fg, bg, self.settings.reduce_colour);
-                } else {
-                    theme::pill(ui, "Not connected", p.text_secondary, egui::Color32::TRANSPARENT, false);
-                }
-            });
         });
+        if self.settings.bitrate_kbit != br {
+            self.mark_settings();
+        }
+
+        if self.connected {
+            if ui.add(egui::Button::new("Disconnect").min_size(egui::vec2(110.0, 0.0))).clicked() {
+                self.bus.send(BusCommand::Disconnect);
+            }
+        } else {
+            let b = egui::Button::new(egui::RichText::new("Connect").color(p.on_accent)).fill(p.accent_fill).min_size(egui::vec2(110.0, 0.0));
+            if ui.add(b).on_hover_text("Opens the channel only; nothing is sent").clicked() {
+                self.connect();
+            }
+        }
+
+        // The node scan of the Network view (one implementation): the
+        // Network tab comes to the front to show the result.
+        if self.scan_running() {
+            if let Some((done, total)) = self.scan_progress() {
+                let frac = if total == 0 { 0.0 } else { done as f32 / total as f32 };
+                ui.add(egui::ProgressBar::new(frac).desired_width(90.0).text(format!("{done} / {total}")));
+            }
+            if ui.button("Cancel scan").clicked() {
+                self.cancel_scan();
+            }
+        } else {
+            let (a, b) = (self.settings.scan_first, self.settings.scan_last);
+            let r = self.send_button(ui, true, "Scan nodes");
+            let r = if self.can_send() { r.on_hover_text(format!("SDO read of 0x1000 on nodes {a}..{b}, one at a time")) } else { r };
+            if r.clicked() {
+                self.start_scan();
+                self.open_tab(Tab::Network);
+            }
+        }
+    }
+
+    /// The right end of the connection bar (right to left): bus load,
+    /// frames per second and the connection state.
+    fn connection_bar_end(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui);
+        let (status, load) = {
+            let s = self.bus.shared.lock().unwrap_or_else(|x| x.into_inner());
+            (s.status.clone(), s.bus_load)
+        };
+        ui.add(egui::Label::new(egui::RichText::new(format!("{:>6.0}", load.frames_per_s)).monospace()));
+        ui.label(egui::RichText::new("fr/s").small().color(p.text_secondary));
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(format!("{:.1} %", load.current_pct)).monospace());
+        let frac = (load.current_pct / 100.0).clamp(0.0, 1.0) as f32;
+        let col = if load.current_pct > 90.0 {
+            p.error
+        } else if load.current_pct > 70.0 {
+            p.warning
+        } else {
+            p.text_accent
+        };
+        let (r, _) = ui.allocate_exact_size(egui::vec2(60.0, 6.0), egui::Sense::hover());
+        ui.painter().rect_filled(r, 3.0, p.bg_button);
+        let mut f = r;
+        f.set_width(r.width() * frac);
+        ui.painter().rect_filled(f, 3.0, col);
+        ui.label(egui::RichText::new("Load").small().color(p.text_secondary));
+        ui.add_space(6.0);
+        if self.replay_active {
+            theme::pill(ui, format!("{}  Replay: nothing is sent", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
+        } else if self.listen_only_active {
+            theme::pill(ui, format!("{}  Listen only", icon::INFO), p.info, p.info_tint, self.settings.reduce_colour);
+        }
+        if self.connected {
+            let s = status.to_ascii_lowercase();
+            let (fg, bg) = if s.contains("off") || s.contains("connection lost") {
+                (p.error, p.error_tint)
+            } else if s.contains("passive") || s.contains("warn") {
+                (p.warning, p.warning_tint)
+            } else {
+                (p.success, p.success_tint)
+            };
+            let text = if status.is_empty() { "Error active".to_string() } else { format!("Bus: {status}") };
+            theme::pill(ui, text, fg, bg, self.settings.reduce_colour);
+        } else {
+            theme::pill(ui, "Not connected", p.text_secondary, egui::Color32::TRANSPARENT, false);
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let p = theme::pal(ui);
-        ui.horizontal(|ui| {
-            let summary = if self.connected && self.replay_active {
-                let name = std::path::Path::new(&self.settings.replay_file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                format!("Replay · {name} · nothing is sent")
-            } else if self.connected {
-                let ch = match self.settings.adapter {
-                    AdapterKind::Simulator => "virtual bus".to_string(),
-                    AdapterKind::Canfox => format!("net {}", self.settings.canfox_net),
-                    AdapterKind::Kvaser => format!("channel {}", self.settings.kvaser_channel),
-                    AdapterKind::SlcanSerial => self.settings.slcan_port.clone(),
-                    AdapterKind::SlcanTcp => self.settings.slcan_tcp.trim().to_string(),
-                    _ => pcan::channel_name(self.settings.channel as u16),
-                };
-                let br = Bitrate::from_kbit(self.settings.bitrate_kbit).map(|b| b.label()).unwrap_or_default();
-                format!("Connected · {} · {ch} · {br}{}", self.settings.adapter.label(), if self.listen_only_active { " · listen only" } else { "" })
-            } else {
-                "Not connected. Nothing is sent until you press a button.".to_string()
+        #[cfg(test)]
+        let panel = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        let summary = if self.connected && self.replay_active {
+            let name = std::path::Path::new(&self.settings.replay_file).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            format!("Replay · {name} · nothing is sent")
+        } else if self.connected {
+            let ch = match self.settings.adapter {
+                AdapterKind::Simulator => "virtual bus".to_string(),
+                AdapterKind::Canfox => format!("net {}", self.settings.canfox_net),
+                AdapterKind::Kvaser => format!("channel {}", self.settings.kvaser_channel),
+                AdapterKind::SlcanSerial => self.settings.slcan_port.clone(),
+                AdapterKind::SlcanTcp => self.settings.slcan_tcp.trim().to_string(),
+                _ => pcan::channel_name(self.settings.channel as u16),
             };
-            ui.label(egui::RichText::new(summary).small().color(p.text_secondary));
-            ui.separator();
-            let (glyph, c) = if self.status_error { (icon::WARNING_CIRCLE, p.error) } else { (icon::CHECK_CIRCLE, p.text_primary) };
-            ui.label(egui::RichText::new(glyph).small().color(c));
-            ui.add(egui::Label::new(egui::RichText::new(&self.status).small().color(c)).truncate());
+            let br = Bitrate::from_kbit(self.settings.bitrate_kbit).map(|b| b.label()).unwrap_or_default();
+            format!("Connected · {} · {ch} · {br}{}", self.settings.adapter.label(), if self.listen_only_active { " · listen only" } else { "" })
+        } else {
+            "Not connected. Nothing is sent until you press a button.".to_string()
+        };
+        let (glyph, c) = if self.status_error { (icon::WARNING_CIRCLE, p.error) } else { (icon::CHECK_CIRCLE, p.text_primary) };
+        // The right items first, at the right end; the summary and the
+        // status message are cut (full text on hover) to the rest.
+        let r = ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(d) = &self.data_dir {
                     let mode = self.data_mode.map(|m| m.label()).unwrap_or("data folder");
@@ -1313,8 +1359,18 @@ impl App {
                     };
                     ui.label(egui::RichText::new(t).small());
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(summary).small().color(p.text_secondary)).truncate());
+                    ui.separator();
+                    ui.label(egui::RichText::new(glyph).small().color(c));
+                    ui.add(egui::Label::new(egui::RichText::new(&self.status).small().color(c)).truncate());
+                });
             });
         });
+        #[cfg(test)]
+        theme::toolbar_rects::push_bar(ui.ctx(), panel, r.response.rect);
+        #[cfg(not(test))]
+        let _ = r;
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {

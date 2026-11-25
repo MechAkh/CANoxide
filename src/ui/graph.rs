@@ -241,7 +241,7 @@ impl App {
         let has_polls = self.bus.signals.lock().map(|s| s.has_polls()).unwrap_or(false);
         // Toolbar: one row (icon buttons with tooltips; Add signal keeps its label).
         use egui_phosphor::regular as icon;
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             if ui.button(format!("{} Add signal...", icon::PLUS)).clicked() {
                 self.graph.add = Some(AddDraft { node: self.active_node(), ..AddDraft::default() });
             }

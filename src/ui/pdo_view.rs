@@ -247,7 +247,7 @@ impl App {
         let node = self.active_node();
         let busy = self.pdo_busy();
         let device = self.active_device().map(|d| d.name.clone());
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.label(format!("Node {node}"));
             if self.send_button(ui, !busy, format!("{} Read PDOs", egui_phosphor::regular::DOWNLOAD_SIMPLE)).on_hover_text("Read 0x1400..0x1BFF over SDO").clicked() {
                 self.read_pdos(node);

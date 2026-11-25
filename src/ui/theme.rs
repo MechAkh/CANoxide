@@ -228,12 +228,17 @@ pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 /// "reduce colour" setting) the fill is replaced by a 1 px border.
 pub(crate) fn pill(ui: &mut egui::Ui, text: impl Into<String>, fg: Color32, fill: Color32, outlined: bool) -> egui::Response {
     let (fill, stroke) = if outlined || fill == Color32::TRANSPARENT { (Color32::TRANSPARENT, Stroke::new(1.0_f32, if outlined { fg } else { pal(ui).border_strong })) } else { (fill, Stroke::NONE) };
+    let text = text.into();
+    // A frame takes the rest of the row: in a toolbar row the pill goes
+    // to a new row first when it does not fit (see `wrap_for`).
+    let w = text_width(ui, &text, TextStyle::Small) + 2.0 * (8.0 + stroke.width);
+    wrap_for(ui, w);
     egui::Frame::new()
         .fill(fill)
         .stroke(stroke)
         .corner_radius(CornerRadius::same(9))
         .inner_margin(egui::Margin::symmetric(8, 1))
-        .show(ui, |ui| ui.label(egui::RichText::new(text.into()).text_style(TextStyle::Small).color(fg)))
+        .show(ui, |ui| ui.label(egui::RichText::new(text).text_style(TextStyle::Small).color(fg)))
         .inner
 }
 
@@ -335,6 +340,149 @@ pub(crate) fn count_badge(ui: &egui::Ui, rect: egui::Rect, n: usize) {
     ui.painter().text(c, egui::Align2::CENTER_CENTER, n.to_string(), FontId::proportional(10.0), p.on_accent);
 }
 
+/// A toolbar row: the widgets from left to right, on as many rows as the
+/// width of the view needs (`horizontal_wrapped`). Every toolbar of the
+/// views uses it, so that the layout tests can check each one.
+pub(crate) fn toolbar<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    #[cfg(test)]
+    let panel = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+    let r = ui.horizontal_wrapped(add_contents);
+    #[cfg(test)]
+    toolbar_rects::push(ui.ctx(), panel, r.response.rect);
+    r
+}
+
+/// In a toolbar row: start a new row when an item `width` points wide does
+/// not fit in the rest of the current row (elsewhere: nothing).
+///
+/// egui wraps a widget that asks for its size (a button, a label, a text
+/// field). A combo box, a frame or any nested layout instead gets the rest
+/// of the current row as its room, whatever its own width: it never wraps,
+/// it runs past the end of the row, and the row (and each row after it)
+/// becomes wider than the view. Call this before such an item.
+pub(crate) fn wrap_for(ui: &mut egui::Ui, width: f32) {
+    let l = ui.layout();
+    if l.main_wrap() && l.main_dir() == egui::Direction::LeftToRight && ui.available_size_before_wrap().x < width && ui.cursor().left() > ui.max_rect().left() {
+        ui.end_row();
+    }
+}
+
+/// The width of `text` on one line in `style`.
+pub(crate) fn text_width(ui: &egui::Ui, text: &str, style: TextStyle) -> f32 {
+    egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style).size().x
+}
+
+/// A combo box in a toolbar row (`egui::ComboBox` with these settings and
+/// a side `label`, if any), on a new row when it does not fit in the rest
+/// of the current one. Its width is measured as egui lays it out: the
+/// selected text with the icon, at least `width` (default
+/// `Spacing::combo_width`), the button padding, then the label.
+pub(crate) fn toolbar_combo<R>(ui: &mut egui::Ui, salt: impl std::hash::Hash, label: Option<&str>, selected: &str, width: Option<f32>, menu: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+    let s = ui.spacing();
+    let (pad, icon, gap, min) = (s.button_padding.x, s.icon_spacing + s.icon_width, s.item_spacing.x, width.unwrap_or(s.combo_width));
+    let mut w = (text_width(ui, selected, TextStyle::Button) + icon).max(min - 2.0 * pad) + 2.0 * pad;
+    if let Some(l) = label {
+        w += gap + text_width(ui, l, TextStyle::Body);
+    }
+    wrap_for(ui, w);
+    let mut c = match label {
+        Some(l) => egui::ComboBox::new(salt, l),
+        None => egui::ComboBox::from_id_salt(salt),
+    }
+    .selected_text(selected)
+    .wrap_mode(egui::TextWrapMode::Extend);
+    if let Some(w) = width {
+        c = c.width(w);
+    }
+    c.show_ui(ui, menu)
+}
+
+/// Items that stay together in a toolbar row (for example a label and its
+/// control in an `add_enabled_ui`), on a new row when they do not fit in
+/// the rest of the current one. Their width is the one measured in the
+/// last pass: when it is new or has changed, egui runs the pass again
+/// (`request_discard`), so that no shown frame has the group at a wrong
+/// place. `salt` names the group; it must be unique in the window.
+pub(crate) fn toolbar_group<R>(ui: &mut egui::Ui, salt: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let id = egui::Id::new(("toolbar_group", salt));
+    let last: Option<f32> = ui.ctx().data(|d| d.get_temp(id));
+    wrap_for(ui, last.unwrap_or(0.0));
+    let r = ui.horizontal(add_contents);
+    let w = r.response.rect.width();
+    if last.is_none_or(|l| (l - w).abs() > 0.5) {
+        ui.ctx().data_mut(|d| d.insert_temp(id, w));
+        ui.ctx().request_discard("toolbar group width");
+    }
+    r.inner
+}
+
+/// Right-aligned items at the end of a toolbar row, when `width` (their
+/// width with the gaps) fits in the rest of the current row; returns false
+/// and adds nothing when it does not. (`available_width` is no test for
+/// this: in a wrapping row it is the width of a whole row.)
+pub(crate) fn toolbar_end(ui: &mut egui::Ui, width: f32, add_contents: impl FnOnce(&mut egui::Ui)) -> bool {
+    if ui.available_size_before_wrap().x < width {
+        return false;
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add_contents);
+    true
+}
+
+/// The toolbar rows of the last pass (tests): the room of the view at the
+/// place of each row, and the rectangle that the row used.
+#[cfg(test)]
+pub(crate) mod toolbar_rects {
+    use eframe::egui;
+
+    #[derive(Clone, Default)]
+    struct Rows(u64, Vec<(egui::Rect, egui::Rect)>);
+
+    fn id() -> egui::Id {
+        egui::Id::new("canoxide_test_toolbar_rects")
+    }
+
+    fn bar_id() -> egui::Id {
+        egui::Id::new("canoxide_test_bar_rects")
+    }
+
+    fn push_to(ctx: &egui::Context, id: egui::Id, panel: egui::Rect, row: egui::Rect) {
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|d| {
+            let r = d.get_temp_mut_or_default::<Rows>(id);
+            if r.0 != pass {
+                *r = Rows(pass, Vec::new());
+            }
+            r.1.push((panel, row));
+        });
+    }
+
+    pub(crate) fn push(ctx: &egui::Context, panel: egui::Rect, row: egui::Rect) {
+        push_to(ctx, id(), panel, row);
+    }
+
+    /// A bar of the window (the connection bar, the status bar).
+    pub(crate) fn push_bar(ctx: &egui::Context, panel: egui::Rect, row: egui::Rect) {
+        push_to(ctx, bar_id(), panel, row);
+    }
+
+    /// (view room, row rect) of each toolbar row of the last pass that drew one.
+    pub(crate) fn last(ctx: &egui::Context) -> Vec<(egui::Rect, egui::Rect)> {
+        ctx.data(|d| d.get_temp::<Rows>(id())).map(|r| r.1).unwrap_or_default()
+    }
+
+    /// The same for the bars of the window.
+    pub(crate) fn last_bars(ctx: &egui::Context) -> Vec<(egui::Rect, egui::Rect)> {
+        ctx.data(|d| d.get_temp::<Rows>(bar_id())).map(|r| r.1).unwrap_or_default()
+    }
+
+    pub(crate) fn clear(ctx: &egui::Context) {
+        ctx.data_mut(|d| {
+            d.remove::<Rows>(id());
+            d.remove::<Rows>(bar_id());
+        });
+    }
+}
+
 /// A full-width banner (spec 5.8) with a semantic tint; returns true when
 /// its action button (if any) was clicked.
 pub(crate) fn banner(ui: &mut egui::Ui, error: bool, text: &str, action: Option<&str>) -> bool {
@@ -343,7 +491,7 @@ pub(crate) fn banner(ui: &mut egui::Ui, error: bool, text: &str, action: Option<
     let mut clicked = false;
     egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(8, 4)).corner_radius(CornerRadius::same(4)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
+        toolbar(ui, |ui| {
             ui.label(egui::RichText::new(glyph).color(fg));
             ui.label(egui::RichText::new(text).color(p.text_primary));
             if let Some(a) = action {

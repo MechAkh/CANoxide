@@ -99,7 +99,7 @@ impl App {
             (s.network.emcy.newest_first(self.emv.node), s.network.emcy.nodes(), s.network.emcy.len(), s.network.emcy.dropped)
         };
         egui::ScrollArea::vertical().id_salt("emcy_scroll").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label("Node");
                 let sel = match self.emv.node {
                     None => "All nodes".to_string(),
@@ -112,7 +112,7 @@ impl App {
                         choices.sort_unstable();
                     }
                 }
-                egui::ComboBox::from_id_salt("emcy_node").selected_text(sel).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "emcy_node", None, &sel, None, |ui| {
                     ui.selectable_value(&mut self.emv.node, None, "All nodes");
                     for n in &choices {
                         ui.selectable_value(&mut self.emv.node, Some(*n), format!("Node {n}"));
@@ -151,7 +151,7 @@ impl App {
             let node = self.emcy_target();
             let busy = self.emcy_busy();
             ui.strong(format!("Error history (0x1003) of node {node}"));
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 if self.send_button(ui, !busy, "Read error history (0x1003)").on_hover_text("Read 0x1003:00 and then each entry by SDO").clicked() {
                     self.read_error_history(node);
                 }
@@ -212,7 +212,7 @@ impl App {
             if self.settings.adapter == AdapterKind::Simulator {
                 ui.separator();
                 ui.strong("Simulator");
-                ui.horizontal_wrapped(|ui| {
+                theme::toolbar(ui, |ui| {
                     ui.label("EMCY code 0x");
                     ui.add(egui::TextEdit::singleline(&mut self.emv.sim_code).desired_width(48.0));
                     ui.label("reg 0x");

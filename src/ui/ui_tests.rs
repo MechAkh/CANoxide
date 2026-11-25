@@ -3397,3 +3397,169 @@ fn s50_messages_signal_buttons() {
     assert_eq!(graph_count(&h2), n0 + 1);
     assert!(has_exact(&h2, "Dashboard widget"), "widget dialog\nUI:\n{}", dump(&h2));
 }
+
+// ------------------------------------------------- toolbar layout sweep
+
+/// The widget nodes of the tree with their rectangles: not the text runs
+/// of a text field or a label, and not the containers.
+fn widget_rects(h: &H) -> Vec<(String, Role, Rect)> {
+    h.query_all_by(|n| !matches!(n.role(), Role::TextRun | Role::Unknown | Role::GenericContainer | Role::Window | Role::Group))
+        .filter_map(|n| n.raw_bounds().map(|r| (text_of(&n), n.role(), r)))
+        .collect()
+}
+
+/// The faults of the toolbar rows of the last frame: two widgets of one row
+/// whose rectangles overlap by more than 1 point in both axes, or a widget
+/// that reaches outside the view.
+fn toolbar_faults(h: &H, what: &str) -> Vec<String> {
+    row_faults(h, theme::toolbar_rects::last(&h.ctx), what)
+}
+
+/// The faults of these (view room, row rect) rows; see `toolbar_faults`.
+fn row_faults(h: &H, rows: Vec<(egui::Rect, egui::Rect)>, what: &str) -> Vec<String> {
+    let nodes = widget_rects(h);
+    let mut out = Vec::new();
+    for (panel, row) in rows {
+        // The widgets of the row: their centre is in the row, and not below
+        // the view (for example the status bar under a row that is cut off).
+        let inside = |r: &Rect| {
+            let (cx, cy) = (((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32);
+            row.expand(1.0).contains(egui::pos2(cx, cy)) && cy <= panel.bottom() + 1.0
+        };
+        let ws: Vec<&(String, Role, Rect)> = nodes.iter().filter(|(_, _, r)| inside(r)).collect();
+        for (t, role, r) in &ws {
+            if r.x0 < panel.left() as f64 - 1.0 || r.x1 > panel.right() as f64 + 1.0 {
+                out.push(format!("{what}: {role:?} {t:?} x {:.0}..{:.0} outside the view x {:.0}..{:.0}", r.x0, r.x1, panel.left(), panel.right()));
+            }
+        }
+        // A label that egui wraps onto the next row allocates each text row
+        // on its own; its node has the bounding box of all of them, which
+        // covers the widgets before it. Such a label is checked only for
+        // the view bounds.
+        let one_row = |r: &Rect, role: Role| role != Role::Label || r.y1 - r.y0 <= h.ctx.style().spacing.interact_size.y as f64 + 4.0;
+        for i in 0..ws.len() {
+            if !one_row(&ws[i].2, ws[i].1) {
+                continue;
+            }
+            for j in i + 1..ws.len() {
+                if !one_row(&ws[j].2, ws[j].1) {
+                    continue;
+                }
+                let (a, b) = (&ws[i].2, &ws[j].2);
+                let ox = a.x1.min(b.x1) - a.x0.max(b.x0);
+                let oy = a.y1.min(b.y1) - a.y0.max(b.y0);
+                if ox > 1.0 && oy > 1.0 {
+                    out.push(format!(
+                        "{what}: {:?} {:?} ({:.0},{:.0})..({:.0},{:.0}) overlaps {:?} {:?} ({:.0},{:.0})..({:.0},{:.0})",
+                        ws[i].1, ws[i].0, a.x0, a.y0, a.x1, a.y1, ws[j].1, ws[j].0, b.x0, b.y0, b.x1, b.y1
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Show `tab` alone at window widths 300..=1400 (every 20 points) and
+/// collect the toolbar faults of each width.
+fn sweep_toolbars(h: &mut H, tab: Tab, name: &str, expect_rows: usize) -> Vec<String> {
+    only(h, vec![tab]);
+    let mut out = Vec::new();
+    for w in (300..=1400).step_by(20) {
+        h.set_size(egui::Vec2::new(w as f32, 900.0));
+        step2(h);
+        theme::toolbar_rects::clear(&h.ctx);
+        step2(h);
+        let n = theme::toolbar_rects::last(&h.ctx).len();
+        assert!(n >= expect_rows, "{name} at {w}: {n} toolbar rows, expected at least {expect_rows}\nUI:\n{}", dump(h));
+        out.extend(toolbar_faults(h, &format!("{name} at {w}")));
+    }
+    out
+}
+
+/// The toolbar rows wrap instead of drawing widgets over each other (the
+/// Trace counters over the buttons, the Manual SDO combo boxes under the
+/// next button), and no widget of a toolbar reaches outside the view, at
+/// any width of the view.
+#[test]
+fn toolbar_rows_do_not_overlap() {
+    let tmp = TempDir::new("toolbars");
+    let mut h = build(&tmp.data());
+    // An active device with an EDS: the Manual SDO row shows Type from EDS.
+    add_eds_and_device(&mut h, "Bench");
+    // The first faults of each view (all of them would be too long).
+    let mut faults = Vec::new();
+    let mut n = 0;
+    let mut add = |v: Vec<String>| {
+        n += v.len();
+        faults.extend(v.into_iter().take(12));
+    };
+    add(sweep_toolbars(&mut h, Tab::Trace(1), "Trace", 1));
+    add(sweep_toolbars(&mut h, Tab::Od, "Object dictionary", 2));
+    assert!(has_exact(&h, "Type from EDS"), "Manual SDO row without Type from EDS\nUI:\n{}", dump(&h));
+    add(sweep_toolbars(&mut h, Tab::Messages, "Messages", 1));
+    add(sweep_toolbars(&mut h, Tab::Graph, "Graph", 1));
+    add(sweep_toolbars(&mut h, Tab::Network, "Network", 5));
+    add(sweep_toolbars(&mut h, Tab::TxList, "Transmit list", 3));
+    assert!(n == 0, "{n} toolbar fault(s), the first of each view:\n{}", faults.join("\n"));
+}
+
+/// The connection bar and the status bar draw no widget over another one
+/// and none outside the window, at window widths from the smallest one of
+/// the app (`MIN_WINDOW`) to 2000 points: with the control of each adapter
+/// kind (with a long driver note), disconnected and connected (Simulator,
+/// listen only), and with a long status message.
+///
+/// The adapter kinds other than the Simulator are set in the settings of
+/// the running app, not picked in the list: the app then sends no
+/// `ListChannels`, so no driver is loaded and no COM port is listed, and
+/// Connect is pressed only with the Simulator.
+#[test]
+fn window_bars_do_not_overlap() {
+    let tmp = TempDir::new("bars");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Trace(1)]);
+    let long = "Device Bench saved; the object dictionary was read again and 214 entries were compared with the EDS of the device";
+    let note = "No channel list reported: the driver answered with an error, choose a channel by hand";
+    let min = super::MIN_WINDOW[0] as u32;
+    let mut faults = Vec::new();
+    let mut n = 0;
+    let mut sweep = |h: &mut H, name: &str| {
+        let mut v = Vec::new();
+        for w in (min..=2000).step_by(20) {
+            h.set_size(egui::Vec2::new(w as f32, 800.0));
+            step2(h);
+            theme::toolbar_rects::clear(&h.ctx);
+            step2(h);
+            let rows = theme::toolbar_rects::last_bars(&h.ctx);
+            assert_eq!(rows.len(), 2, "{name} at {w}: the connection bar and the status bar are not both recorded");
+            v.extend(row_faults(h, rows, &format!("{name} at {w}")));
+        }
+        n += v.len();
+        faults.extend(v.into_iter().take(12));
+    };
+    let kinds = [AdapterKind::Simulator, AdapterKind::Peak, AdapterKind::Canfox, AdapterKind::Kvaser, AdapterKind::SlcanSerial, AdapterKind::SlcanTcp, AdapterKind::Replay];
+    for kind in kinds {
+        {
+            let app = h.state_mut();
+            app.settings.adapter = kind;
+            app.settings.slcan_tcp = "192.168.100.200:20001".to_string();
+            app.settings.replay_file = tmp.data().join("a_rather_long_name_of_a_bench_log_file.trc").display().to_string();
+            app.channel_note = Some(note.to_string());
+            app.set_status(long, true);
+        }
+        sweep(&mut h, &format!("{kind:?}"));
+    }
+    {
+        let app = h.state_mut();
+        app.settings.adapter = AdapterKind::Simulator;
+        app.channel_note = None;
+        app.settings.listen_only = true;
+    }
+    h.set_size(egui::Vec2::new(1600.0, 800.0));
+    step2(&mut h);
+    connect(&mut h);
+    h.state_mut().set_status(long, false);
+    sweep(&mut h, "Simulator connected");
+    assert!(n == 0, "{n} bar fault(s), the first of each case:\n{}", faults.join("\n"));
+}

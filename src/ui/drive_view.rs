@@ -182,7 +182,7 @@ impl App {
             if !can {
                 ui.colored_label(p.warning, if self.listen_only_active { "Listen only: every command is disabled." } else { "Not connected: the commands are disabled." });
             }
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label(egui::RichText::new(format!("Node {node}")).strong());
                 ui.separator();
                 let r = ui.add_enabled(can, egui::Checkbox::new(&mut self.drv.poll, "Poll"));
@@ -206,7 +206,7 @@ impl App {
                 (true, None, None) => "State: unknown".to_string(),
             };
             ui.label(egui::RichText::new(state_text).strong());
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 for s in DriveState::ALL {
                     if Some(s) == st {
                         let tone = match s {
@@ -242,7 +242,7 @@ impl App {
                 ui.end_row();
             });
             if let Some(b) = s.bits {
-                ui.horizontal_wrapped(|ui| {
+                theme::toolbar(ui, |ui| {
                     for (name, on) in b.list() {
                         let g = if on { egui_phosphor::regular::CHECK_SQUARE } else { egui_phosphor::regular::SQUARE };
                         ui.label(egui::RichText::new(format!("{g} {name}")).color(if on { p.text_primary } else { p.text_secondary }));
@@ -254,7 +254,7 @@ impl App {
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Commands").strong());
             let allowed = |c: Command| st.is_some_and(|s| s.allows(c));
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 let big = egui::vec2(150.0, 34.0);
                 for c in [Command::QuickStop, Command::DisableVoltage] {
                     let b = egui::Button::new(egui::RichText::new(format!("{}  {}", egui_phosphor::regular::HAND_PALM, c.name())).size(16.0).color(egui::Color32::WHITE)).fill(p.danger_fill).min_size(big);
@@ -265,7 +265,7 @@ impl App {
                     }
                 }
             });
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 for c in [Command::Shutdown, Command::SwitchOn, Command::DisableOperation, Command::FaultReset] {
                     let r = self.send_button(ui, !busy && allowed(c), c.name());
                     let r = if can && !allowed(c) { r.on_disabled_hover_text("Not allowed in this state (poll first)") } else { r };
@@ -274,9 +274,9 @@ impl App {
                     }
                 }
             });
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label("Mode of operation (6060)");
-                egui::ComboBox::from_id_salt("drive_mode").selected_text(cia402::mode_text(self.drv.mode_sel)).width(240.0).show_ui(ui, |ui| {
+                theme::toolbar_combo(ui, "drive_mode", None, &cia402::mode_text(self.drv.mode_sel), Some(240.0), |ui| {
                     for m in cia402::MODES {
                         ui.selectable_value(&mut self.drv.mode_sel, m, cia402::mode_text(m));
                     }
@@ -299,7 +299,7 @@ impl App {
                 ui.add_enabled(can, egui::Checkbox::new(&mut self.drv.checked, DRIVE_CHECK));
                 let unlocked = can && self.drv.checked;
                 ui.add_enabled_ui(unlocked, |ui| {
-                    ui.horizontal_wrapped(|ui| {
+                    theme::toolbar(ui, |ui| {
                         let c = Command::EnableOperation;
                         if self.styled_send_button(ui, unlocked && !busy && allowed(c), true, c.name(), "Write the controlword 0x000F").clicked() {
                             self.drive_command(node, c);

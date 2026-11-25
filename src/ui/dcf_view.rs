@@ -224,7 +224,7 @@ impl App {
         let has_eds = self.active_device().and_then(|d| d.eds_file.clone()).is_some();
         egui::ScrollArea::vertical().id_salt("dcf_scroll").show(ui, |ui| {
             ui.strong(format!("Save node {node} to a DCF"));
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label("Node name");
                 ui.add(egui::TextEdit::singleline(&mut self.dcfv.node_name).desired_width(140.0).hint_text("device name"));
                 let r = self.send_button(ui, has_eds && !busy, format!("{} Save DCF...", egui_phosphor::regular::FLOPPY_DISK));
@@ -241,7 +241,7 @@ impl App {
             });
             ui.separator();
             ui.strong("Compare or restore a DCF");
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 if ui.button("Choose DCF...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().add_filter("DCF", &["dcf", "DCF"]).add_filter("All files", &["*"]).pick_file() {
                         self.dcf_load(&path);
@@ -255,13 +255,13 @@ impl App {
             if let Some(e) = &self.dcfv.load_error {
                 ui.colored_label(p.error, e);
             }
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.checkbox(&mut self.dcfv.use_default, "Use default values").on_hover_text("Also objects that have only a DefaultValue");
                 ui.checkbox(&mut self.dcfv.continue_on_error, "Continue on error");
                 ui.checkbox(&mut self.dcfv.store, "Store (0x1010) at the end");
             });
             let have = self.dcfv.dcf.is_some();
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 if self.send_button(ui, have && !busy, "Compare").on_hover_text("Read the node and list the differences").clicked() {
                     self.dcf_compare();
                 }
@@ -319,7 +319,7 @@ impl App {
 /// device, Detail.
 fn result_view(ui: &mut egui::Ui, filter: &mut Option<RowKind>, rows: &[ResultRow<'_>], kinds: &[RowKind], zebra: bool, outlined: bool) {
     let p = theme::pal(ui);
-    ui.horizontal_wrapped(|ui| {
+    theme::toolbar(ui, |ui| {
         if ui.selectable_label(filter.is_none(), format!("All {}", rows.len())).clicked() {
             *filter = None;
         }

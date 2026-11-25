@@ -3,6 +3,24 @@
 The notable changes of each release. The release pages on GitHub have the
 download files and their SHA-256 checksums.
 
+## Unreleased
+
+### Fixed
+
+- **Toolbar rows at some panel widths:** a combo box, a status pill or the
+  Trace counters that do not fit in the rest of a toolbar row go to the next
+  row. Before, at some widths the Trace counters were drawn over the Clear,
+  Save, New tab and Filters buttons, and a combo box (for example `Type` and
+  `Transfer` in the Manual SDO row) ran past the end of its row, under the
+  next button or out of the panel. A wide panel looks as before.
+- **Connection bar and status bar at a small window width:** the
+  connection state and the bus load keep their place at the right end of
+  the connection bar, and the adapter controls go on to a second row when
+  they do not fit; before, the state and the Load meter were drawn over
+  Scan nodes. In the status bar the message is cut with an ellipsis (the
+  full text is shown on hover) before the Trace fill and the data folder;
+  before, a long message was drawn over them.
+
 ## 0.5.1 (2026-11-25)
 
 ### Fixed

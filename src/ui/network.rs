@@ -137,9 +137,9 @@ impl App {
             }
             _ => vec![1, 2, 3],
         };
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new(format!("Node {node}")));
-            egui::ComboBox::from_id_salt("param_sub").selected_text(sub_name(self.net.param_sub)).width(190.0).show_ui(ui, |ui| {
+            theme::toolbar_combo(ui, "param_sub", None, &sub_name(self.net.param_sub), Some(190.0), |ui| {
                 for s in &subs {
                     ui.selectable_value(&mut self.net.param_sub, *s, format!("{} (sub {s})", sub_name(*s)));
                 }
@@ -205,7 +205,7 @@ impl App {
             }
             ui.label(egui::RichText::new("NMT").strong());
             // Each group wraps onto rows that fit the width of the view.
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new(format!("Node {node}")));
                 for c in NmtCommand::ALL {
                     if self.send_button(ui, true, c.label()).clicked() {
@@ -218,7 +218,7 @@ impl App {
                     self.open_program_download();
                 }
             });
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new("All nodes"));
                 for c in NmtCommand::ALL {
                     if self.send_button(ui, true, c.label()).clicked() {
@@ -228,7 +228,7 @@ impl App {
             });
             // Rarely used controls.
             egui::CollapsingHeader::new("More").id_salt("net_more").default_open(false).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
+                theme::toolbar(ui, |ui| {
                     if self.send_button(ui, true, "Send SYNC").clicked() {
                         self.bus.send(BusCommand::Sync);
                         self.set_status("SYNC sent", false);
@@ -255,7 +255,7 @@ impl App {
             self.params_section(ui, node);
 
             ui.add_space(8.0);
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.label(egui::RichText::new("Network overview").strong());
                 ui.separator();
                 let busy = self.net.task.is_some();
@@ -411,7 +411,7 @@ impl App {
 
     fn scan_section(&mut self, ui: &mut egui::Ui) {
         let progress = self.scan_progress();
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             let (a, b) = (self.settings.scan_first, self.settings.scan_last);
             ui.label(format!("SDO read of 0x1000 on nodes {a}..{b}, one at a time, timeout"));
             if ui.add(egui::DragValue::new(&mut self.settings.scan_timeout_ms).range(20..=2000).suffix(" ms")).changed() {

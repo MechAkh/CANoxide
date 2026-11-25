@@ -127,7 +127,7 @@ impl App {
             ui.colored_label(p.warning, if self.listen_only_active { "Listen only: every send control is disabled." } else { "Not connected: send controls are disabled." });
         }
         // Editor.
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.label("Name");
             ui.add(egui::TextEdit::singleline(&mut self.txv.edit.name).desired_width(100.0));
             ui.label("ID 0x");
@@ -143,7 +143,7 @@ impl App {
             ui.label("Data");
             ui.add(egui::TextEdit::singleline(&mut self.txv.edit.data).desired_width(170.0).hint_text("01 02 03"));
         });
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             ui.label("Trigger");
             ui.selectable_value(&mut self.txv.trig, TrigKind::Manual, "Manual");
             ui.selectable_value(&mut self.txv.trig, TrigKind::Periodic, "Periodic");
@@ -166,7 +166,7 @@ impl App {
             TrigKind::Periodic => Ok(Trigger::Periodic { period_ms: self.txv.edit.period_ms.max(1) as u64 }),
             TrigKind::OnRx => parse_hex_u32(&self.txv.rx_text).map(|c| Trigger::OnRx { cob_id: c, extended: c > 0x7FF }).ok_or_else(|| "on receive: COB-ID in hex".to_string()),
         };
-        ui.horizontal_wrapped(|ui| {
+        theme::toolbar(ui, |ui| {
             if self.send_button(ui, built.is_ok(), "Send once").clicked() {
                 if let Ok(f) = &built {
                     self.bus.send(BusCommand::Send(*f));

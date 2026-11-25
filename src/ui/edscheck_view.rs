@@ -102,7 +102,7 @@ impl App {
                 Err(_) => ui.strong(format!("Check node {node} against its EDS")),
             };
             ui.label(egui::RichText::new("Reads each entry by SDO and compares it with the EDS. Nothing is written.").color(p.text_secondary));
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.checkbox(&mut self.ecv.skip_domain, "Skip DOMAIN entries");
                 ui.separator();
                 ui.label("Index from 0x");
@@ -114,7 +114,7 @@ impl App {
                 ui.add(egui::DragValue::new(&mut self.ecv.stop_after).range(0..=100));
                 ui.label("time-outs in a row (0 = never)");
             });
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 let r = self.send_button(ui, eds.is_ok() && !busy, format!("{} Start", egui_phosphor::regular::PLAY));
                 let r = match (&eds, self.can_send()) {
                     (Err(e), true) => r.on_disabled_hover_text(e.as_str()),
@@ -154,7 +154,7 @@ impl App {
                 ui.label(egui::RichText::new(format!("{} DOMAIN entr{} not read", rep.skipped_domain, if rep.skipped_domain == 1 { "y" } else { "ies" })).small().color(p.text_secondary));
             }
             let mut save: Option<(String, &'static str, &'static str, String)> = None;
-            ui.horizontal_wrapped(|ui| {
+            theme::toolbar(ui, |ui| {
                 ui.checkbox(&mut self.ecv.show_ok, "show ok entries");
                 if ui.button("Export CSV...").clicked() {
                     save = Some((format!("node{}_edscheck.csv", rep.node), "CSV", "csv", rep.to_csv(self.ecv.show_ok)));
