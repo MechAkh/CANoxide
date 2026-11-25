@@ -1,6 +1,7 @@
 //! CANopen protocol parts (CiA 301): data types, frame decoder, SDO client,
 //! NMT and PDO mapping. No I/O in here.
 
+pub mod cia402;
 pub mod decode;
 pub mod lss;
 pub mod nmt;

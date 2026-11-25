@@ -6,9 +6,11 @@
 //! app, a view or a tab sends nothing.
 
 mod analysis_view;
+mod dashboard_view;
 mod dcf_view;
 mod diag;
 mod dock;
+mod drive_view;
 mod edscheck_view;
 mod emcy_view;
 mod gpu;
@@ -19,6 +21,7 @@ mod messages_view;
 mod network;
 mod od;
 mod pdo_view;
+mod progdl_view;
 mod replay_bar;
 mod settings_dlg;
 pub(crate) mod theme;
@@ -184,6 +187,11 @@ pub(crate) enum TaskOwner {
     ParamQuery,
     ParamStore(u8),
     ParamRestore(u8),
+    ProgramDownload,
+    /// A status read of the Drive view (the node).
+    DrivePoll(u8),
+    /// A controlword command or a write of the Drive view (what it does).
+    DriveCommand(String),
 }
 
 pub(crate) struct App {
@@ -226,6 +234,12 @@ pub(crate) struct App {
     dcfv: dcf_view::DcfView,
     emv: emcy_view::EmcyView,
     ecv: edscheck_view::EdsCheckView,
+    /// The program download wizard.
+    pdl: progdl_view::ProgDlView,
+    /// The Drive (CiA 402) view.
+    drv: drive_view::DriveView,
+    /// The Dashboard view.
+    dash: dashboard_view::DashView,
     /// User signals, Find similar bits, Find signal, history, sparklines.
     an: analysis_view::AnalysisState,
     dock: Option<DockState<Tab>>,
@@ -297,6 +311,9 @@ impl App {
             dcfv: dcf_view::DcfView::default(),
             emv: emcy_view::EmcyView::default(),
             ecv: edscheck_view::EdsCheckView::default(),
+            pdl: progdl_view::ProgDlView::default(),
+            drv: drive_view::DriveView::default(),
+            dash: dashboard_view::DashView::default(),
             an: analysis_view::AnalysisState::default(),
             dock: Some(boot.layout.unwrap_or_else(|| dock::default_layout(1280.0))),
             first_layout,
@@ -329,6 +346,9 @@ impl App {
             app.set_status(n, true);
         }
         if let Some(n) = app.graph.load(app.lib.as_ref(), &app.bus) {
+            app.set_status(n, true);
+        }
+        if let Some(n) = app.dash_load() {
             app.set_status(n, true);
         }
         app.load_user_signals();
@@ -746,6 +766,7 @@ impl App {
                     self.msgv.set_fixed_clock(None);
                     self.net.scanning = false;
                     self.graph.polling = false;
+                    self.drv.on_disconnected();
                     self.set_status("Disconnected", false);
                 }
                 BusEvent::Error(s) => self.set_status(s, true),
@@ -812,6 +833,8 @@ impl App {
             TaskOwner::ErrorHistory | TaskOwner::ClearHistory => self.on_emcy_task(owner, result),
             TaskOwner::EdsCheck => self.on_edscheck_task(result),
             TaskOwner::ParamQuery | TaskOwner::ParamStore(_) | TaskOwner::ParamRestore(_) => self.on_param_task(owner, result),
+            TaskOwner::ProgramDownload => self.on_progdl_task(result),
+            TaskOwner::DrivePoll(_) | TaskOwner::DriveCommand(_) => self.on_drive_task(owner, result),
         }
     }
 
@@ -891,6 +914,10 @@ impl App {
                 if ui.button("Import DBC...").on_hover_text("Import the signals of a DBC file as user signals").clicked() {
                     ui.close_menu();
                     self.import_dbc_dialog();
+                }
+                if ui.button("Program download...").on_hover_text("Download a program file to a node (CiA 302-3, 0x1F50)").clicked() {
+                    ui.close_menu();
+                    self.open_program_download();
                 }
                 if ui.add_enabled(self.data_dir.is_some(), egui::Button::new("Open data folder")).clicked() {
                     ui.close_menu();
@@ -1257,6 +1284,8 @@ impl App {
         self.similar_window(ctx);
         self.pdo_dialogs(ctx);
         self.library_dialogs(ctx);
+        self.progdl_dialog(ctx);
+        self.dash_dialog(ctx);
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -1307,6 +1336,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.apply_style(ctx);
         self.poll_bus();
+        self.drive_tick();
         self.shortcuts(ctx);
 
         // The first start without a saved layout: A or B by the window width.

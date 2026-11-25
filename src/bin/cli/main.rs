@@ -30,14 +30,14 @@ use std::sync::Arc;
 pub const CLI_NAME: &str = "canoxide-cli";
 
 /// Options without a value.
-const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values", "include-domain", "force"];
+const FLAGS: &[&str] = &["listen-only", "text", "json", "all", "ext", "rtr", "dry-run", "continue", "store", "default-values", "include-domain", "force", "yes", "no-stop", "clear", "no-start"];
 
 /// Global options that a shell line may set; the others are fixed by the
 /// shell command line.
 const SHELL_LINE_GLOBALS: &[&str] = &["node", "timeout", "text"];
 
 /// Groups whose commands have two words.
-const GROUPS: &[&str] = &["eds", "sdo", "od", "pdo", "heartbeat", "lss", "dcf", "emcy", "dbc"];
+const GROUPS: &[&str] = &["eds", "sdo", "od", "pdo", "heartbeat", "lss", "dcf", "emcy", "dbc", "program", "drive"];
 
 #[derive(Debug)]
 pub struct CliError {
@@ -202,14 +202,16 @@ fn parse_net(s: &str) -> Result<u32, CliError> {
 }
 
 impl Global {
-    fn from_args(a: &Args) -> Result<Global, CliError> {
+    /// `own_file`: the command has its own `--file` (program download), so
+    /// `--file` is not a replay log.
+    fn from_args(a: &Args, own_file: bool) -> Result<Global, CliError> {
         let adapter = a.get("adapter").unwrap_or("sim").to_ascii_lowercase();
         if !["sim", "pcan", "canfox", "replay"].contains(&adapter.as_str()) {
             return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim, pcan, canfox or replay")));
         }
         let replay = adapter == "replay";
         let canfox = adapter == "canfox";
-        let file = a.get("file").map(PathBuf::from);
+        let file = if own_file { None } else { a.get("file").map(PathBuf::from) };
         if replay && file.is_none() {
             return Err(CliError::usage("--adapter replay needs --file <log> (a trace CSV of CANoxide or a candump log)"));
         }
@@ -640,7 +642,8 @@ fn run(tokens: &[String], out: &mut dyn Write) -> i32 {
     if s.sends && a.flag("listen-only") {
         return fail(out, s.name, CliError::new("listen_only", format!("'{}' transmits on the bus; refused with --listen-only (nothing was opened or sent)", s.name)));
     }
-    let g = match Global::from_args(&a) {
+    let own_file = s.options.iter().any(|o| o.0 == "file");
+    let g = match Global::from_args(&a, own_file) {
         Ok(g) => g,
         Err(e) => return fail(out, s.name, e),
     };

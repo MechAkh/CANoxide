@@ -9,7 +9,8 @@
 //! parsers, replay clock, seek rebuild), `usersig` (signals defined over
 //! frame bits), `analysis` (find similar bits, find signal, history,
 //! sparklines), `session` (blocking driver for the CLI and tests), `library`,
-//! `settings`, `bus` (worker thread).
+//! `settings`, `bus` (worker thread), `progdl` (program download, CiA
+//! 302-3), `dashboard` (gauge widgets over the signals).
 
 #![deny(unsafe_code)]
 
@@ -22,6 +23,7 @@ pub mod bus;
 pub mod busload;
 pub mod can;
 pub mod canopen;
+pub mod dashboard;
 pub mod dbc;
 pub mod dcf;
 pub mod eds;
@@ -31,6 +33,7 @@ pub mod library;
 pub mod msgstats;
 pub mod netinfo;
 pub mod params;
+pub mod progdl;
 pub mod replay;
 pub mod session;
 pub mod settings;

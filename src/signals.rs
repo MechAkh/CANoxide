@@ -68,12 +68,48 @@ pub struct Signal {
     pub max: Option<f64>,
     pub count: u64,
     next_poll_ms: u64,
+    /// The Graph shows this signal.
+    pub in_graph: bool,
+    /// Dashboard widgets that show this signal.
+    pub dash_refs: u32,
 }
 
 impl Signal {
     pub fn points(&self) -> &VecDeque<(f64, f64)> {
         &self.points
     }
+
+    /// The newest point (time s, value).
+    pub fn last_point(&self) -> Option<(f64, f64)> {
+        self.points.back().copied()
+    }
+
+    /// The sample period in s: the SDO poll period, else the time between
+    /// the last two points (None with fewer points).
+    pub fn period_s(&self) -> Option<f64> {
+        if let SignalSource::SdoPoll { period_ms, .. } = self.def.source {
+            return Some(period_ms as f64 / 1000.0);
+        }
+        let n = self.points.len();
+        if n < 2 {
+            return None;
+        }
+        Some((self.points[n - 1].0 - self.points[n - 2].0).max(0.0))
+    }
+}
+
+/// The source without the poll period (two signals with the same key read
+/// the same value).
+fn source_key(s: &SignalSource) -> SignalSource {
+    match s {
+        SignalSource::SdoPoll { node, index, sub, data_type, .. } => SignalSource::SdoPoll { node: *node, index: *index, sub: *sub, period_ms: 0, data_type: *data_type },
+        other => other.clone(),
+    }
+}
+
+/// Two definitions give the same values (the poll period aside).
+pub fn same_signal(a: &SignalDef, b: &SignalDef) -> bool {
+    a.name == b.name && a.unit == b.unit && a.scale == b.scale && a.offset == b.offset && source_key(&a.source) == source_key(&b.source)
 }
 
 /// One point of a decimated slice: the time of the bucket start, the
@@ -203,25 +239,77 @@ impl SignalStore {
         }
     }
 
-    /// Add a signal; an SDO poll period below 50 ms is raised to 50 ms.
-    pub fn add(&mut self, mut def: SignalDef) -> u64 {
+    fn push_new(&mut self, mut def: SignalDef, in_graph: bool, dash_refs: u32) -> u64 {
         if let SignalSource::SdoPoll { period_ms, .. } = &mut def.source {
             *period_ms = (*period_ms).max(MIN_POLL_MS);
         }
         let id = self.next_id;
         self.next_id += 1;
-        self.signals.push(Signal { id, def, points: VecDeque::new(), last: None, min: None, max: None, count: 0, next_poll_ms: 0 });
+        self.signals.push(Signal { id, def, points: VecDeque::new(), last: None, min: None, max: None, count: 0, next_poll_ms: 0, in_graph, dash_refs });
         id
     }
 
+    /// A signal that only the dashboard shows and that gives the same values
+    /// as `def`; the shorter poll period wins.
+    fn shared_with(&mut self, def: &SignalDef, graph: bool) -> Option<&mut Signal> {
+        let s = self.signals.iter_mut().find(|s| same_signal(&s.def, def) && (!graph || !s.in_graph))?;
+        if let (SignalSource::SdoPoll { period_ms: a, .. }, SignalSource::SdoPoll { period_ms: b, .. }) = (&mut s.def.source, &def.source) {
+            *a = (*a).min((*b).max(MIN_POLL_MS));
+        }
+        Some(s)
+    }
+
+    /// Add a signal to the Graph; an SDO poll period below 50 ms is raised
+    /// to 50 ms. A signal that the dashboard already samples is reused, so
+    /// that it is polled once.
+    pub fn add(&mut self, def: SignalDef) -> u64 {
+        if let Some(s) = self.shared_with(&def, true) {
+            s.in_graph = true;
+            return s.id;
+        }
+        self.push_new(def, true, 0)
+    }
+
+    /// A dashboard widget needs this signal: reuse an equal one or add it
+    /// (not shown in the Graph). Pair with `release_dash`.
+    pub fn acquire_dash(&mut self, def: &SignalDef) -> u64 {
+        if let Some(s) = self.shared_with(def, false) {
+            s.dash_refs += 1;
+            return s.id;
+        }
+        self.push_new(def.clone(), false, 1)
+    }
+
+    /// A dashboard widget no longer needs the signal.
+    pub fn release_dash(&mut self, id: u64) {
+        let Some(s) = self.signals.iter_mut().find(|s| s.id == id) else { return };
+        s.dash_refs = s.dash_refs.saturating_sub(1);
+        if s.dash_refs == 0 && !s.in_graph {
+            self.signals.retain(|s| s.id != id);
+        }
+    }
+
+    /// Remove a signal from the Graph; it stays sampled while a dashboard
+    /// widget shows it.
     pub fn remove(&mut self, id: u64) -> bool {
+        if let Some(s) = self.signals.iter_mut().find(|s| s.id == id && s.dash_refs > 0) {
+            let was = s.in_graph;
+            s.in_graph = false;
+            return was;
+        }
         let n = self.signals.len();
         self.signals.retain(|s| s.id != id);
         n != self.signals.len()
     }
 
+    /// All sampled signals (Graph and dashboard).
     pub fn list(&self) -> &[Signal] {
         &self.signals
+    }
+
+    /// The signals of the Graph.
+    pub fn graph_signals(&self) -> impl Iterator<Item = &Signal> {
+        self.signals.iter().filter(|s| s.in_graph)
     }
 
     pub fn get(&self, id: u64) -> Option<&Signal> {
@@ -360,7 +448,7 @@ impl SignalStore {
     /// All points as CSV: `signal,unit,time_s,value`.
     pub fn write_csv(&self, w: &mut impl Write) -> std::io::Result<()> {
         writeln!(w, "signal,unit,time_s,value")?;
-        for s in &self.signals {
+        for s in self.graph_signals() {
             for (t, v) in &s.points {
                 writeln!(w, "{},{},{t:.6},{v}", crate::trace::csv_field(&s.def.name), crate::trace::csv_field(&s.def.unit))?;
             }
@@ -410,8 +498,9 @@ impl SignalStore {
         Ok(rows)
     }
 
+    /// The definitions of the Graph signals.
     pub fn defs(&self) -> Vec<SignalDef> {
-        self.signals.iter().map(|s| s.def.clone()).collect()
+        self.graph_signals().map(|s| s.def.clone()).collect()
     }
 
     /// Save the definitions as JSON.

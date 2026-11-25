@@ -30,6 +30,24 @@ download files and their SHA-256 checksums.
   a reserved or duplicate COB-ID, a reserved transmission type). With an
   error, Apply asks before it writes. `canoxide-cli pdo set` and `pdo map`
   stop with exit code 2 (kind `pdo_check`) unless `--force` is given.
+- **Program download (CiA 302-3):** a wizard (File menu and Network view)
+  stops the program (0x1F51), optionally clears it, downloads a file to
+  0x1F50, waits for the flash (0x1F57), checks its error code, starts the
+  program, waits for the boot-up and reads the program identification
+  (0x1F56) before and after. Each step is optional and reported, with the
+  progress in bytes and Cancel; a failed step stops the sequence.
+  `canoxide-cli program info` and `program download` (which needs `--yes`)
+  do the same. The simulator has the program objects.
+- **Drive (CiA 402) panel:** polls the statusword and the actual values,
+  shows the state and the status bits, sends the state machine commands
+  that the state allows and writes the mode. Enable operation and the
+  target writes are locked until the drive is confirmed safe to move;
+  Quick stop and Disable voltage are always enabled while connected.
+  `canoxide-cli drive status` and `drive command` (`enable` needs `--yes`).
+  The simulator has a CiA 402 axis.
+- **Dashboard:** large values, bars, dials and lamps of the Graph signals,
+  with warning and alarm thresholds and dimmed stale values. Saved in the
+  data folder.
 
 ### Changed
 

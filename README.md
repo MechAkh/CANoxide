@@ -23,12 +23,19 @@ What it is for:
 - **Decode your own messages.** Define signals in the bit grid, or import
   them from a DBC file.
 - **Plot values.** Graph PDO signals, SDO-polled objects or raw frame bits
-  over time.
+  over time, or show them on a **Dashboard** as large values, bars, dials
+  and lamps with warning and alarm thresholds.
 - **Configure a device.** Read and change its PDO configuration, set its
   node-ID and bit rate by LSS, save its configuration to a DCF, compare
   and restore it. A PDO check finds a mapping or a COB-ID that cannot work
   before it is written. Store its parameters (0x1010) or restore its
   defaults (0x1011).
+- **Download a program** to a node by CiA 302-3 (objects 0x1F50, 0x1F51,
+  0x1F56, 0x1F57): stop, optional clear, download, wait for the flash,
+  start, wait for the boot-up, each step optional and reported.
+- **Drive a CiA 402 axis.** Read its state and values, send the state
+  machine commands, write the mode and the targets. The commands that can
+  move the drive stay locked until you confirm that it can move safely.
 - **Check a device against its EDS.** Read every entry of the EDS from the
   node and list what does not match: missing objects, wrong access, wrong
   size, constant values that differ. Read only; CSV and JUnit XML export.
@@ -170,6 +177,25 @@ menu:
   (skip DOMAIN, index range, stop after time-outs), a progress bar with
   Cancel, the summary line and the result table (**show ok entries**),
   **Export CSV...** and **Export JUnit XML...**. Nothing is written.
+- **Program download** (File menu, and **Program download...** in the
+  Network view): node, program number and file (size and SHA-256), the
+  steps to run, then **Download program** (it asks first). The step list
+  shows the progress in bytes, with Cancel; a failed step stops the
+  sequence. See docs/CLI.md for the steps.
+- **Drive (CiA 402)** (View menu, closed by default): polls 0x6041, 0x6061,
+  0x6064, 0x606C, 0x6077 and 0x603F (an object that the drive does not
+  have shows n/a). State chips, status bits, the commands that the state
+  allows, the mode (0x6060). **Quick stop** and **Disable voltage** are
+  always enabled while connected. **Enable operation** and the target
+  writes (0x60FF, 0x607A, 0x6071) are in the **Motion (danger)** group,
+  locked until "I have checked that the drive can move safely" is ticked;
+  the tick is not saved and is cleared on disconnect and on a node change.
+  In listen-only mode every command is disabled.
+- **Dashboard** (View menu, closed by default): **Add signal...** adds a
+  widget (Value, Bar, Dial or Lamp) with a title, min / max, decimals,
+  warning and alarm thresholds and a size. It shares its signals with the
+  Graph, so a signal is polled once. A value older than 5 poll periods (at
+  least 2 s) is dimmed and shows its age.
 
 **Log replay.** Choose **Log file (replay)** as the adapter and pick a
 CANoxide trace CSV, a candump log (`(1700000000.123456) can0 181#0102`), a
@@ -248,7 +274,10 @@ transfer included), OD dump, NMT, SYNC, raw frames, a bounded bus monitor,
 PDO read/enable/set/map, heartbeat, value watch, LSS, DCF
 save/restore/compare, the EDS check (`check`, JUnit XML for CI), the
 error history (`emcy history`, `emcy clear`), `store` and
-`restore-defaults`, `dbc info`, and a `shell` that keeps one session open.
+`restore-defaults`, `dbc info`, the program download of CiA 302-3
+(`program info`, `program download`), a CiA 402 drive (`drive status`,
+`drive command`), and a `shell` that keeps one session open.
+`program download` and `drive command enable` send nothing without `--yes`.
 `pdo set` and `pdo map` run the PDO check first and stop on an error
 unless `--force` is given. Output is
 JSON (JSON Lines for `monitor`, `watch` and `shell`); `--text` gives
@@ -275,7 +304,9 @@ at a time.
 
 LSS and DCF restore change a device: a new node-ID or bit rate can take a
 device off the bus, and a failed PDO change leaves that PDO disabled until
-it is written again. The tool asks before these actions (see the Safety
+it is written again. A program download stops the program of the node, and
+a wrong file can leave it without a working program. The Drive panel can
+make a motor move. The tool asks before these actions (see the Safety
 settings).
 
 The PEAK adapter has had only light use on real hardware; the CANfox
@@ -288,7 +319,9 @@ All state of the GUI lives in one data folder: `settings.json`,
 `devices.json`, `eds\` (copies of the added EDS/DCF files), the saved
 PDO configurations, `layout.json` (the dock layout), `signals.json` (the
 graph signals), `user_signals.json` (the user signals of the Messages
-view) and `txlist.json` (the transmit list).
+view), `txlist.json` (the transmit list) and `dashboard.json` (the
+dashboard widgets; a data folder without it starts with an empty
+dashboard).
 
 - **Portable:** `CANoxide_data\` next to the exe. A data folder of the old
   name (version 0.1) there is renamed to it on the first start.

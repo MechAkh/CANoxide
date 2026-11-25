@@ -2912,3 +2912,90 @@ fn s41_new_controls_listen_only() {
     only(&mut h, vec![Tab::EdsCheck]);
     all_disabled(&h, &format!("{} Start", icon::PLAY));
 }
+
+/// Program download wizard: file, size and SHA-256, the question, then the
+/// sequence runs to the end on the simulator.
+#[test]
+fn s42_program_download_wizard() {
+    let tmp = TempDir::new("s42");
+    let mut h = build(&tmp.data());
+    let file = tmp.0.join("app.bin");
+    let data: Vec<u8> = (0..2000u32).map(|i| (i * 13 + 5) as u8).collect();
+    std::fs::write(&file, &data).unwrap();
+    only(&mut h, vec![Tab::Network]);
+    connect(&mut h);
+    click(&mut h, "Program download...");
+    assert!(has_exact(&h, "Program download"), "wizard\nUI:\n{}", dump(&h));
+    assert!(has(&h, "Never download to a machine in operation"), "warning\nUI:\n{}", dump(&h));
+    let dl = top_by_label(&h, "Download program", Some(Role::Button));
+    assert!(disabled(&h, dl), "no file yet: the button is disabled");
+    let path = right_of(&h, "File", Role::TextInput);
+    set_text(&mut h, path, &file.display().to_string());
+    step2(&mut h);
+    assert!(has_exact(&h, "2000 bytes"), "size\nUI:\n{}", dump(&h));
+    assert!(has_exact(&h, &crate::progdl::sha256_hex(&data)), "SHA-256\nUI:\n{}", dump(&h));
+    let dl = top_by_label(&h, "Download program", Some(Role::Button));
+    assert!(!disabled(&h, dl));
+    click_id(&mut h, dl);
+    // The question first, as for Restore defaults.
+    assert!(has(&h, "as program 1 to node 1?"), "question\nUI:\n{}", dump(&h));
+    let before: Vec<NodeId> = Vec::new();
+    click_new_button(&mut h, "Download", &before);
+    wait_for(&mut h, "download done", |h| has_exact(h, "Download done"));
+    assert!(has(&h, "Program download to node 1 done"), "status\nUI:\n{}", dump(&h));
+    assert!(has(&h, "2000 / 2000 bytes"), "progress\nUI:\n{}", dump(&h));
+    let crc = crate::progdl::crc32(&data);
+    assert!(has(&h, &format!("0x{crc:08X} (CRC-32")), "new identification\nUI:\n{}", dump(&h));
+}
+
+/// Drive panel: the polled state, the motion group locked until the check
+/// box is ticked.
+#[test]
+fn s43_drive_panel() {
+    let tmp = TempDir::new("s43");
+    let mut h = build(&tmp.data());
+    only(&mut h, vec![Tab::Drive]);
+    assert!(has_exact(&h, "Not connected: the commands are disabled."), "UI:\n{}", dump(&h));
+    connect(&mut h);
+    click_role(&mut h, Role::CheckBox, "Poll");
+    wait_for(&mut h, "state", |h| has_exact(h, "State: Switch on disabled"));
+    // Quick stop and Disable voltage are always enabled while connected.
+    assert!(!disabled(&h, control_containing(&h, "  Quick stop")));
+    assert!(!disabled(&h, control_containing(&h, "  Disable voltage")));
+    // Switch on is not allowed in Switch on disabled.
+    assert!(disabled(&h, top_by_label(&h, "Switch on", Some(Role::Button))));
+    for b in ["Enable operation", "Write 0x60FF", "Write 0x607A", "Write 0x6071"] {
+        assert!(disabled(&h, top_by_label(&h, b, Some(Role::Button))), "{b} locked\nUI:\n{}", dump(&h));
+    }
+    click_role(&mut h, Role::CheckBox, super::drive_view::DRIVE_CHECK);
+    assert!(!disabled(&h, top_by_label(&h, "Write 0x60FF", Some(Role::Button))), "unlocked\nUI:\n{}", dump(&h));
+    // Shutdown, then the state follows.
+    click_role(&mut h, Role::Button, "Shutdown");
+    wait_for(&mut h, "ready", |h| has_exact(h, "State: Ready to switch on"));
+    // The tick is cleared on disconnect.
+    click(&mut h, "Disconnect");
+    wait_for(&mut h, "disconnected", |h| has_exact(h, "Not connected: the commands are disabled."));
+    assert!(!h.state().drv.checked, "tick cleared on disconnect");
+}
+
+/// Dashboard: Add signal..., the widget dialog, then the widget shows a
+/// value.
+#[test]
+fn s44_dashboard_widget() {
+    let tmp = TempDir::new("s44");
+    let mut h = build(&tmp.data());
+    add_eds_and_device(&mut h, "Dash");
+    connect(&mut h);
+    start_node(&mut h);
+    only(&mut h, vec![Tab::Dashboard]);
+    assert!(has_exact(&h, "No widgets."), "UI:\n{}", dump(&h));
+    click_containing(&mut h, "Add signal...");
+    assert!(has_exact(&h, "Add signal"), "dialog\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Add");
+    assert!(has_exact(&h, "Dashboard widget"), "widget dialog\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Save");
+    assert!(!has_exact(&h, "No widgets."), "widget added\nUI:\n{}", dump(&h));
+    assert_eq!(h.state().dash.board.widgets.len(), 1);
+    wait_for(&mut h, "a value", |h| !has_exact(h, "No value yet"));
+    assert!(tmp.data().join("dashboard.json").exists(), "saved");
+}

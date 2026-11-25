@@ -63,6 +63,8 @@ pub struct Session {
     listen_only: bool,
     bitrate: Bitrate,
     frames: VecDeque<CanFrame>,
+    /// Received frames collected during a task step (for `on_frame`).
+    tap: Option<Vec<CanFrame>>,
 }
 
 impl Session {
@@ -77,6 +79,7 @@ impl Session {
             listen_only,
             bitrate,
             frames: VecDeque::new(),
+            tap: None,
         })
     }
 
@@ -118,6 +121,9 @@ impl Session {
     }
 
     fn log(&mut self, f: CanFrame) {
+        if let (Some(t), Dir::Rx) = (self.tap.as_mut(), f.dir) {
+            t.push(f);
+        }
         if self.frames.len() >= FRAME_LOG_CAP {
             self.frames.pop_front();
         }
@@ -233,12 +239,38 @@ impl Session {
     /// Run an SDO task to the end (or to a cancel).
     pub fn run_task(&mut self, mut task: Box<dyn SdoTask>, ctl: &mut Ctl) -> Result<TaskResult, SessionError> {
         self.guard(&task.label())?;
-        while let Some(call) = task.next() {
+        loop {
             if ctl.cancelled() {
                 task.cancel();
                 break;
             }
-            let o = self.sdo_ctl(call.node, call.req, StartOptions::mode(call.mode), &mut Ctl { cancel: ctl.cancel, progress: None })?;
+            task.on_time(self.now_ms());
+            if task.waiting() {
+                if let Some(f) = self.receive(Duration::from_millis(1))? {
+                    task.on_frame(&f);
+                }
+                continue;
+            }
+            let Some(call) = task.next() else { break };
+            self.tap = Some(Vec::new());
+            let r = {
+                let t = &mut task;
+                let cancel = ctl.cancel;
+                let outer = &mut ctl.progress;
+                let mut prog = |d: usize, n: Option<usize>| {
+                    t.on_sdo_progress(d, n);
+                    if let Some(p) = outer.as_mut() {
+                        let (d, n) = t.progress();
+                        p(d, n);
+                    }
+                };
+                self.sdo_ctl(call.node, call.req, StartOptions::mode(call.mode), &mut Ctl { cancel, progress: Some(&mut prog) })
+            };
+            // Frames received during the transfer (a boot-up message).
+            for f in self.tap.take().unwrap_or_default() {
+                task.on_frame(&f);
+            }
+            let o = r?;
             task.on_outcome(&o);
             let (d, t) = task.progress();
             ctl.report(d, t);

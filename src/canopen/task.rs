@@ -7,9 +7,11 @@
 use super::abort_text;
 use super::pdo::NodePdoConfig;
 use super::sdo::{SdoError, SdoOutcome, SdoRequest, TransferMode};
+use crate::can::CanFrame;
 use crate::dcf::{DcfCompareReport, DcfRestoreReport, DcfSaveReport};
 use crate::edscheck::EdsCheckReport;
 use crate::netinfo::NodeInfo;
+use crate::progdl::ProgDlReport;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -32,6 +34,7 @@ pub enum TaskResult {
     DcfRestore(DcfRestoreReport),
     DcfCompare(DcfCompareReport),
     EdsCheck(EdsCheckReport),
+    ProgramDownload(ProgDlReport),
 }
 
 /// A multi-step SDO job. The driver loop: `next()` gives a request (or
@@ -46,6 +49,18 @@ pub trait SdoTask: Send {
     fn progress(&self) -> (usize, Option<usize>);
     fn cancel(&mut self);
     fn into_result(self: Box<Self>) -> TaskResult;
+    /// The driver tells the time (ms of the session clock) before each
+    /// `next()`, for tasks that wait (a time-out, a poll period).
+    fn on_time(&mut self, _now_ms: u64) {}
+    /// Every received frame, for tasks that wait for a message (a boot-up).
+    fn on_frame(&mut self, _f: &CanFrame) {}
+    /// True while the task waits for time or a frame: the driver then does
+    /// not call `next()` and does not end the task.
+    fn waiting(&self) -> bool {
+        false
+    }
+    /// Bytes done / total of the running SDO transfer.
+    fn on_sdo_progress(&mut self, _done: usize, _total: Option<usize>) {}
 }
 
 /// Short text of an SDO error, with the abort text.

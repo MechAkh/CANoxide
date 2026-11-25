@@ -1223,8 +1223,13 @@ impl Worker {
         }
         // Tasks: a step that cannot start is answered at once; a few per
         // service round at most.
+        let now = self.now_ms();
         for _ in 0..16 {
             let Some((_, t)) = self.tasks.front_mut() else { break };
+            t.on_time(now);
+            if t.waiting() {
+                break;
+            }
             match t.next() {
                 Some(call) => {
                     match self.start_sdo(call.node, call.req, StartOptions::mode(call.mode), Running::Task) {
@@ -1280,6 +1285,9 @@ impl Worker {
                     received.push(f);
                     self.batch.push(f);
                     self.on_bus_frame(&f);
+                    if let Some((_, t)) = self.tasks.front_mut() {
+                        t.on_frame(&f);
+                    }
                     if out != SdoOutput::default() {
                         self.handle_sdo_output(out);
                     }
@@ -1324,6 +1332,12 @@ impl Worker {
             }
         }
         self.start_next();
+        if matches!(self.running, Running::Task) {
+            if let (Some(p), Some((_, t))) = (self.sdo.progress(), self.tasks.front_mut()) {
+                t.on_sdo_progress(p.done, p.total);
+                self.update_task_shared();
+            }
+        }
         // Periodic entries of the transmit list.
         if !self.listen_only {
             for f in self.txlist.due(now) {

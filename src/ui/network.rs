@@ -213,6 +213,10 @@ impl App {
                         self.set_status(format!("NMT {} node {node} sent", c.label()), false);
                     }
                 }
+                ui.separator();
+                if ui.button("Program download...").on_hover_text("Open the program download wizard for this node (CiA 302-3); nothing is sent yet").clicked() {
+                    self.open_program_download();
+                }
             });
             ui.horizontal_wrapped(|ui| {
                 ui.add_sized([72.0, ui.spacing().interact_size.y], egui::Label::new("All nodes"));

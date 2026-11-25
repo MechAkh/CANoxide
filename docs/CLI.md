@@ -42,6 +42,10 @@ Read this before you use `--adapter pcan` or `--adapter canfox`.
    restarts with each command; use `shell` for multi-step work.
 6. **EDS limits** (LowLimit/HighLimit) are checked before an SDO write is
    sent, when the type comes from the EDS. `--type` skips that check.
+7. **`--yes` for the two commands that can do the most harm.** `program
+   download` (it stops and replaces the program of the node) and `drive
+   command enable` (the drive can move) send nothing without `--yes`: they
+   exit with code 2 and say what they would do.
 
 On a real bus, act like a careful engineer: `scan` and `info` first, read
 before you write, and know what an NMT command does to a running machine.
@@ -113,6 +117,8 @@ A `shell` run returns the code of the last failed line, else 0.
 | EDS check | `check [--from] [--to] [--junit out.xml] [--all]` |
 | emergencies | `emcy history`, `emcy clear` |
 | parameters | `store [--sub n]`, `restore-defaults [--sub n]` |
+| program download (CiA 302-3) | `program info [--program p]`, `program download --file f [--program p] [--no-stop] [--clear] [--no-start] [--yes]` |
+| drive (CiA 402) | `drive status`, `drive command <command> [--yes]` (shutdown, switch-on, enable, disable-voltage, quick-stop, disable-operation, fault-reset) |
 | scripting | `shell [--script file]` |
 
 `help --json` has the options and the output fields of each command.
@@ -342,6 +348,72 @@ it skips: multiplexed signals, float64 signals and IDs that are not CAN
 IDs. The start bit is the DBC start bit (Intel: the least significant bit;
 Motorola: the most significant bit). A file that cannot be read fails with
 kind `file`.
+
+### 15. Program download (CiA 302-3)
+
+```
+> canoxide-cli program info
+{"command":"program info","control":1,"flash_error":0,"flash_error_text":"no error","flash_in_progress":false,"flash_status":"0x00000000","identification":"0x5A5A0001","node":1,"objects":[...],"ok":true,"program":1}
+
+> canoxide-cli program download --file app.bin
+{"detail":{"crc32":"0x5D3DE8ED","file":"app.bin","node":1,"plan":["Read the program identification (0x1F56) sub 1","Stop the program (0x1F51 = 0) sub 1","Download the file (0x1F50) sub 1: 1024 bytes (Auto transfer)",...],"program":1,"sha256":"e918...056d","size":1024},"error":{"abort_code":null,"kind":"usage","message":"program download stops and replaces the program of node 1; nothing was sent. Add --yes to run it (the plan is in detail.plan)"},"ok":false}
+
+> canoxide-cli program download --file app.bin --yes
+{"bytes_done":1024,"cancelled":false,"command":"program download","crc32":"0x5D3DE8ED","new_id":"0x5D3DE8ED","ok":true,"old_id":"0x5A5A0001",...,"steps":[{"abort_code":null,"detail":"0x5A5A0001","name":"Read the program identification (0x1F56)","state":"ok","step":"read_old_id"},...]}
+```
+
+`program info` reads 0x1F56 (program identification), 0x1F57 (flash
+status: bit 0 = in progress, bits 1..7 = error code) and 0x1F51 (program
+control) at sub `--program` (default 1).
+
+`program download` sends nothing without `--yes`: it exits with code 2
+and gives the plan, the size and the SHA-256 of the file in `detail`. With
+`--yes` it runs these steps; each one is reported with the state `ok`,
+`skipped`, `failed`, `cancelled` or `not_run`:
+
+1. read 0x1F56 (the old identification);
+2. stop: 0x1F51 = 0 (`--no-stop` skips it; a node that refuses a download
+   while its program runs aborts the download);
+3. clear: 0x1F51 = 3 (only with `--clear`);
+4. download the file to 0x1F50 (`--mode auto|segmented|block`);
+5. poll 0x1F57 until bit 0 is 0 (time-out 30 s; skipped when the node has
+   no 0x1F57);
+6. check the error code of 0x1F57;
+7. start: 0x1F51 = 1 (`--no-start` skips it and the next step);
+8. wait for the boot-up message (time-out 10 s);
+9. read 0x1F56 again.
+
+A failed step stops the sequence; nothing is tried again. The steps that
+did not run have the state `not_run`. The exit code is then 1 (kind
+`abort` with the abort code, or `device`), and the report is in `detail`.
+`crc32` is the CRC-32 of the file; the simulator reports it as its new
+program identification. Never download to a machine in operation.
+
+### 16. A CiA 402 drive
+
+```
+> canoxide-cli drive status
+{"allowed":["shutdown"],"bits":{"internal_limit_active":false,"remote":true,"target_reached":false,"voltage_enabled":false,"warning":false},"command":"drive status","error_code":"0x0000","mode":3,"mode_name":"3 Profile velocity (pv)","na":[],"node":1,"ok":true,"position":0,"state":"switch_on_disabled","state_name":"Switch on disabled","statusword":"0x0240","torque":0,"velocity":0}
+
+> canoxide-cli drive command shutdown
+{"action":"shutdown","command":"drive command","controlwords":["0x0006"],"node":1,"ok":true,"state":"ready_to_switch_on","state_name":"Ready to switch on","statusword":"0x0621","steps":{...}}
+
+> canoxide-cli drive command enable
+{"error":{"abort_code":null,"kind":"usage","message":"'enable' (Enable operation) can make the drive of node 1 move; nothing was sent. Check that the drive can move safely, then add --yes"},"ok":false}
+```
+
+`drive status` reads 0x6041, 0x6061, 0x6064, 0x606C, 0x6077 and 0x603F.
+An object that the drive does not have (abort 0x06020000 or 0x06090011) is
+listed in `na` and its field is null. `allowed` lists the commands that
+the state machine accepts in the current state.
+
+`drive command` writes the controlword 0x6040 (shutdown 0x06, switch-on
+0x07, enable 0x0F, disable-voltage 0x00, quick-stop 0x02,
+disable-operation 0x07, fault-reset 0x80 then 0x00) and reads the state
+after it. `enable` (Enable operation) can make the drive move: without
+`--yes` it exits with code 2 and sends nothing. The tool does not check
+that a command is allowed; the drive decides. Each command is a separate
+session, so use `shell` for a sequence on the simulator.
 
 ### Text output
 

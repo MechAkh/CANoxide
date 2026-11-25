@@ -44,6 +44,7 @@ const NODES: Opt = ("nodes", Some("list"), "Node-IDs, comma separated (default -
 const DURATION: Opt = ("duration", Some("s"), "Stop after this many seconds.");
 const COUNT: Opt = ("count", Some("n"), "Stop after this many samples / frames.");
 const FORCE: Opt = ("force", None, "Write even when the PDO check finds an error (without it an error stops the command with exit code 2, kind pdo_check, and the findings in detail.findings).");
+const PROGRAM: Opt = ("program", Some("1..254"), "Program number = sub-index of 0x1F50, 0x1F51, 0x1F56 and 0x1F57. Default 1.");
 const LSS_TIMEOUT: Opt = ("lss-timeout", Some("ms"), "LSS answer timeout. Default 100.");
 
 pub const COMMANDS: &[Spec] = &[
@@ -492,6 +493,54 @@ pub const COMMANDS: &[Spec] = &[
         options: &[("sub", Some("1..254"), "1 = all parameters (default), 2 = communication, 3 = application, 4.. manufacturer specific.")],
         output: "{node, index, sub, name, restored, note}",
         example: "canoxide-cli restore-defaults --node 5 --sub 1",
+    },
+    Spec {
+        name: "program info",
+        args: "",
+        summary: "Read the program objects of CiA 302-3: identification 0x1F56, flash status 0x1F57 and program control 0x1F51 (each sub = program number). An object that the node does not have is reported with its error.",
+        sends: true,
+        bus: true,
+        options: &[PROGRAM],
+        output: "{node, program, identification, flash_status, flash_error, flash_error_text, control, objects: [{index, sub, raw, error, abort_code}]}",
+        example: "canoxide-cli program info --node 5",
+    },
+    Spec {
+        name: "program download",
+        args: "",
+        summary: "Download a program (CiA 302-3): read 0x1F56, stop (0x1F51 = 0), optional clear (= 3), write the file to 0x1F50, poll 0x1F57 until the flash is done (skipped when the node has no 0x1F57), check its error code, start (= 1), wait for the boot-up, read 0x1F56 again. A failed step stops the sequence (no retry). Without --yes nothing is sent: exit code 2 with the plan in detail.plan.",
+        sends: true,
+        bus: true,
+        options: &[
+            ("file", Some("file"), "The program file (required). Here --file is the program, not a replay log."),
+            PROGRAM,
+            MODE,
+            ("no-stop", None, "Do not stop the program first (the node must accept a download while it runs)."),
+            ("clear", None, "Clear the program (0x1F51 = 3) before the download."),
+            ("no-start", None, "Do not start the program after the download (no boot-up wait)."),
+            ("yes", None, "Run the download. Without it the command only reports what it would do (exit code 2)."),
+        ],
+        output: "{node, program, file, size, sha256, crc32, ok, cancelled, old_id, new_id, flash_status, bytes_done, steps: [{step, state, detail, abort_code}]}",
+        example: "canoxide-cli program download --node 5 --file app.bin --yes",
+    },
+    Spec {
+        name: "drive status",
+        args: "",
+        summary: "Read the CiA 402 status of a drive: statusword 0x6041 (state and bits), mode display 0x6061, position 0x6064, velocity 0x606C, torque 0x6077 and error code 0x603F. An object that the drive does not have is listed in na.",
+        sends: true,
+        bus: true,
+        options: &[],
+        output: "{node, statusword, state, state_name, bits, mode, mode_name, position, velocity, torque, error_code, allowed, na}",
+        example: "canoxide-cli drive status --node 5",
+    },
+    Spec {
+        name: "drive command",
+        args: "<shutdown|switch-on|enable|disable-voltage|quick-stop|disable-operation|fault-reset>",
+        summary: "Write a CiA 402 controlword command to 0x6040 (fault-reset writes 0x80, then 0x00), then read the state. enable (Enable operation) can make the drive move and needs --yes; without it nothing is sent (exit code 2).",
+        sends: true,
+        bus: true,
+        options: &[("yes", None, "Confirm enable: the drive can move.")],
+        output: "{node, action, controlwords, state, state_name, statusword, steps}",
+        example: "canoxide-cli drive command --node 5 quick-stop",
     },
     Spec {
         name: "shell",

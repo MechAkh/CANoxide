@@ -34,11 +34,15 @@ pub(crate) enum Tab {
     Emergencies,
     /// Check of a node against its EDS (0.5).
     EdsCheck,
+    /// The CiA 402 drive panel.
+    Drive,
+    /// Gauge widgets over the signals.
+    Dashboard,
 }
 
 impl Tab {
     /// The tabs of the View menu, in menu order (trace tabs separately).
-    pub(crate) const VIEWS: [Tab; 13] = [
+    pub(crate) const VIEWS: [Tab; 15] = [
         Tab::Devices,
         Tab::Eds,
         Tab::Od,
@@ -47,11 +51,13 @@ impl Tab {
         Tab::Messages,
         Tab::FindSignal,
         Tab::Graph,
+        Tab::Dashboard,
         Tab::Pdo,
         Tab::TxList,
         Tab::Lss,
         Tab::Dcf,
         Tab::EdsCheck,
+        Tab::Drive,
     ];
 
     pub(crate) fn name(self) -> String {
@@ -70,6 +76,8 @@ impl Tab {
             Tab::FindSignal => "Find signal".into(),
             Tab::Emergencies => "Emergencies".into(),
             Tab::EdsCheck => "EDS check".into(),
+            Tab::Drive => "Drive (CiA 402)".into(),
+            Tab::Dashboard => "Dashboard".into(),
         }
     }
 
@@ -89,6 +97,8 @@ impl Tab {
             Tab::FindSignal => icon::MAGNIFYING_GLASS,
             Tab::Emergencies => icon::WARNING,
             Tab::EdsCheck => icon::CHECK_SQUARE,
+            Tab::Drive => icon::ENGINE,
+            Tab::Dashboard => icon::GAUGE,
         }
     }
 }
@@ -198,8 +208,9 @@ pub(crate) fn open_tab(d: &mut DockState<Tab>, tab: Tab) {
         return;
     }
     let near = match tab {
-        Tab::Lss | Tab::Emergencies => leaf_of(d, Tab::Network),
+        Tab::Lss | Tab::Emergencies | Tab::Drive => leaf_of(d, Tab::Network),
         Tab::Dcf | Tab::EdsCheck => leaf_of(d, Tab::Od),
+        Tab::Dashboard => leaf_of(d, Tab::Graph),
         Tab::Trace(_) | Tab::Messages | Tab::FindSignal => (1..=MAX_TRACES).find_map(|n| leaf_of(d, Tab::Trace(n))),
         _ => None,
     };
@@ -276,6 +287,8 @@ impl TabViewer for Viewer<'_> {
             Tab::FindSignal => self.app.findsig_tab(ui),
             Tab::Emergencies => self.app.emcy_tab(ui),
             Tab::EdsCheck => self.app.edscheck_tab(ui),
+            Tab::Drive => self.app.drive_tab(ui),
+            Tab::Dashboard => self.app.dashboard_tab(ui),
         });
     }
 
@@ -386,6 +399,21 @@ mod tests {
         let pos = |t: Tab| Tab::VIEWS.iter().position(|x| *x == t).unwrap();
         assert_eq!(pos(Tab::Emergencies), pos(Tab::Network) + 1);
         assert_eq!(pos(Tab::EdsCheck), pos(Tab::Dcf) + 1);
+        assert_eq!(pos(Tab::Dashboard), pos(Tab::Graph) + 1);
+        assert_eq!(pos(Tab::Drive), pos(Tab::EdsCheck) + 1);
+    }
+
+    /// Drive and Dashboard are closed by default; Drive opens beside
+    /// Network, Dashboard beside the Graph.
+    #[test]
+    fn drive_and_dashboard_closed_by_default_and_open_near() {
+        for mut d in [layout_a(), layout_b()] {
+            assert!(!is_open(&d, Tab::Drive) && !is_open(&d, Tab::Dashboard));
+            open_tab(&mut d, Tab::Drive);
+            open_tab(&mut d, Tab::Dashboard);
+            assert_eq!(leaf_of(&d, Tab::Drive), leaf_of(&d, Tab::Network));
+            assert_eq!(leaf_of(&d, Tab::Dashboard), leaf_of(&d, Tab::Graph));
+        }
     }
 
     #[test]

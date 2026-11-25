@@ -13,6 +13,8 @@ use canoxide::canopen::pdo::{
     PdoConfig, PdoKind, PdoReadOptions, PdoReadTask, DEFAULT_PDO_SCAN_STOP, MAX_PDOS,
 };
 use canoxide::canopen::pdocheck::{self, OtherPdo};
+use canoxide::canopen::cia402::{self, Command, DriveStatus};
+use canoxide::progdl::{self, ProgDlOptions, ProgDlTask};
 use canoxide::signals::RawKind;
 use canoxide::canopen::sdo::{SdoError, SdoRequest, StartOptions, TransferMode, MAX_BLOCK_SIZE};
 use canoxide::canopen::task::{ReadsTask, SdoStep, SdoTask, StepsReport, StepsTask, TaskResult};
@@ -427,6 +429,10 @@ pub fn dispatch(ctx: &mut Ctx, name: &str, pos: &[String], a: &Args, out: &mut d
         "emcy clear" => emcy_clear(ctx, pos),
         "store" => store_restore(ctx, pos, a, false),
         "restore-defaults" => store_restore(ctx, pos, a, true),
+        "program info" => program_info(ctx, pos, a),
+        "program download" => program_download(ctx, pos, a),
+        "drive status" => drive_status(ctx, pos),
+        "drive command" => drive_command(ctx, pos, a),
         other => Err(CliError::usage(format!("'{other}' cannot run here"))),
     }
 }
@@ -1497,5 +1503,188 @@ fn store_restore(ctx: &mut Ctx, pos: &[String], a: &Args, restore: bool) -> CmdR
     } else {
         m.insert("stored".into(), json!(r.ok));
     }
+    finish_steps(&r, m)
+}
+
+// ------------------------------------------------------------ program (CiA 302-3)
+
+fn program_number(a: &Args) -> Result<u8, CliError> {
+    let p = a.num::<u8>("program")?.unwrap_or(1);
+    if p == 0 || p == 255 {
+        return Err(CliError::usage("--program must be 1..254"));
+    }
+    Ok(p)
+}
+
+fn le_u32_of(d: &[u8]) -> Option<u32> {
+    (!d.is_empty() && d.len() <= 4).then(|| le_u64(d) as u32)
+}
+
+fn program_info(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
+    max_args(pos, 0)?;
+    let p = program_number(a)?;
+    let node = ctx.node;
+    let items = vec![(progdl::PROGRAM_ID, p), (progdl::FLASH_STATUS, p), (progdl::PROGRAM_CONTROL, p)];
+    let rep = match run_task(ctx, Box::new(ReadsTask::new("program info", node, items)))? {
+        TaskResult::Reads(r) => r,
+        _ => return Err(internal()),
+    };
+    let get = |index: u16| rep.reads.iter().find(|x| x.index == index).and_then(|x| x.data.as_deref()).and_then(le_u32_of);
+    let id = get(progdl::PROGRAM_ID);
+    let flash = get(progdl::FLASH_STATUS);
+    let control = get(progdl::PROGRAM_CONTROL);
+    let mut m = Map::new();
+    m.insert("node".into(), json!(node));
+    m.insert("program".into(), json!(p));
+    m.insert("identification".into(), json!(id.map(hex32)));
+    m.insert("flash_status".into(), json!(flash.map(hex32)));
+    m.insert("flash_in_progress".into(), json!(flash.map(|f| f & progdl::FLASH_IN_PROGRESS != 0)));
+    m.insert("flash_error".into(), json!(flash.map(progdl::flash_error_code)));
+    m.insert("flash_error_text".into(), json!(flash.map(|f| progdl::flash_error_text(progdl::flash_error_code(f)))));
+    m.insert("control".into(), json!(control));
+    m.insert(
+        "objects".into(),
+        Value::Array(
+            rep.reads
+                .iter()
+                .map(|x| json!({"index": hex16(x.index), "sub": x.sub, "raw": x.data.as_deref().map(hex_bytes), "error": x.error, "abort_code": x.abort_code.map(hex32)}))
+                .collect(),
+        ),
+    );
+    if rep.cancelled {
+        return Err(CliError { kind: "cancelled", message: "cancelled".into(), abort_code: None, detail: Some(Value::Object(m)) });
+    }
+    if rep.reads.iter().all(|x| x.data.is_none()) {
+        let first = rep.reads.iter().find(|x| x.error.is_some());
+        let msg = first.map(|x| format!("{}:{}: {}", hex16(x.index), x.sub, x.error.clone().unwrap_or_default())).unwrap_or_else(|| "no program object read".into());
+        let code = first.and_then(|x| x.abort_code);
+        let kind = if code.is_some() { "abort" } else { "device" };
+        return Err(CliError { kind, message: msg, abort_code: code, detail: Some(Value::Object(m)) });
+    }
+    Ok(Value::Object(m))
+}
+
+fn program_download(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
+    max_args(pos, 0)?;
+    let path = a.get("file").ok_or_else(|| CliError::usage("program download needs --file <program file>"))?;
+    let data = std::fs::read(path).map_err(|e| CliError::new("file", format!("--file {path}: {e}")))?;
+    if data.is_empty() {
+        return Err(CliError::new("file", format!("--file {path}: the file is empty")));
+    }
+    let mut o = ProgDlOptions::new(ctx.node);
+    o.program = program_number(a)?;
+    o.mode = parse_mode(a)?;
+    o.stop = !a.flag("no-stop");
+    o.clear = a.flag("clear");
+    o.start = !a.flag("no-start");
+    o.wait_boot = o.start;
+    let mut head = Map::new();
+    head.insert("node".into(), json!(o.node));
+    head.insert("program".into(), json!(o.program));
+    head.insert("file".into(), json!(path));
+    head.insert("size".into(), json!(data.len()));
+    head.insert("sha256".into(), json!(progdl::sha256_hex(&data)));
+    head.insert("crc32".into(), json!(hex32(progdl::crc32(&data))));
+    if !a.flag("yes") {
+        head.insert("plan".into(), json!(o.plan(data.len())));
+        return Err(CliError::usage(format!("program download stops and replaces the program of node {}; nothing was sent. Add --yes to run it (the plan is in detail.plan)", o.node)).with_detail(Value::Object(head)));
+    }
+    let r = match run_task(ctx, Box::new(ProgDlTask::new(o, data)))? {
+        TaskResult::ProgramDownload(r) => r,
+        _ => return Err(internal()),
+    };
+    let mut m = head;
+    m.insert("ok".into(), json!(r.ok));
+    m.insert("cancelled".into(), json!(r.cancelled));
+    m.insert("old_id".into(), json!(r.old_id.map(hex32)));
+    m.insert("new_id".into(), json!(r.new_id.map(hex32)));
+    m.insert("flash_status".into(), json!(r.flash_status.map(hex32)));
+    m.insert("bytes_done".into(), json!(r.bytes_done));
+    m.insert(
+        "steps".into(),
+        Value::Array(r.steps.iter().map(|s| json!({"step": s.step, "name": s.step.name(), "state": s.state, "detail": s.detail, "abort_code": s.abort_code.map(hex32)})).collect()),
+    );
+    if r.ok {
+        return Ok(Value::Object(m));
+    }
+    let (msg, code) = match r.failed() {
+        Some(s) => (format!("{}: {}", s.step.name(), s.detail.clone().unwrap_or_default()), s.abort_code),
+        None => ("cancelled".to_string(), None),
+    };
+    let kind = if r.cancelled { "cancelled" } else if code.is_some() { "abort" } else { "device" };
+    Err(CliError { kind, message: msg, abort_code: code, detail: Some(Value::Object(m)) })
+}
+
+// ------------------------------------------------------------- drive (CiA 402)
+
+/// Aborts that mean "the object is not there".
+const NOT_THERE: [u32; 2] = [0x0602_0000, 0x0609_0011];
+
+fn read_drive(ctx: &mut Ctx) -> Result<(DriveStatus, Vec<u16>, canoxide::canopen::task::ReadsReport), CliError> {
+    let node = ctx.node;
+    let items: Vec<(u16, u8)> = cia402::POLL_OBJECTS.iter().map(|i| (*i, 0)).collect();
+    let rep = match run_task(ctx, Box::new(ReadsTask::new("drive status", node, items)))? {
+        TaskResult::Reads(r) => r,
+        _ => return Err(internal()),
+    };
+    let na: Vec<u16> = rep.reads.iter().filter(|x| x.abort_code.is_some_and(|c| NOT_THERE.contains(&c))).map(|x| x.index).collect();
+    Ok((DriveStatus::from_reads(&rep), na, rep))
+}
+
+fn drive_json(node: u8, s: &DriveStatus, na: &[u16]) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert("node".into(), json!(node));
+    m.insert("statusword".into(), json!(s.statusword.map(hex16)));
+    m.insert("state".into(), json!(s.state));
+    m.insert("state_name".into(), json!(s.state.map(|x| x.name())));
+    m.insert("bits".into(), json!(s.bits));
+    m.insert("mode".into(), json!(s.mode));
+    m.insert("mode_name".into(), json!(s.mode_name));
+    m.insert("position".into(), json!(s.position));
+    m.insert("velocity".into(), json!(s.velocity));
+    m.insert("torque".into(), json!(s.torque));
+    m.insert("error_code".into(), json!(s.error_code.map(hex16)));
+    m.insert("allowed".into(), json!(s.state.map(|x| x.allowed().iter().map(|c| c.word()).collect::<Vec<_>>())));
+    m.insert("na".into(), json!(na.iter().map(|i| hex16(*i)).collect::<Vec<_>>()));
+    m
+}
+
+fn drive_status(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
+    max_args(pos, 0)?;
+    let node = ctx.node;
+    let (s, na, rep) = read_drive(ctx)?;
+    let m = drive_json(node, &s, &na);
+    if s.statusword.is_none() {
+        let x = rep.reads.iter().find(|x| x.index == cia402::STATUSWORD);
+        let msg = format!("statusword 0x6041: {}", x.and_then(|x| x.error.clone()).unwrap_or_else(|| "not read".into()));
+        let code = x.and_then(|x| x.abort_code);
+        let kind = if code.is_some() { "abort" } else { "device" };
+        return Err(CliError { kind, message: msg, abort_code: code, detail: Some(Value::Object(m)) });
+    }
+    Ok(Value::Object(m))
+}
+
+fn drive_command(ctx: &mut Ctx, pos: &[String], a: &Args) -> CmdResult {
+    max_args(pos, 1)?;
+    let w = arg(pos, 0, "command")?;
+    let words = Command::ALL.iter().map(|c| c.word()).collect::<Vec<_>>().join(", ");
+    let c = Command::from_word(&w.to_ascii_lowercase()).ok_or_else(|| CliError::usage(format!("'{w}' is not a drive command ({words})")))?;
+    let node = ctx.node;
+    if c.moves() && !a.flag("yes") {
+        return Err(CliError::usage(format!("'{}' (Enable operation) can make the drive of node {node} move; nothing was sent. Check that the drive can move safely, then add --yes", c.word())));
+    }
+    let steps: Vec<SdoStep> = c.controlwords().iter().map(|cw| SdoStep::write(node, cia402::CONTROLWORD, 0, cw.to_le_bytes().to_vec(), format!("{} (controlword 0x{cw:04X})", c.name()))).collect();
+    let r = run_steps(ctx, c.name(), steps, true)?;
+    let mut m = Map::new();
+    m.insert("node".into(), json!(node));
+    m.insert("action".into(), json!(c.word()));
+    m.insert("controlwords".into(), json!(c.controlwords().iter().map(|cw| hex16(*cw)).collect::<Vec<_>>()));
+    if r.ok {
+        let (s, _, _) = read_drive(ctx)?;
+        m.insert("state".into(), json!(s.state));
+        m.insert("state_name".into(), json!(s.state.map(|x| x.name())));
+        m.insert("statusword".into(), json!(s.statusword.map(hex16)));
+    }
+    m.insert("steps".into(), steps_json(&r));
     finish_steps(&r, m)
 }

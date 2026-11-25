@@ -13,6 +13,7 @@ use super::{Bitrate, CanAdapter, CanError, CanFrame, ChannelInfo, Dir};
 use crate::canopen::lss::{LssAction, LssIdentity, LssSlave, NODE_ID_UNCONFIGURED};
 use crate::canopen::nmt::{NmtCommand, NodeState};
 use crate::canopen::pdo::{configs_with, extract_bits, insert_bits, MapEntry, PdoConfig, PdoKind};
+use crate::canopen::cia402::{self, DriveState};
 use crate::canopen::sdo::crc16_ccitt;
 use crate::canopen::types::{self, le_u64, DataType};
 use crate::canopen::{COB_EMCY, COB_HEARTBEAT, COB_LSS_MASTER, COB_LSS_SLAVE, COB_NMT, COB_SDO_RX, COB_SDO_TX, COB_SYNC};
@@ -93,7 +94,32 @@ pub struct SimNode {
     pub store_count: u32,
     /// Successful "restore default parameters" writes (0x1011:sub = "load").
     pub restore_count: u32,
+    /// Program side (CiA 302-3): the program runs (0x1F51 reads 1).
+    program_running: bool,
+    /// How long the "flash" of a program download takes (0: at once).
+    flash_ms: u64,
+    /// The flash ends with this error code (test hook).
+    flash_error: Option<u8>,
+    /// (program, time) at which the running flash ends.
+    flash_until: Option<(u8, u64)>,
+    /// Time of the boot-up after a program start.
+    boot_at: Option<u64>,
+    /// A program start sends a boot-up message.
+    boot_on_start: bool,
+    /// Objects that answer "does not exist" (test hook).
+    hidden: Vec<u16>,
+    /// CiA 402 axis: state, last controlword, velocity, position, last tick.
+    drive_state: DriveState,
+    cw_prev: u16,
+    axis_vel: f64,
+    axis_pos: f64,
+    axis_ms: Option<u64>,
 }
+
+/// Acceleration of the simulated axis (velocity units per second).
+pub const AXIS_ACCEL: f64 = 100_000.0;
+/// Delay of the boot-up message after a program start.
+pub const PROGRAM_BOOT_DELAY_MS: u64 = 20;
 
 impl SimNode {
     pub fn new(node_id: u8, od: Arc<ObjectDictionary>) -> SimNode {
@@ -118,6 +144,18 @@ impl SimNode {
             sdo_writes: 0,
             store_count: 0,
             restore_count: 0,
+            program_running: true,
+            flash_ms: 50,
+            flash_error: None,
+            flash_until: None,
+            boot_at: None,
+            boot_on_start: true,
+            hidden: Vec::new(),
+            drive_state: DriveState::SwitchOnDisabled,
+            cw_prev: 0,
+            axis_vel: 0.0,
+            axis_pos: 0.0,
+            axis_ms: None,
         };
         n.load_defaults(0x0000, 0xFFFF);
         n.lss.identity = n.identity();
@@ -202,6 +240,10 @@ impl SimNode {
         let node = if self.is_configured() { self.node_id } else { 1 };
         for (ix, o) in self.od.objects.range(from..=to) {
             for (sub, e) in &o.subs {
+                // The program objects are "flash": a reset keeps them.
+                if (0x1F50..=0x1F57).contains(ix) && self.values.contains_key(&(*ix, *sub)) {
+                    continue;
+                }
                 let v = e.effective_bytes(node).unwrap_or_else(|| e.dtype().and_then(|t| t.size()).map(|n| vec![0; n]).unwrap_or_default());
                 self.values.insert((*ix, *sub), v);
             }
@@ -255,6 +297,18 @@ impl SimNode {
         if !self.is_configured() {
             return;
         }
+        if let Some((prog, t)) = self.flash_until {
+            if now_ms >= t {
+                self.flash_until = None;
+                self.finish_flash(prog);
+            }
+        }
+        if self.boot_at.is_some_and(|t| now_ms >= t) {
+            self.boot_at = None;
+            self.boot(out);
+            return;
+        }
+        self.axis_tick(now_ms);
         let hb = self.heartbeat_ms();
         if hb > 0 && now_ms >= self.next_hb_ms {
             out.push(self.frame(COB_HEARTBEAT + self.node_id as u32, &[self.state.byte()]));
@@ -411,6 +465,7 @@ impl SimNode {
             Some(NmtCommand::PreOperational) => self.state = NodeState::PreOperational,
             Some(NmtCommand::ResetNode) => {
                 self.load_defaults(0x0000, 0xFFFF);
+                self.reset_axis();
                 self.boot(out);
             }
             Some(NmtCommand::ResetCommunication) => {
@@ -468,8 +523,216 @@ impl SimNode {
         }
     }
 
+    // ------------------------------------------------- program (CiA 302-3)
+
+    /// The data of a program (0x1F50:prog) as last downloaded.
+    pub fn program_data(&self, prog: u8) -> Option<&[u8]> {
+        self.value(0x1F50, prog)
+    }
+
+    pub fn program_running(&self) -> bool {
+        self.program_running
+    }
+
+    /// The flash of a download takes this long (0: it ends with the write).
+    pub fn set_flash_ms(&mut self, ms: u64) {
+        self.flash_ms = ms;
+    }
+
+    /// The next flashes end with this error code (bits 1..7 of 0x1F57).
+    pub fn set_flash_error(&mut self, code: Option<u8>) {
+        self.flash_error = code;
+    }
+
+    /// A program start sends a boot-up message (default on).
+    pub fn set_boot_on_start(&mut self, on: bool) {
+        self.boot_on_start = on;
+    }
+
+    /// The object answers "does not exist" from now on.
+    pub fn hide_object(&mut self, index: u16) {
+        self.hidden.push(index);
+    }
+
+    fn finish_flash(&mut self, prog: u8) {
+        let status = match self.flash_error {
+            Some(code) => ((code as u32) & 0x7F) << 1,
+            None => {
+                let crc = crate::progdl::crc32(self.value(0x1F50, prog).unwrap_or(&[]));
+                self.values.insert((0x1F56, prog), crc.to_le_bytes().to_vec());
+                0
+            }
+        };
+        self.values.insert((0x1F57, prog), status.to_le_bytes().to_vec());
+    }
+
+    fn flash_status(&self, prog: u8) -> u32 {
+        self.val32(0x1F57, prog)
+    }
+
+    /// Program data and control writes; None: not a program object.
+    fn program_write(&mut self, index: u16, sub: u8, data: &[u8]) -> Option<Result<(), u32>> {
+        match index {
+            0x1F50 => {
+                if self.program_running || self.flash_until.is_some() {
+                    // The program must be stopped first.
+                    return Some(Err(0x0800_0022));
+                }
+                self.sdo_writes += 1;
+                self.values.insert((0x1F50, sub), data.to_vec());
+                // A node without 0x1F57 cannot report a running flash, so it
+                // ends the flash with the write.
+                if self.flash_ms == 0 || self.hidden.contains(&0x1F57) {
+                    self.finish_flash(sub);
+                } else {
+                    self.values.insert((0x1F57, sub), 1u32.to_le_bytes().to_vec());
+                    self.flash_until = Some((sub, self.now_ms + self.flash_ms));
+                }
+                Some(Ok(()))
+            }
+            0x1F51 => {
+                let cmd = data.first().copied().unwrap_or(0xFF);
+                let r = match cmd {
+                    crate::progdl::CONTROL_STOP => {
+                        self.program_running = false;
+                        Ok(())
+                    }
+                    crate::progdl::CONTROL_START | crate::progdl::CONTROL_RESET => {
+                        if self.flash_until.is_some() || self.flash_status(sub) != 0 {
+                            Err(0x0800_0022)
+                        } else {
+                            let restart = cmd == crate::progdl::CONTROL_RESET || !self.program_running;
+                            self.program_running = true;
+                            if restart && self.boot_on_start {
+                                self.boot_at = Some(self.now_ms + PROGRAM_BOOT_DELAY_MS);
+                            }
+                            Ok(())
+                        }
+                    }
+                    crate::progdl::CONTROL_CLEAR => {
+                        if self.program_running || self.flash_until.is_some() {
+                            Err(0x0800_0022)
+                        } else {
+                            self.values.insert((0x1F50, sub), Vec::new());
+                            self.values.insert((0x1F56, sub), vec![0; 4]);
+                            // Error code 1: no valid program.
+                            self.values.insert((0x1F57, sub), 2u32.to_le_bytes().to_vec());
+                            Ok(())
+                        }
+                    }
+                    _ => Err(0x0609_0030),
+                };
+                if r.is_ok() {
+                    self.sdo_writes += 1;
+                    self.values.insert((0x1F51, sub), vec![self.program_running as u8]);
+                }
+                Some(r)
+            }
+            _ => None,
+        }
+    }
+
+    // ------------------------------------------------------ CiA 402 axis
+
+    /// The state of the simulated CiA 402 axis.
+    pub fn drive_state(&self) -> DriveState {
+        self.drive_state
+    }
+
+    /// Put the axis into "Fault" with an error code (0x603F).
+    pub fn drive_fault(&mut self, code: u16) {
+        self.drive_state = DriveState::Fault;
+        self.axis_vel = 0.0;
+        self.set_if(cia402::ERROR_CODE, code.to_le_bytes().to_vec());
+        self.update_statusword();
+    }
+
+    fn reset_axis(&mut self) {
+        self.drive_state = DriveState::SwitchOnDisabled;
+        self.cw_prev = 0;
+        self.axis_vel = 0.0;
+        self.axis_pos = 0.0;
+        self.axis_ms = None;
+    }
+
+    /// Set a value only when the object exists (a loaded EDS may lack it).
+    fn set_if(&mut self, index: u16, data: Vec<u8>) {
+        if let Some(v) = self.values.get_mut(&(index, 0)) {
+            *v = data;
+        }
+    }
+
+    fn update_statusword(&mut self) {
+        if !self.values.contains_key(&(cia402::STATUSWORD, 0)) {
+            return;
+        }
+        let s = self.drive_state;
+        let mut sw = s.bits() | cia402::SW_REMOTE;
+        if matches!(s, DriveState::SwitchedOn | DriveState::OperationEnabled | DriveState::QuickStopActive | DriveState::FaultReactionActive) {
+            sw |= cia402::SW_VOLTAGE_ENABLED;
+        }
+        let target = if s == DriveState::OperationEnabled && self.mode() == 3 { self.target_velocity() } else { 0.0 };
+        if (self.axis_vel - target).abs() < 0.5 {
+            sw |= cia402::SW_TARGET_REACHED;
+        }
+        self.set_if(cia402::STATUSWORD, sw.to_le_bytes().to_vec());
+    }
+
+    fn mode(&self) -> i8 {
+        self.value(cia402::MODES_OF_OPERATION, 0).and_then(|v| v.first().copied()).unwrap_or(0) as i8
+    }
+
+    fn target_velocity(&self) -> f64 {
+        self.value(cia402::TARGET_VELOCITY, 0).map(|v| le_u64(v) as u32 as i32 as f64).unwrap_or(0.0)
+    }
+
+    fn on_controlword(&mut self) {
+        let cw = self.value(cia402::CONTROLWORD, 0).map(|v| le_u64(v) as u16).unwrap_or(0);
+        let before = self.drive_state;
+        self.drive_state = cia402::transition(before, cw, self.cw_prev);
+        self.cw_prev = cw;
+        if before == DriveState::Fault && self.drive_state != DriveState::Fault {
+            self.set_if(cia402::ERROR_CODE, vec![0, 0]);
+        }
+        if self.drive_state == DriveState::SwitchOnDisabled {
+            self.axis_vel = 0.0;
+        }
+        self.update_statusword();
+    }
+
+    /// Velocity follows the target in Operation enabled, mode 3 (profile
+    /// velocity); otherwise the axis stops. The position integrates.
+    fn axis_tick(&mut self, now_ms: u64) {
+        if !self.values.contains_key(&(cia402::STATUSWORD, 0)) {
+            return;
+        }
+        let dt = match self.axis_ms {
+            Some(t) => now_ms.saturating_sub(t) as f64 / 1000.0,
+            None => 0.0,
+        };
+        self.axis_ms = Some(now_ms);
+        if dt <= 0.0 {
+            return;
+        }
+        let target = if self.drive_state == DriveState::OperationEnabled && self.mode() == 3 { self.target_velocity() } else { 0.0 };
+        let step = AXIS_ACCEL * dt;
+        let diff = target - self.axis_vel;
+        self.axis_vel = if diff.abs() <= step { target } else { self.axis_vel + step * diff.signum() };
+        self.axis_pos += self.axis_vel * dt;
+        let torque: i16 = if diff.abs() < 0.5 { 0 } else if diff > 0.0 { 100 } else { -100 };
+        let pos = self.axis_pos.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32;
+        let vel = self.axis_vel.round() as i32;
+        self.set_if(cia402::POSITION_ACTUAL, pos.to_le_bytes().to_vec());
+        self.set_if(cia402::VELOCITY_ACTUAL, vel.to_le_bytes().to_vec());
+        self.set_if(cia402::TORQUE_ACTUAL, torque.to_le_bytes().to_vec());
+        self.update_statusword();
+    }
+
     /// SDO read access; Err = abort code.
     pub fn read(&self, index: u16, sub: u8) -> Result<Vec<u8>, u32> {
+        if self.hidden.contains(&index) {
+            return Err(0x0602_0000);
+        }
         let o = self.od.objects.get(&index).ok_or(0x0602_0000u32)?;
         let e = o.subs.get(&sub).ok_or(0x0609_0011u32)?;
         if !e.access.readable() {
@@ -530,6 +793,9 @@ impl SimNode {
 
     /// SDO write access; Err = abort code.
     pub fn write(&mut self, index: u16, sub: u8, data: Vec<u8>) -> Result<(), u32> {
+        if self.hidden.contains(&index) {
+            return Err(0x0602_0000);
+        }
         let o = self.od.objects.get(&index).ok_or(0x0602_0000u32)?;
         let e = o.subs.get(&sub).ok_or(0x0609_0011u32)?;
         if !e.access.writable() {
@@ -588,17 +854,34 @@ impl SimNode {
             }
             return Ok(());
         }
+        if let Some(r) = self.program_write(index, sub, &data) {
+            return r;
+        }
         self.sdo_writes += 1;
         self.values.insert((index, sub), data);
         if index == 0x1017 {
             // A new heartbeat time takes effect at once.
             self.next_hb_ms = self.now_ms + self.heartbeat_ms().max(1);
         }
+        if index == cia402::CONTROLWORD && sub == 0 {
+            self.on_controlword();
+        }
+        if index == cia402::MODES_OF_OPERATION && sub == 0 {
+            let m = self.value(index, 0).map(|v| v.to_vec()).unwrap_or_default();
+            self.set_if(cia402::MODES_DISPLAY, m);
+        }
         Ok(())
     }
 
     /// Check that an object can be written before the data comes.
     fn check_writable(&self, index: u16, sub: u8) -> Option<u32> {
+        if self.hidden.contains(&index) {
+            return Some(0x0602_0000);
+        }
+        if index == 0x1F50 && (self.program_running || self.flash_until.is_some()) && self.od.objects.contains_key(&index) {
+            // The program must be stopped before its data comes.
+            return Some(0x0800_0022);
+        }
         let o = self.od.objects.get(&index);
         match o.and_then(|o| o.subs.get(&sub)) {
             None if o.is_none() => Some(0x0602_0000),

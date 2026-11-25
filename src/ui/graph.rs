@@ -55,6 +55,8 @@ pub(crate) struct AddDraft {
     pub auto_name: bool,
     /// The chosen user signal (index).
     pub user: usize,
+    /// The signal is for a new dashboard widget, not for the Graph.
+    pub for_dashboard: bool,
 }
 
 impl Default for AddDraft {
@@ -78,6 +80,7 @@ impl Default for AddDraft {
             error: None,
             auto_name: false,
             user: 0,
+            for_dashboard: false,
         }
     }
 }
@@ -138,7 +141,7 @@ pub(crate) fn default_name(s: &SignalSource) -> String {
     }
 }
 
-fn source_text(s: &SignalSource) -> String {
+pub(crate) fn source_text(s: &SignalSource) -> String {
     match s {
         SignalSource::Pdo { node, index, sub } => format!("PDO, node {node}, {index:04X}:{sub:02X}"),
         SignalSource::SdoPoll { node, index, sub, period_ms, .. } => format!("SDO, node {node}, {index:04X}:{sub:02X}, {period_ms} ms"),
@@ -221,7 +224,7 @@ impl App {
         let mut w = std::io::BufWriter::new(file);
         s.write_csv(&mut w)?;
         std::io::Write::flush(&mut w)?;
-        Ok(s.list().iter().map(|x| x.points().len()).sum())
+        Ok(s.graph_signals().map(|x| x.points().len()).sum())
     }
 
     pub(crate) fn graph_tab(&mut self, ui: &mut egui::Ui) {
@@ -316,8 +319,7 @@ impl App {
         }
         let series: Vec<Series> = match self.bus.signals.lock() {
             Ok(s) => s
-                .list()
-                .iter()
+                .graph_signals()
                 .map(|sig| {
                     let mut pts = Vec::new();
                     if !self.graph.hidden.contains(&sig.id) {
@@ -448,7 +450,7 @@ impl App {
     /// (`SignalStore::write_range_csv`).
     pub(crate) fn write_range_csv(&self, path: &Path, t0: f64, t1: f64) -> std::io::Result<usize> {
         let s = self.bus.signals.lock().map_err(|_| std::io::Error::other("signal store lock"))?;
-        let ids: Vec<u64> = s.list().iter().map(|x| x.id).filter(|id| !self.graph.hidden.contains(id)).collect();
+        let ids: Vec<u64> = s.graph_signals().map(|x| x.id).filter(|id| !self.graph.hidden.contains(id)).collect();
         let file = std::fs::File::create(path)?;
         let mut w = std::io::BufWriter::new(file);
         let n = s.write_range_csv(&mut w, &ids, t0, t1)?;
@@ -685,7 +687,11 @@ impl App {
             let built = if d.kind == SourceKind::User { self.an.usigs.get(d.user).map(|s| s.to_def()).ok_or_else(|| "no user signal yet".to_string()) } else { d.build() };
             match built {
                 Ok(def) => {
-                    self.add_signal(def);
+                    if d.for_dashboard {
+                        self.dash_add_widget(def);
+                    } else {
+                        self.add_signal(def);
+                    }
                     keep = false;
                 }
                 Err(e) => d.error = Some(e),
