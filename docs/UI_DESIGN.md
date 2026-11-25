@@ -994,19 +994,32 @@ Purpose: save a node's object values to a DCF, restore them, compare.
   step. With `Reduce colour`, a caret up / down mark is drawn instead.
   Repaint at 30 Hz only while a tint fades.
 - Empty: "No frames yet. Connect to see one row per COB-ID."
-- Bit view: a bottom panel for the selected row, default height 460, min
-  120, resizable. A click on the selected row again closes it.
+- Bit view: a panel of the tab for the selected row, resizable. Position
+  `Bottom` (default) or `Top`: a bottom / top panel, default height 460,
+  min 120. `Left` or `Right`: a side panel, default width 560, min 260, max
+  the tab width less 200; the table then scrolls sideways in the rest. The
+  position is saved in the settings (`msg_detail_pos`). A click on the
+  selected row again closes the bit view.
   - Header row: `x` `Close` (tooltip "Close the bit view (also: click the
-    selected row again)"), strong `<id> <label> node n`, `n frames, m
-    compared`, `Reset statistics` (row; keeps the last data); separator;
+    selected row again)"), four selectable icons `align-bottom`,
+    `align-left`, `align-right`, `align-top` (16 pt; tooltip "Where the bit
+    view is shown: bottom" etc.), strong `<id> <label> node n`, `n frames,
+    m compared`, `Reset statistics` (row; keeps the last data); separator;
     the selection text, or "Drag over bits or click a byte or a bit
-    (Shift: extend) to select"; `LE | BE`; `Add to Graph` (adds a Raw-bits
-    signal; status message, no tab switch), `Define signal...`, `Find
-    similar bits` (one bit only).
+    (Shift: extend) to select" (tooltip on Shift + click); `LE | BE`; `Add
+    to Graph` (adds a Raw-bits signal; status message, no tab switch),
+    `Define signal...`, `Find similar bits` (one bit only).
   - Selection: a drag over the cells selects bits, also across byte rows.
-    LE runs in bit order (start = the lowest bit), BE in grid reading
-    order (start = the first cell, the MSB; text `Selected: bit s (MSB),
-    l bit, big endian`).
+    A click selects one bit. Shift + click on a bit extends the selection
+    from its anchor (the first selected bit) to that bit; Shift + click on
+    a `Byte n` button extends it to whole bytes from the anchor byte to
+    that byte, in either direction. LE runs in bit order (start = the
+    lowest bit), BE in grid reading order (start = the first cell, the
+    MSB; text `Selected: bit s (MSB), l bit, big endian`). `Define
+    signal...` opens filled in with the start bit, length and byte order.
+  - The grid and the value list scroll (both ways) in the upper part of
+    the panel; the history keeps at least 100 of the height (the upper part
+    gets at least half).
   - Bit grid: header `Bit` 7..0 and `Hex` (or `Dec`); cells 24 × 20; rows
     start with a button `Byte n` (56) that selects the whole byte. Cell
     fill `bit_heat` by toggle rate, with `bit_flash` over it: a bit that
@@ -1014,16 +1027,25 @@ Purpose: save a node's object values to a DCF, restore them, compare.
     Outlines: 1.5 px in the series colour of each PDO-mapped signal; an
     inner 1.5 px outline in the colour of each user signal (inside the PDO
     outline, so both show); 2 px text_accent for the selection. Tooltip:
-    `Byte b bit i (bit k): v`, `Toggled t times in n compared frames (p
-    %)`, and `Mapped: ...` / `Signal: ...` when they apply. A frame with
-    DLC 0 shows `No data bytes`.
-  - Value list right of the grid: `User signals` (small secondary) with a
-    10 pt colour square, `name = value unit`, an 84 × 16 sparkline, small
-    buttons `Edit`, `Delete` and, for a 1-bit signal, `Similar bits`; then
-    the mapped list, each line also with a sparkline, or `No known PDO
-    mapping for this COB-ID.` A sparkline is a 1.5 pt line of the last
-    `sparkline_s` seconds (Settings, default 10 s), auto-scaled, from a
-    fixed ring of 128 points per signal.
+    `Byte b bit i (bit k): v`, `Shift + click: extend the selection to
+    this bit` (small), `Toggled t times in n compared frames (p %)`, and
+    `Mapped: ...` / `Signal: ...` when they apply. A frame with DLC 0 shows
+    `No data bytes`.
+  - Value list right of the grid: `User signals` (small secondary); each
+    line a 3 × 14 text_accent bar when the signal has bits in the selection
+    (tooltip "This signal has bits in the selection"), a 10 pt colour
+    square, `name = value unit`, an 84 × 16 sparkline, small buttons
+    `Edit`, `Delete` and, for a 1-bit signal, `Similar bits`; then the
+    mapped list, each line also with a sparkline, or `No known PDO mapping
+    for this COB-ID.` Each user and mapped line ends with two icon buttons:
+    `chart-line` (tooltip "Add this signal to the Graph"; the same source
+    as the Add signal picker; a signal that the Graph already shows is not
+    added again, status "Signal x is already in the Graph") and `gauge`
+    (tooltip "Add this signal to the Dashboard (a new widget)"; adds the
+    signal to the Graph when needed, opens the `Dashboard widget` window
+    and brings the Dashboard tab to the front). A sparkline is a 1.5 pt
+    line of the last `sparkline_s` seconds (Settings, default 10 s),
+    auto-scaled, from a fixed ring of 128 points per signal.
   - History under the grid: `History` (strong), checkbox `Filter`, signal
     combo, operator combo (`= != > <`), value field, `Export CSV...`; a
     virtualised table (newest first): `Time (s)`, `Δt (ms)`, `Data`
@@ -1246,20 +1268,46 @@ collapsible, not resizable, centred, max width 520. Nothing is sent until
   `dashboard.json` in the data folder.
 - Toolbar: `plus` `Add signal...` (tooltip "Add a widget for a signal (the
   picker of the Graph)"; opens the Add signal window of the Graph, 8.5);
-  separator; `stop` `Stop polling` + pill `polling`, or `play` `Start
-  polling`.
-- Widgets in a wrapping grid, gap 8. A card: fill bg.panel, 1 px
-  border.subtle, radius 6, margin 8. Sizes: Small 170 × 130, Medium 240 ×
-  180, Large 340 × 250. Header: strong title, icon buttons `pencil-simple`
-  `Edit` and `trash` `Remove` at the right. `No value yet` before the
-  first sample.
-- Widget types (value text 22 / 30 / 42 for Small / Medium / Large):
-  - Value: the value, large, mono.
-  - Bar: a track in bg.button with the fill, 1.5 px marks at the
-    thresholds, the value at 0.75 of the size.
-  - Dial: a 270° arc, the needle, ticks at the thresholds, the value text.
-  - Lamp: a circle (success when on, bg.button when off) and `ON
-    (value)` / `OFF (value)`.
+  `squares-four` `Arrange` (tooltip "Place the widgets in rows, in their
+  order"; disabled without widgets); separator; `stop` `Stop polling` +
+  pill `polling`, or `play` `Start polling`.
+- Canvas: the widgets are cards at their own place and size (`rect` x, y,
+  w, h in points, in `dashboard.json`), in a scroll area that scrolls both
+  ways. All four values snap to a 10-point grid; size 120 × 90 to 800 ×
+  600; x and y not below 0. Cards may overlap: the list order is the draw
+  order, and the card that was last moved, resized or added is at the end
+  (on top).
+  - Move: drag the title row (cursor grab / grabbing). Resize: drag the
+    14 × 14 grip in the bottom-right corner (three short diagonal strokes
+    in text.secondary, text.primary on hover; cursor resize NW-SE). While a
+    card is dragged it follows the pointer snapped to the grid, and a
+    faint line grid (border.subtle at 0.45) is drawn on the canvas. The
+    file is written when the drag ends.
+  - `Arrange`: left to right in rows that fit the visible width, gap 10,
+    each size kept, top-aligned per row. A new widget goes to the first
+    free place of the same row scan (10 from the other cards), else below
+    all cards.
+  - A `dashboard.json` without rectangles (0.5.0) loads with the sizes of
+    `size` and the places of Arrange at a width of 1000.
+- A card: fill bg.panel, 1 px border.subtle, radius 6, margin 8; its own
+  top-down layout on its rectangle (clipped to it). Title row: strong
+  title, truncated to one line, then icon buttons `pencil-simple` `Edit`
+  and `trash` `Remove` at the right, always inside the card. `No value
+  yet` before the first sample.
+- Size presets (the `Size` combo): Small 170 × 130, Medium 240 × 180 (the
+  default), Large 340 × 250.
+- Widget types; the content scales with the inner rectangle of the card.
+  The value text is mono, at the largest size from 12 to 96 pt that fits
+  the width and the height of its area on one line; it never wraps.
+  - Value: the value in the whole content area.
+  - Bar: a track across the inner width (height 0.22 of the content, 8 to
+    40) in bg.button with the fill, 1.5 px marks at the thresholds; the
+    value below it.
+  - Dial: a 270° arc as large as the area above the text allows, the
+    needle, ticks at the thresholds; the value text below (0.3 of the
+    content height, 16 to 110).
+  - Lamp: a circle, centred (success when on, bg.button when off), and
+    `ON (value)` / `OFF (value)` below it.
 - Colour by level: normal text_accent (text in text.primary), warning
   warning, alarm error.
 - Stale value (older than 5 poll periods or 2 s, whichever is longer):
@@ -1269,7 +1317,9 @@ collapsible, not resizable, centred, max width 520. Nothing is sent until
   value as a number, a bar, a dial or a lamp."
 - Window `Dashboard widget` (Edit, and after Add signal): `Signal` (the
   source, text), `Title` [200], `Type` combo `Value | Bar | Dial | Lamp`,
-  `Size` `Small | Medium | Large`, `Min`, `Max`, `Decimals` 0 … 6;
+  `Size` `Small | Medium | Large` (sets w and h; a card resized by the
+  pointer shows `Custom (w × h)`; Save keeps the place), `Min`, `Max`,
+  `Decimals` 0 … 6;
   `Warning at` and `Alarm at`, each a checkbox + value; for a lamp only,
   `Lamp on above` checkbox + value (tooltip "Off: the lamp is on when the
   value is not 0"); `Save`, `Cancel`.
@@ -1369,7 +1419,9 @@ commands, on purpose.
 | `graph` | Network tab, Network empty state |
 | `list-dashes` | Trace tab, Settings ▸ Trace, Trace empty |
 | `table` | Messages tab |
-| `chart-line` | Graph tab, Settings ▸ Graph, Graph empty |
+| `chart-line` | Graph tab, Settings ▸ Graph, Graph empty, Messages value list "Add to the Graph" |
+| `squares-four` | Dashboard `Arrange` |
+| `align-bottom`, `align-left`, `align-right`, `align-top` | Messages bit view position |
 | `sliders-horizontal` | PDO configuration tab |
 | `paper-plane-tilt` | Transmit list tab, empty state |
 | `paper-plane-right` | Send button |
@@ -1378,7 +1430,7 @@ commands, on purpose.
 | `square` | Drive status bit clear |
 | `engine` | Drive (CiA 402) tab |
 | `hand-palm` | Drive `Quick stop`, `Disable voltage` |
-| `gauge` | Dashboard tab, Dashboard empty state |
+| `gauge` | Dashboard tab, Dashboard empty state, Messages value list "Add to the Dashboard" |
 | `film-strip` | Replay pill of the transport bar |
 | `skip-forward` | Replay `Step` |
 | `plus` | Add device, Add signal (Graph, Dashboard), New frame, New trace tab |

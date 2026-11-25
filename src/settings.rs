@@ -189,6 +189,34 @@ pub struct Settings {
     pub slcan_tcp: String,
     /// The channel number of the Kvaser adapter.
     pub kvaser_channel: u32,
+    // ---- 0.5 + ----
+    /// Messages view: where the bit view of the selected row is shown.
+    pub msg_detail_pos: DetailPos,
+}
+
+/// Where the bit view (the detail of the selected row) of the Messages view
+/// is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DetailPos {
+    /// Under the table.
+    #[default]
+    Bottom,
+    Left,
+    Right,
+    Top,
+}
+
+impl DetailPos {
+    pub const ALL: [DetailPos; 4] = [DetailPos::Bottom, DetailPos::Left, DetailPos::Right, DetailPos::Top];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DetailPos::Bottom => "Bottom",
+            DetailPos::Left => "Left",
+            DetailPos::Right => "Right",
+            DetailPos::Top => "Top",
+        }
+    }
 }
 
 /// Table row height.
@@ -285,6 +313,7 @@ impl Default for Settings {
             slcan_port: String::new(),
             slcan_tcp: String::new(),
             kvaser_channel: 0,
+            msg_detail_pos: DetailPos::Bottom,
         }
     }
 }
@@ -343,5 +372,36 @@ impl Settings {
         if !(1.0..=120.0).contains(&self.sparkline_s) {
             self.sparkline_s = 10.0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let p = std::env::temp_dir().join(format!("canoxide_settings_{name}_{}_{nanos}", std::process::id()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn bit_view_position_saved_and_old_file() {
+        let dir = temp("pos");
+        for pos in DetailPos::ALL {
+            let s = Settings { msg_detail_pos: pos, ..Settings::default() };
+            s.save(&dir).unwrap();
+            let (back, err) = Settings::load(&dir);
+            assert!(err.is_none(), "{err:?}");
+            assert_eq!(back.msg_detail_pos, pos);
+        }
+        // A file of an older version (no field): Bottom.
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"msg_decimal": true}"#).unwrap();
+        let (old, err) = Settings::load(&dir);
+        assert!(err.is_none(), "{err:?}");
+        assert!(old.msg_decimal);
+        assert_eq!(old.msg_detail_pos, DetailPos::Bottom);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

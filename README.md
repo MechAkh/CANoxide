@@ -157,7 +157,14 @@ menu:
   hides the tint of bytes that change on almost every frame. Select a row
   to see its bits (how often each bit toggles), the mapped PDO signals and
   their values; select bits and click **Add to Graph** to plot them as raw
-  bits. Statistics reset for one row or for all. Signal analysis, see below.
+  bits. Drag over bits, click a bit or a byte label; **Shift + click**
+  extends the selection from its first bit to the clicked bit, or to whole
+  bytes on a `Byte n` label. A user signal with bits in the selection is
+  marked in the value list. Each user signal and mapped PDO signal there has
+  two buttons: add it to the Graph (not twice) or to the Dashboard. The bit
+  view is shown below the table (default), left, right or above it (the
+  buttons next to **Close**; saved in the settings). Statistics reset for
+  one row or for all. Signal analysis, see below.
 - **Graph**: plot PDO signals (TPDOs and RPDOs of the device), SDO-polled
   values or raw frame bits; export as CSV. SDO polling runs only while you
   start it. The **Add signal** window can be moved, so that the plot stays
@@ -198,9 +205,15 @@ menu:
   In listen-only mode every command is disabled.
 - **Dashboard** (View menu, closed by default): **Add signal...** adds a
   widget (Value, Bar, Dial or Lamp) with a title, min / max, decimals,
-  warning and alarm thresholds and a size. It shares its signals with the
-  Graph, so a signal is polled once. A value older than 5 poll periods (at
-  least 2 s) is dimmed and shows its age.
+  warning and alarm thresholds and a size (Small, Medium, Large). It shares
+  its signals with the Graph, so a signal is polled once. A value older
+  than 5 poll periods (at least 2 s) is dimmed and shows its age. The
+  widgets are cards on a canvas: drag the title row to move a card, the
+  corner grip to resize it (120 x 90 to 800 x 600 points); both snap to a
+  10-point grid. Cards may overlap; the last moved, resized or added one is
+  on top. The value text and the bar, dial or lamp scale with the card.
+  **Arrange** places the widgets in rows that fit the visible width. The
+  places and sizes are saved in `dashboard.json`.
 
 **Log replay.** Choose **Log file (replay)** as the adapter and pick a
 CANoxide trace CSV, a candump log (`(1700000000.123456) can0 181#0102`), a

@@ -3,6 +3,35 @@
 The notable changes of each release. The release pages on GitHub have the
 download files and their SHA-256 checksums.
 
+## Unreleased
+
+### Fixed
+
+- **Dashboard widget layout:** each widget card is laid out top down in
+  its own rectangle. In 0.5.0 the value text showed one character per line,
+  the title and the Edit / Remove buttons were outside the card frame, a
+  bar was far below its title and the cards had different heights.
+
+### New
+
+- **Dashboard canvas:** drag the title row of a widget to move it, the
+  corner grip to resize it (120 x 90 to 800 x 600 points). Place and size
+  snap to a 10-point grid, shown during the drag, and are saved in
+  `dashboard.json`. The last moved, resized or added card is on top. The
+  value text, the bar, the dial and the lamp scale with the card. **Arrange**
+  places the widgets in rows that fit the visible width. A new widget goes
+  to the first free place. A `dashboard.json` of 0.5.0 loads with its
+  widgets arranged.
+- **Messages view, Shift + click:** extends the bit selection from its
+  first bit to the clicked bit, or to whole bytes on a `Byte n` label. The
+  user signals with bits in the selection are marked in the value list.
+- **Messages view, bit view position:** bottom (as before), left, right or
+  top of the table, saved in the settings.
+- **Messages view, to Graph and to Dashboard:** two buttons on each user
+  signal and mapped PDO signal of the bit view (and on a Find signal
+  candidate that is a defined signal). A signal that the Graph already
+  shows is not added twice.
+
 ## 0.5.0 (2026-11-25)
 
 ### New

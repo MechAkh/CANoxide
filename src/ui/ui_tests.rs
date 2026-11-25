@@ -3025,3 +3025,375 @@ fn s44_dashboard_widget() {
     wait_for(&mut h, "a value", |h| !has_exact(h, "No value yet"));
     assert!(tmp.data().join("dashboard.json").exists(), "saved");
 }
+
+// ------------------------------------------------- 0.5 + dashboard canvas
+
+/// A raw-frame-bits signal of the made-up COB-ID 3A1.
+fn raw_def(name: &str, start_bit: u32) -> crate::signals::SignalDef {
+    crate::signals::SignalDef::new(name, crate::signals::SignalSource::Raw { cob_id: 0x3A1, extended: false, start_bit, bits: 16, raw_kind: crate::signals::RawKind::Unsigned, big_endian: false })
+}
+
+/// Add a widget of `kind` through the widget dialog (Save), as Add
+/// signal... does.
+fn dash_widget(h: &mut H, def: crate::signals::SignalDef, kind: crate::dashboard::WidgetKind) {
+    h.state_mut().dash_add_widget(def);
+    h.state_mut().dash.edit.as_mut().unwrap().w.kind = kind;
+    step2(h);
+    click_role(h, Role::Button, "Save");
+    assert!(h.state().dash.edit.is_none(), "widget dialog still open\nUI:\n{}", dump(h));
+}
+
+/// A value for every widget (straight into the signal store).
+fn dash_values(h: &mut H, v: f64) {
+    let ids: Vec<u64> = h.state().dash.board.widgets.iter().filter_map(|w| w.signal_id).collect();
+    if let Ok(mut s) = h.state().bus.signals.lock() {
+        for id in ids {
+            s.push_raw(id, 0.0, v);
+        }
+    }
+    step2(h);
+}
+
+fn inside(outer: &egui::Rect, r: &Rect) -> bool {
+    r.x0 as f32 >= outer.left() - 0.5 && r.y0 as f32 >= outer.top() - 0.5 && r.x1 as f32 <= outer.right() + 0.5 && r.y1 as f32 <= outer.bottom() + 0.5
+}
+
+fn card_of(h: &H, title: &str) -> (usize, egui::Rect) {
+    let i = h.state().dash.board.widgets.iter().position(|w| w.title == title).unwrap_or_else(|| panic!("no widget {title}"));
+    (i, h.state().dash.cards[i])
+}
+
+/// The dashboard cards are laid out top down in their own rect (the 0.5.0
+/// fault: one character per line, the title and the buttons outside the
+/// card): the value is one line, the title and Edit / Remove lie in the
+/// card, cards of one size have one size.
+#[test]
+fn s45_dashboard_card_geometry() {
+    use crate::dashboard::WidgetKind;
+    let tmp = TempDir::new("s45");
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Dashboard]);
+    let names = ["Battery voltage", "Motor speed", "Coolant temperature", "Pump on"];
+    for (i, k) in WidgetKind::ALL.into_iter().enumerate() {
+        dash_widget(&mut h, raw_def(names[i], i as u32 * 16), k);
+    }
+    dash_values(&mut h, 1400.5);
+    let cards = h.state().dash.cards.clone();
+    assert_eq!(cards.len(), 4);
+    for (i, c) in cards.iter().enumerate() {
+        assert_eq!(c.size(), cards[0].size(), "card {i} size");
+        assert!(c.width() >= 200.0 && c.height() >= 150.0, "card {i} {c:?}");
+        // The title.
+        let t = h.query_all_by_label(names[i]).find(|n| n.role() == Role::Label).map(|n| rect_of(&n)).unwrap_or_else(|| panic!("title {}\nUI:\n{}", names[i], dump(&h)));
+        assert!(inside(c, &t), "title {} {t:?} outside {c:?}", names[i]);
+        assert!(t.y1 - t.y0 < 30.0, "title {} on more than one line {t:?}", names[i]);
+        // Edit and Remove: one of each in this card.
+        for b in ["Edit", "Remove"] {
+            let n = h.query_all_by_label(b).filter(|n| n.role() == Role::Button && inside(c, &rect_of(n))).count();
+            assert_eq!(n, 1, "{b} in card {i}\nUI:\n{}", dump(&h));
+        }
+        // The value: one line, wider than high, in the card.
+        let v = h.query_all_by_label_contains("1400.5").map(|n| rect_of(&n)).find(|r| inside(c, r)).unwrap_or_else(|| panic!("value in card {i}\nUI:\n{}", dump(&h)));
+        let (w, ht) = (v.x1 - v.x0, v.y1 - v.y0);
+        assert!(ht < 110.0 && w > 1.5 * ht, "value of card {i} not one line: {w} x {ht}");
+        assert!(ht > 15.0, "value of card {i} not scaled up: {ht}");
+    }
+    // No two cards overlap (placed in a row).
+    for i in 1..4 {
+        assert!(cards[i].left() >= cards[i - 1].right() + 9.0, "cards {i} {:?}", cards);
+    }
+    // A larger card: a larger value text.
+    let small = h.query_all_by_label_contains("1400.5").map(|n| rect_of(&n)).find(|r| inside(&cards[0], r)).unwrap();
+    h.state_mut().dash.board.widgets[0].rect = Some(crate::dashboard::WidgetRect { x: 0.0, y: 300.0, w: 600.0, h: 400.0 });
+    step2(&mut h);
+    let big_card = h.state().dash.cards[0];
+    let big = h.query_all_by_label_contains("1400.5").map(|n| rect_of(&n)).find(|r| inside(&big_card, r)).unwrap();
+    assert!(big.y1 - big.y0 > 1.5 * (small.y1 - small.y0), "value text does not scale: {small:?} {big:?}");
+}
+
+/// Press at `from`, move to `to` in steps, release (unless `release` is
+/// false).
+fn drag_to(h: &mut H, from: egui::Pos2, to: egui::Pos2, release: bool) {
+    h.input_mut().events.push(egui::Event::PointerMoved(from));
+    h.step();
+    h.input_mut().events.push(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    for i in 1..=8 {
+        let p = from + (to - from) * (i as f32 / 8.0);
+        h.input_mut().events.push(egui::Event::PointerMoved(p));
+        h.step();
+    }
+    if release {
+        h.input_mut().events.push(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        step2(h);
+    }
+}
+
+fn wrect(h: &H, title: &str) -> crate::dashboard::WidgetRect {
+    let i = card_of(h, title).0;
+    h.state().dash.board.widgets[i].rect.expect("rect")
+}
+
+/// Move by the title row and resize by the corner grip, with the pointer:
+/// snap to 10, the minimum size, x / y not below 0, dashboard.json written
+/// when the drag ends (not during it), the moved card on top; Arrange.
+#[test]
+fn s46_dashboard_move_resize_arrange() {
+    use crate::dashboard::{WidgetKind, WidgetRect, MIN_H, MIN_W};
+    let tmp = TempDir::new("s46");
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Dashboard]);
+    dash_widget(&mut h, raw_def("Battery voltage", 0), WidgetKind::Value);
+    dash_widget(&mut h, raw_def("Motor speed", 16), WidgetKind::Bar);
+    let file = tmp.data().join(crate::dashboard::DASHBOARD_FILE);
+    assert_eq!(wrect(&h, "Battery voltage"), WidgetRect { x: 0.0, y: 0.0, w: 240.0, h: 180.0 });
+    assert_eq!(wrect(&h, "Motor speed"), WidgetRect { x: 250.0, y: 0.0, w: 240.0, h: 180.0 });
+    // Move the first card by (+123, +347): it snaps to (120, 350).
+    let before = std::fs::read_to_string(&file).unwrap();
+    let c = card_of(&h, "Battery voltage").1;
+    let from = c.min + egui::vec2(40.0, 18.0);
+    drag_to(&mut h, from, from + egui::vec2(123.0, 347.0), false);
+    assert!(h.state().dash.dragging(), "no drag running");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "written during the drag");
+    assert_eq!(wrect(&h, "Battery voltage").x, 120.0);
+    h.input_mut().events.push(egui::Event::PointerButton { pos: from + egui::vec2(123.0, 347.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    step2(&mut h);
+    assert!(!h.state().dash.dragging());
+    assert_eq!(wrect(&h, "Battery voltage"), WidgetRect { x: 120.0, y: 350.0, w: 240.0, h: 180.0 });
+    // The moved card is on top (the end of the list); the file has it.
+    assert_eq!(h.state().dash.board.widgets.last().unwrap().title, "Battery voltage");
+    let t = std::fs::read_to_string(&file).unwrap();
+    assert!(t != before && t.contains("\"x\": 120.0") && t.contains("\"y\": 350.0"), "{t}");
+    // Resize the second card far down to the left: the minimum size.
+    let c = card_of(&h, "Motor speed").1;
+    let g = c.max - egui::vec2(5.0, 5.0);
+    drag_to(&mut h, g, g - egui::vec2(400.0, 400.0), true);
+    assert_eq!(wrect(&h, "Motor speed"), WidgetRect { x: 250.0, y: 0.0, w: MIN_W, h: MIN_H });
+    assert_eq!(h.state().dash.board.widgets.last().unwrap().title, "Motor speed");
+    // Larger by (+33, +26): snapped to 150 x 120.
+    let c = card_of(&h, "Motor speed").1;
+    let g = c.max - egui::vec2(5.0, 5.0);
+    drag_to(&mut h, g, g + egui::vec2(33.0, 26.0), true);
+    assert_eq!(wrect(&h, "Motor speed"), WidgetRect { x: 250.0, y: 0.0, w: 150.0, h: 120.0 });
+    // Moved far up to the left: x and y stop at 0.
+    let c = card_of(&h, "Motor speed").1;
+    let from = c.min + egui::vec2(30.0, 15.0);
+    drag_to(&mut h, from, from - egui::vec2(600.0, 600.0), true);
+    assert_eq!(wrect(&h, "Motor speed"), WidgetRect { x: 0.0, y: 0.0, w: 150.0, h: 120.0 });
+    let t = std::fs::read_to_string(&file).unwrap();
+    assert!(t.contains("\"w\": 150.0") && t.contains("\"h\": 120.0"), "{t}");
+    // Arrange: rows in list order, gap 10, the sizes kept.
+    click(&mut h, "Arrange");
+    let ws = &h.state().dash.board.widgets;
+    assert_eq!((ws[0].title.as_str(), ws[0].rect), ("Battery voltage", Some(WidgetRect { x: 0.0, y: 0.0, w: 240.0, h: 180.0 })));
+    assert_eq!((ws[1].title.as_str(), ws[1].rect), ("Motor speed", Some(WidgetRect { x: 250.0, y: 0.0, w: 150.0, h: 120.0 })));
+    let t = std::fs::read_to_string(&file).unwrap();
+    assert!(t.contains("\"x\": 250.0"), "arrange not saved {t}");
+    // The file loads in a new start with the same places (round trip).
+    let board = h.state().dash.board.clone();
+    drop(h);
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Dashboard]);
+    let back: Vec<_> = h.state().dash.board.widgets.iter().map(|w| (w.title.clone(), w.rect)).collect();
+    let was: Vec<_> = board.widgets.iter().map(|w| (w.title.clone(), w.rect)).collect();
+    assert_eq!(back, was);
+    assert_eq!(h.state().dash.cards.len(), 2);
+}
+
+/// A dashboard.json of 0.5.0 (sizes, no rectangles) loads: the cards are
+/// placed by Arrange at a width of 1000 and drawn.
+#[test]
+fn s47_dashboard_old_file() {
+    let tmp = TempDir::new("s47");
+    std::fs::create_dir_all(tmp.data()).unwrap();
+    let one = r#"{"title":"TITLE","kind":"value","size":"SIZE","signal":{"name":"TITLE","scale":1.0,"offset":0.0,"source":{"kind":"raw","cob_id":929,"extended":false,"start_bit":0,"bits":16,"raw_kind":"unsigned","big_endian":false}}}"#;
+    let ws: Vec<String> = [("Battery voltage", "medium"), ("Motor speed", "large"), ("Pump on", "small"), ("Coolant temperature", "medium")].iter().map(|(t, s)| one.replace("TITLE", t).replace("SIZE", s)).collect();
+    std::fs::write(tmp.data().join(crate::dashboard::DASHBOARD_FILE), format!(r#"{{"widgets":[{}]}}"#, ws.join(","))).unwrap();
+    let mut h = build_sized(&tmp.data(), 1400.0, 900.0);
+    only(&mut h, vec![Tab::Dashboard]);
+    let r: Vec<(f32, f32, f32, f32)> = h.state().dash.board.widgets.iter().map(|w| w.rect.map(|r| (r.x, r.y, r.w, r.h)).expect("rect")).collect();
+    assert_eq!(r, vec![(0.0, 0.0, 240.0, 180.0), (250.0, 0.0, 340.0, 250.0), (600.0, 0.0, 170.0, 130.0), (0.0, 260.0, 240.0, 180.0)]);
+    assert_eq!(h.state().dash.cards.len(), 4);
+    assert!(has_exact(&h, "Coolant temperature"), "UI:\n{}", dump(&h));
+}
+
+// ------------------------------------------------ 0.5 + Messages bit view
+
+/// Select row 3A0 of the analysis frames in the Messages view.
+fn messages_3a0(h: &mut H) {
+    only(h, vec![Tab::Messages]);
+    analysis_frames(h, 40);
+    step2(h);
+    let r = top_by_label(h, "3A0", None);
+    pointer_click(h, r);
+    assert!(has_exact(h, "Define signal..."), "detail\nUI:\n{}", dump(h));
+}
+
+/// A press and release at `pos` with Shift held (or not).
+fn click_at(h: &mut H, pos: egui::Pos2, shift: bool) {
+    let m = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+    h.input_mut().modifiers = m;
+    h.input_mut().events.push(egui::Event::PointerMoved(pos));
+    step2(h);
+    for pressed in [true, false] {
+        h.input_mut().events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: m });
+        h.step();
+    }
+    step2(h);
+    h.input_mut().modifiers = egui::Modifiers::NONE;
+    step2(h);
+}
+
+fn click_byte(h: &mut H, byte: usize, shift: bool) {
+    let r = rect_id(h, top_by_label(h, &format!("Byte {byte}"), Some(Role::Button)));
+    click_at(h, egui::pos2(((r.x0 + r.x1) / 2.0) as f32, ((r.y0 + r.y1) / 2.0) as f32), shift);
+}
+
+fn click_bit(h: &mut H, byte: usize, bit: u32, shift: bool) {
+    let p = bit_cell(h, byte, bit);
+    click_at(h, p, shift);
+}
+
+#[track_caller]
+fn selected(h: &H, s: &str) {
+    assert!(has_exact(h, s), "want {s:?}\nUI:\n{}", dump(h));
+}
+
+/// Shift + click extends the selection from its anchor: bits and whole
+/// bytes, both directions, LE and BE; Define signal is filled in from it;
+/// a user signal with bits in the selection is marked.
+#[test]
+fn s48_messages_shift_click() {
+    let tmp = TempDir::new("s48");
+    let mut h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    h.state_mut().an.usigs.push(crate::usersig::UserSignal::new("Battery voltage", 0x3A0, false, 8, 16));
+    messages_3a0(&mut h);
+    // LE bits, forward and back.
+    click_bit(&mut h, 0, 4, false);
+    selected(&h, "Selected: bit 4, 1 bit");
+    click_bit(&mut h, 1, 2, true);
+    selected(&h, "Selected: bit 4, 7 bit");
+    click_bit(&mut h, 1, 2, false);
+    click_bit(&mut h, 0, 4, true);
+    selected(&h, "Selected: bit 4, 7 bit");
+    // Without Shift a click starts again.
+    click_bit(&mut h, 2, 0, false);
+    selected(&h, "Selected: bit 16, 1 bit");
+    // LE bytes, forward and back.
+    click_byte(&mut h, 1, false);
+    selected(&h, "Selected: bit 8, 8 bit");
+    click_byte(&mut h, 3, true);
+    selected(&h, "Selected: bit 8, 24 bit");
+    click_byte(&mut h, 3, false);
+    click_byte(&mut h, 1, true);
+    selected(&h, "Selected: bit 8, 24 bit");
+    // The overlap mark: bytes 1-3 hold the user signal (bits 8..23).
+    assert!(has_exact(&h, "In the selection"), "no overlap mark\nUI:\n{}", dump(&h));
+    click_byte(&mut h, 0, false);
+    assert!(!has_exact(&h, "In the selection"), "overlap mark for byte 0");
+    // BE bits: grid reading order (byte 0 bit 4 .. byte 1 bit 2 = 11 cells).
+    click(&mut h, "BE");
+    click_bit(&mut h, 0, 4, false);
+    click_bit(&mut h, 1, 2, true);
+    selected(&h, "Selected: bit 4 (MSB), 11 bit, big endian");
+    click_bit(&mut h, 1, 2, false);
+    click_bit(&mut h, 0, 4, true);
+    selected(&h, "Selected: bit 4 (MSB), 11 bit, big endian");
+    // BE bytes, back and forward: bytes 1-2, MSB = bit 15.
+    click_byte(&mut h, 2, false);
+    selected(&h, "Selected: bit 23 (MSB), 8 bit, big endian");
+    click_byte(&mut h, 1, true);
+    selected(&h, "Selected: bit 15 (MSB), 16 bit, big endian");
+    click_byte(&mut h, 1, false);
+    click_byte(&mut h, 2, true);
+    selected(&h, "Selected: bit 15 (MSB), 16 bit, big endian");
+    // Define signal is filled in from the extended selection.
+    click(&mut h, "Define signal...");
+    let d = h.state().an.draft.as_ref().expect("draft");
+    assert_eq!((d.sig.cob_id, d.sig.start_bit, d.sig.bits, d.sig.big_endian), (0x3A0, 15, 16, true));
+}
+
+/// The bit view at the bottom, left, right or top: the table and the bit
+/// view both show; the choice is saved in settings.json and loads again.
+#[test]
+fn s49_messages_bit_view_position() {
+    use crate::settings::DetailPos;
+    let tmp = TempDir::new("s49");
+    let mut h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    messages_3a0(&mut h);
+    for pos in [DetailPos::Left, DetailPos::Right, DetailPos::Top, DetailPos::Bottom] {
+        click(&mut h, &format!("Bit view {}", pos.label()));
+        assert_eq!(h.state().settings.msg_detail_pos, pos);
+        // The table (its header and the row) and the bit view.
+        for t in ["COB-ID", "3A0", "Reset statistics", "Byte 0", "Define signal..."] {
+            assert!(has_exact(&h, t), "{pos:?}: no {t:?}\nUI:\n{}", dump(&h));
+        }
+        let table = rect_id(&h, top_by_label(&h, "3A0", None));
+        let detail = rect_id(&h, top_by_label(&h, "Byte 0", Some(Role::Button)));
+        let ok = match pos {
+            DetailPos::Bottom => detail.y0 > table.y1,
+            DetailPos::Top => detail.y1 < table.y0,
+            DetailPos::Left => detail.x1 < table.x0,
+            DetailPos::Right => detail.x0 > table.x1,
+        };
+        assert!(ok, "{pos:?}: table {table:?} bit view {detail:?}");
+    }
+    click(&mut h, "Bit view Right");
+    h.state_mut().save_settings();
+    drop(h);
+    let (s, err) = Settings::load(&tmp.data());
+    assert!(err.is_none(), "{err:?}");
+    assert_eq!(s.msg_detail_pos, DetailPos::Right);
+    let h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    assert_eq!(h.state().settings.msg_detail_pos, DetailPos::Right);
+}
+
+fn graph_count(h: &H) -> usize {
+    h.state().bus.signals.lock().map(|s| s.graph_signals().count()).unwrap_or(0)
+}
+
+/// The Graph and Dashboard buttons of a user signal and of a mapped PDO
+/// signal in the bit view; no second Graph signal for the same source.
+#[test]
+fn s50_messages_signal_buttons() {
+    let tmp = TempDir::new("s50");
+    let mut h = build_sized(&tmp.data(), 1500.0, 1000.0);
+    h.state_mut().an.usigs.push(crate::usersig::UserSignal::new("Battery voltage", 0x3A0, false, 8, 16));
+    messages_3a0(&mut h);
+    click_role(&mut h, Role::Button, "Add Battery voltage to the Graph");
+    assert_eq!(graph_count(&h), 1);
+    assert!(has(&h, "Signal Battery voltage added to the Graph"), "UI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Add Battery voltage to the Graph");
+    assert_eq!(graph_count(&h), 1, "a second Graph signal");
+    assert!(has(&h, "Signal Battery voltage is already in the Graph"), "UI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Add Battery voltage to the Dashboard");
+    assert_eq!(graph_count(&h), 1, "a second Graph signal for the dashboard");
+    assert!(leaves(&h).iter().flatten().any(|t| *t == Tab::Dashboard), "Dashboard not open");
+    assert!(has_exact(&h, "Dashboard widget"), "widget dialog\nUI:\n{}", dump(&h));
+    click_role(&mut h, Role::Button, "Save");
+    assert_eq!(h.state().dash.board.widgets.len(), 1);
+    assert!(has(&h, "Dashboard widget Battery voltage added"), "UI:\n{}", dump(&h));
+    // A mapped PDO signal (TPDO1 of node 1 from test.eds).
+    drop(h);
+    let mut h2 = build_sized(&tmp.data(), 1500.0, 1000.0);
+    add_eds_and_device(&mut h2, "Pdo");
+    only(&mut h2, vec![Tab::Messages]);
+    for i in 0..10u64 {
+        msg_frame(&mut h2, 0x181, &[i as u8, 1, 2, 3, 4, 5, 6, 7], 1_000_000 + i * 20_000);
+    }
+    step2(&mut h2);
+    let r = top_by_label(&h2, "181", None);
+    pointer_click(&mut h2, r);
+    let n0 = graph_count(&h2);
+    let g = h2.query_all_by_label_contains("to the Graph").find(|n| n.role() == Role::Button && text_of(n).starts_with("Add N1 ")).map(|n| (n.id(), text_of(&n))).unwrap_or_else(|| panic!("no PDO Graph button\nUI:\n{}", dump(&h2)));
+    click_id(&mut h2, g.0);
+    assert_eq!(graph_count(&h2), n0 + 1);
+    let src = h2.state().bus.signals.lock().unwrap().graph_signals().last().map(|s| s.def.source.clone());
+    assert!(matches!(src, Some(crate::signals::SignalSource::Pdo { node: 1, .. })), "{src:?}");
+    click_id(&mut h2, g.0);
+    assert_eq!(graph_count(&h2), n0 + 1, "a second PDO Graph signal");
+    let d = g.1.replace("to the Graph", "to the Dashboard");
+    click_role(&mut h2, Role::Button, &d);
+    assert_eq!(graph_count(&h2), n0 + 1);
+    assert!(has_exact(&h2, "Dashboard widget"), "widget dialog\nUI:\n{}", dump(&h2));
+}

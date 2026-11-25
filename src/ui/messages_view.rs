@@ -11,6 +11,7 @@ use crate::can::CanFrame;
 use crate::usersig::{fmt_value, UserSignal};
 use crate::canopen::pdo::MapEntry;
 use crate::msgstats::{tint_strength, Change, MsgKey};
+use crate::settings::DetailPos;
 use crate::signals::{RawKind, SignalDef, SignalSource};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -47,6 +48,8 @@ pub(crate) struct MappedSig {
     offset: u32,
     bits: u32,
     text: String,
+    /// The Graph signal of this object (as the Add signal picker makes it).
+    def: SignalDef,
 }
 
 #[derive(Default)]
@@ -164,6 +167,8 @@ fn hex2(b: u8) -> &'static str {
 const BYTE_HEAD: [&str; 8] = ["B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7"];
 const BYTE_NAME: [&str; 8] = ["Byte 0", "Byte 1", "Byte 2", "Byte 3", "Byte 4", "Byte 5", "Byte 6", "Byte 7"];
 const BIT_HEAD: [&str; 8] = ["7", "6", "5", "4", "3", "2", "1", "0"];
+/// The hover text on the selection that names Shift + click.
+const SHIFT_TIP: &str = "Shift + click on a bit extends the selection from its first bit to that bit; Shift + click on a Byte label extends it to whole bytes";
 
 fn key_text(k: MsgKey) -> String {
     if k.extended {
@@ -199,6 +204,46 @@ enum DetailAction {
     Similar(u32),
     EditUser(usize),
     DeleteUser(usize),
+    /// Show the bit view on this side.
+    SetPos(DetailPos),
+    /// A signal of the value list to the Graph, or to a dashboard widget.
+    SigToGraph(SignalDef),
+    SigToDash(SignalDef),
+}
+
+/// The selection (anchor, end) of whole bytes from the anchor byte `ab` to
+/// byte `b`, in either direction; the anchor stays in byte `ab`. LE: bit
+/// order; BE: grid reading order (bit 7 of a byte first).
+pub(crate) fn byte_range(ab: u32, b: u32, be: bool) -> (u32, u32) {
+    match (be, b >= ab) {
+        (false, true) => (ab * 8, b * 8 + 7),
+        (false, false) => (ab * 8 + 7, b * 8),
+        (true, true) => (ab * 8 + 7, b * 8),
+        (true, false) => (ab * 8, b * 8 + 7),
+    }
+}
+
+/// The indices (into `signals`) of the user signals of `key` with a bit in
+/// the selection (a, z) (`be`: in grid reading order).
+pub(crate) fn signals_overlapping_selection(signals: &[UserSignal], key: MsgKey, sel: Option<(u32, u32)>, be: bool) -> Vec<usize> {
+    let Some((a, z)) = sel else { return Vec::new() };
+    signals.iter().enumerate().filter(|(_, s)| s.matches(key.id, key.extended) && s.bit_list().iter().any(|k| sel_contains(be, a, z, *k))).map(|(i, _)| i).collect()
+}
+
+/// The small icon buttons "to Graph" and "to Dashboard" of a signal row
+/// (also on the Find signal candidates): (Graph clicked, Dashboard clicked).
+pub(crate) fn signal_buttons(ui: &mut egui::Ui, name: &str) -> (bool, bool) {
+    let g = theme::icon_button(ui, true, icon::CHART_LINE, &format!("Add {name} to the Graph"), "Add this signal to the Graph").clicked();
+    let d = theme::icon_button(ui, true, icon::GAUGE, &format!("Add {name} to the Dashboard"), "Add this signal to the Dashboard (a new widget)").clicked();
+    (g, d)
+}
+
+fn signal_action(ui: &mut egui::Ui, def: &SignalDef, action: &mut Option<DetailAction>) {
+    match signal_buttons(ui, &def.name) {
+        (true, _) => *action = Some(DetailAction::SigToGraph(def.clone())),
+        (_, true) => *action = Some(DetailAction::SigToDash(def.clone())),
+        _ => {}
+    }
 }
 
 impl App {
@@ -285,11 +330,25 @@ impl App {
         let mut fading = false;
         // Detail pane of the selected row.
         self.an.sparks.tick();
+        // The bit view is a resizable panel of the tab (own id per side, so
+        // that each side keeps its size); the table takes the rest.
+        let pos = self.settings.msg_detail_pos;
         if let Some(key) = self.msgv.selected {
-            egui::TopBottomPanel::bottom("msg_detail").resizable(true).default_height(460.0).min_height(120.0).show_inside(ui, |ui| {
-                fading |= self.message_detail(ui, key, now, fade_us);
-            });
+            let f = match pos {
+                DetailPos::Bottom => egui::TopBottomPanel::bottom("msg_detail").resizable(true).default_height(460.0).min_height(120.0).show_inside(ui, |ui| self.message_detail(ui, key, now, fade_us)).inner,
+                DetailPos::Top => egui::TopBottomPanel::top("msg_detail_top").resizable(true).default_height(460.0).min_height(120.0).show_inside(ui, |ui| self.message_detail(ui, key, now, fade_us)).inner,
+                DetailPos::Left => {
+                    let max = (ui.available_width() - 200.0).max(260.0);
+                    egui::SidePanel::left("msg_detail_left").resizable(true).default_width(560.0).min_width(260.0).max_width(max).show_inside(ui, |ui| self.message_detail(ui, key, now, fade_us)).inner
+                }
+                DetailPos::Right => {
+                    let max = (ui.available_width() - 200.0).max(260.0);
+                    egui::SidePanel::right("msg_detail_right").resizable(true).default_width(560.0).min_width(260.0).max_width(max).show_inside(ui, |ui| self.message_detail(ui, key, now, fade_us)).inner
+                }
+            };
+            fading |= f;
         }
+        let side = self.msgv.selected.is_some() && matches!(pos, DetailPos::Left | DetailPos::Right);
         let row_h = self.settings.row_density.row_height();
         let mute = self.settings.msg_mute_noisy;
         let dec = self.settings.msg_decimal;
@@ -306,6 +365,7 @@ impl App {
         // The column lines of the table stop above the detail pane.
         let clip = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         ui.set_clip_rect(clip);
+        let mut table = |ui: &mut egui::Ui| {
         let mut tb = TableBuilder::new(ui)
             .id_salt("messages_table")
             .striped(zebra)
@@ -411,6 +471,14 @@ impl App {
                     }
                 });
             });
+        };
+        // Beside a side panel the table may be narrower than its columns:
+        // it scrolls sideways.
+        if side {
+            egui::ScrollArea::horizontal().id_salt("messages_hscroll").show(ui, |ui| table(ui));
+        } else {
+            table(ui);
+        }
         if let Some(k) = clicked {
             // A click on the selected row closes the detail pane.
             self.msgv.bit_sel = None;
@@ -438,6 +506,7 @@ impl App {
             return;
         }
         let owned = cur.map(|(n, m)| (n, m.to_vec()));
+        let pdo_label = if key.extended { None } else { self.decode_ctx.pdo(key.id).map(|(_, c)| c.label()) };
         self.msgv.mapped.clear();
         if let Some((node, map)) = &owned {
             let od = self.od_of_node(*node);
@@ -447,12 +516,54 @@ impl App {
                 if !m.is_dummy() && bits > 0 {
                     let name = od.as_ref().and_then(|o| o.name_of(m.index, m.sub)).unwrap_or_default();
                     let text = format!("{:04X}:{:02X} {name}", m.index, m.sub).trim_end().to_string();
-                    self.msgv.mapped.push(MappedSig { offset: off, bits, text });
+                    // The name that the "Mapped object" choice of the Add
+                    // signal picker gives ("N1 TPDO1 6000:01 ...").
+                    let sig_name = match &pdo_label {
+                        Some(l) => format!("N{node} {l} {text}"),
+                        None => format!("N{node} {text}"),
+                    };
+                    let def = SignalDef::new(sig_name, SignalSource::Pdo { node: *node, index: m.index, sub: m.sub });
+                    self.msgv.mapped.push(MappedSig { offset: off, bits, text, def });
                 }
                 off += bits;
             }
         }
         self.msgv.pdo_cache = Some((key, owned));
+    }
+
+    /// The definition of the Graph signal with the source of `def`, when
+    /// the Graph shows one.
+    fn graph_signal_like(&self, def: &SignalDef) -> Option<SignalDef> {
+        let s = self.bus.signals.lock().ok()?;
+        let d = s.graph_signals().find(|g| g.def.source == def.source).map(|g| g.def.clone());
+        d
+    }
+
+    /// Add a signal to the Graph, unless the Graph shows it already.
+    pub(crate) fn signal_to_graph(&mut self, def: SignalDef) {
+        if let Some(g) = self.graph_signal_like(&def) {
+            self.set_status(format!("Signal {} is already in the Graph", g.name), false);
+            return;
+        }
+        let name = def.name.clone();
+        if self.add_signal(def).is_some() {
+            self.set_status(format!("Signal {name} added to the Graph"), false);
+        }
+    }
+
+    /// A dashboard widget for a signal: the signal goes to the Graph first
+    /// (the dashboard shares the Graph signals), then the widget dialog
+    /// opens as after Add signal, and the Dashboard comes to the front.
+    pub(crate) fn signal_to_dashboard(&mut self, def: SignalDef) {
+        let def = match self.graph_signal_like(&def) {
+            Some(g) => g,
+            None => {
+                self.add_signal(def.clone());
+                def
+            }
+        };
+        self.dash_add_widget(def);
+        self.open_tab(super::dock::Tab::Dashboard);
     }
 
     /// Select a message and one bit of it (from Find similar bits).
@@ -485,6 +596,15 @@ impl App {
             if ui.button(format!("{}  Close", icon::X)).on_hover_text("Close the bit view (also: click the selected row again)").clicked() {
                 action = Some(DetailAction::Close);
             }
+            let cur = self.settings.msg_detail_pos;
+            for (pos, glyph) in [(DetailPos::Bottom, icon::ALIGN_BOTTOM), (DetailPos::Left, icon::ALIGN_LEFT), (DetailPos::Right, icon::ALIGN_RIGHT), (DetailPos::Top, icon::ALIGN_TOP)] {
+                let r = ui.add(egui::SelectableLabel::new(cur == pos, egui::RichText::new(glyph).size(16.0))).on_hover_text(format!("Where the bit view is shown: {}", pos.label().to_lowercase()));
+                let name = format!("Bit view {}", pos.label());
+                r.widget_info(move || egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, cur == pos, &name));
+                if r.clicked() && cur != pos {
+                    action = Some(DetailAction::SetPos(pos));
+                }
+            }
             let node = e.node.map(|n| format!(" node {n}")).unwrap_or_default();
             ui.strong(format!("{} {}{node}", key_text(key), e.label));
             ui.label(egui::RichText::new(format!("{} frames, {} compared", e.count, e.compared)).color(p.text_secondary));
@@ -497,7 +617,7 @@ impl App {
                 Some((s, l)) => format!("Selected: bit {s}, {l} bit"),
                 None => "Drag over bits or click a byte or a bit (Shift: extend) to select".to_string(),
             };
-            ui.label(egui::RichText::new(txt).color(p.text_secondary));
+            ui.label(egui::RichText::new(txt).color(p.text_secondary)).on_hover_text(SHIFT_TIP);
             ui.selectable_value(&mut self.msgv.sel_be, false, "LE").on_hover_text("Little endian: the selection runs in bit order (start = the lowest bit)");
             ui.selectable_value(&mut self.msgv.sel_be, true, "BE").on_hover_text("Big endian: the selection runs in grid reading order (start = the first cell, the MSB)");
             if ui.add_enabled(sel.is_some(), egui::Button::new("Add to Graph")).on_hover_text("Add the selected bits as a raw-frame-bits signal (unsigned)").clicked() {
@@ -527,6 +647,13 @@ impl App {
         let (ptr, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.primary_down()));
         let sparks = &mut self.an.sparks;
         let usigs = &self.an.usigs;
+        // The user signals with a bit in the selection (marked in the list).
+        let in_sel = signals_overlapping_selection(usigs, key, self.msgv.bit_sel, self.msgv.sel_be);
+        // The grid and the value list scroll (both ways) inside the pane;
+        // the history below keeps the rest of the height.
+        let avail_h = ui.available_height();
+        let max_h = (avail_h - 100.0).max(avail_h * 0.5).max(80.0);
+        egui::ScrollArea::both().id_salt("msg_bits_scroll").max_height(max_h).auto_shrink([true, true]).show(ui, |ui| {
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 if n == 0 {
@@ -543,9 +670,13 @@ impl App {
                 });
                 for b in 0..n {
                     ui.horizontal(|ui| {
-                        let r = ui.add_sized(egui::vec2(56.0, cell.y), egui::Button::new(BYTE_NAME[b]).frame(false)).on_hover_text("Select the whole byte");
+                        let r = ui.add_sized(egui::vec2(56.0, cell.y), egui::Button::new(BYTE_NAME[b]).frame(false)).on_hover_text("Select the whole byte (Shift + click: whole bytes from the first selected byte to this one)");
                         if r.clicked() {
-                            new_sel = Some(if msgv.sel_be { (b as u32 * 8 + 7, b as u32 * 8) } else { (b as u32 * 8, b as u32 * 8 + 7) });
+                            let bu = b as u32;
+                            new_sel = Some(match (shift, new_sel) {
+                                (true, Some((a, _))) => byte_range(a / 8, bu, msgv.sel_be),
+                                _ => byte_range(bu, bu, msgv.sel_be),
+                            });
                         }
                         for bit in (0..8u32).rev() {
                             let k = b as u32 * 8 + bit;
@@ -576,6 +707,7 @@ impl App {
                             let resp = resp.on_hover_ui(|ui| {
                                 let t = e.bit_toggles[k as usize];
                                 ui.label(format!("Byte {b} bit {bit} (bit {k}): {}", u8::from(v)));
+                                ui.label(egui::RichText::new("Shift + click: extend the selection to this bit").small());
                                 ui.label(format!("Toggled {t} times in {} compared frames ({:.0} %)", e.compared, rate * 100.0));
                                 if let Some(si) = sig_of(k) {
                                     ui.label(format!("Mapped: {}", mapped[si].text));
@@ -634,6 +766,14 @@ impl App {
                     for (i, _, c) in &usr {
                         let s = &usigs[*i];
                         ui.horizontal(|ui| {
+                            // An accent bar when the signal has a bit in the
+                            // selection.
+                            let hit = in_sel.contains(i);
+                            let (bar, br) = ui.allocate_exact_size(egui::vec2(3.0, 14.0), egui::Sense::hover());
+                            if hit {
+                                ui.painter().rect_filled(bar, 1.0, p.text_accent);
+                                br.on_hover_text("This signal has bits in the selection").widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "In the selection"));
+                            }
                             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                             ui.painter().rect_filled(r, 2.0, *c);
                             let vt = s.value(data).map(fmt_value).unwrap_or_else(|| "-".to_string());
@@ -654,6 +794,7 @@ impl App {
                             if s.bits == 1 && ui.small_button("Similar bits").on_hover_text("Find the bits that follow this 1-bit signal").clicked() {
                                 action = Some(DetailAction::Similar(s.start_bit));
                             }
+                            signal_action(ui, &s.to_def(), &mut action);
                         });
                     }
                     ui.add_space(4.0);
@@ -674,10 +815,12 @@ impl App {
                                 let us = UserSignal::new(s.text.clone(), key.id, key.extended, s.offset, s.bits);
                                 analysis_view::sparkline(ui, sparks.ensure(key, &us, window_s), now_s, c);
                             }
+                            signal_action(ui, &s.def, &mut action);
                         });
                     }
                 }
             });
+        });
         });
         if !down {
             drag = false;
@@ -712,6 +855,12 @@ impl App {
             Some(DetailAction::Similar(bit)) => self.start_similar(BitRef { key, bit }),
             Some(DetailAction::EditUser(i)) => self.edit_user_signal(i),
             Some(DetailAction::DeleteUser(i)) => self.delete_user_signal(i),
+            Some(DetailAction::SetPos(pos)) => {
+                self.settings.msg_detail_pos = pos;
+                self.mark_settings();
+            }
+            Some(DetailAction::SigToGraph(def)) => self.signal_to_graph(def),
+            Some(DetailAction::SigToDash(def)) => self.signal_to_dashboard(def),
             None => {}
         }
         fading
@@ -725,5 +874,54 @@ fn sel_contains(be: bool, a: u32, z: u32, k: u32) -> bool {
         g >= ga.min(gz) && g <= ga.max(gz)
     } else {
         k >= a.min(z) && k <= a.max(z)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The (start bit, length) that the Messages view shows for (a, z).
+    fn start_len(a: u32, z: u32, be: bool) -> (u32, u32) {
+        let v = MessagesView { bit_sel: Some((a, z)), sel_be: be, ..Default::default() };
+        v.selection().unwrap()
+    }
+
+    #[test]
+    fn whole_bytes_both_directions() {
+        // LE: bit order, the start is the lowest bit.
+        assert_eq!(byte_range(1, 2, false), (8, 23));
+        assert_eq!(byte_range(2, 1, false), (23, 8));
+        assert_eq!(start_len(8, 23, false), (8, 16));
+        assert_eq!(start_len(23, 8, false), (8, 16));
+        // BE: grid reading order, the start is the MSB of the first byte.
+        assert_eq!(byte_range(1, 2, true), (15, 16));
+        assert_eq!(byte_range(2, 1, true), (16, 15));
+        assert_eq!(start_len(15, 16, true), (15, 16));
+        assert_eq!(start_len(16, 15, true), (15, 16));
+        // One byte.
+        assert_eq!(start_len(byte_range(3, 3, false).0, byte_range(3, 3, false).1, false), (24, 8));
+        assert_eq!(start_len(byte_range(3, 3, true).0, byte_range(3, 3, true).1, true), (31, 8));
+    }
+
+    #[test]
+    fn overlapping_signals() {
+        let key = MsgKey { id: 0x181, extended: false };
+        let a = UserSignal::new("Battery voltage", 0x181, false, 0, 16);
+        let b = UserSignal::new("Motor speed", 0x181, false, 16, 16);
+        let other = UserSignal::new("Other", 0x281, false, 0, 16);
+        let mut be = UserSignal::new("Pressure", 0x181, false, 39, 16);
+        be.big_endian = true;
+        let sigs = vec![a, b, other, be];
+        assert!(signals_overlapping_selection(&sigs, key, None, false).is_empty());
+        // Byte 1 (LE): only the first signal.
+        assert_eq!(signals_overlapping_selection(&sigs, key, Some((8, 15)), false), vec![0]);
+        // Bits 15..16 (LE, either direction): the first two.
+        assert_eq!(signals_overlapping_selection(&sigs, key, Some((16, 15)), false), vec![0, 1]);
+        // Byte 5 (BE): the big-endian signal (bytes 4 and 5).
+        let (s, z) = byte_range(5, 5, true);
+        assert_eq!(signals_overlapping_selection(&sigs, key, Some((s, z)), true), vec![3]);
+        // Another COB-ID: nothing.
+        assert!(signals_overlapping_selection(&sigs, MsgKey { id: 0x182, extended: false }, Some((0, 63)), false).is_empty());
     }
 }

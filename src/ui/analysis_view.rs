@@ -3,12 +3,12 @@
 //! a COB-ID and the sparklines. The logic lives in `crate::usersig` and
 //! `crate::analysis`; this module only draws.
 
-use super::{theme, App};
+use super::{messages_view, theme, App};
 use crate::analysis::{self, BitMatch, BitRef, CmpOp, FindSettings, FindSignal, FindStep, HistFilter, HistRow, SparkSet, Sparkline};
 use crate::bus::BusCommand;
 use crate::can::CanFrame;
 use crate::msgstats::MsgKey;
-use crate::signals::RawKind;
+use crate::signals::{RawKind, SignalDef};
 use crate::usersig::{self, fmt_value, UserSignal, COLOURS, MAX_USER_SIGNALS, USER_SIGNALS_FILE};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
@@ -740,6 +740,20 @@ impl App {
         let cands: Vec<analysis::Candidate> = fv.fs.candidates().to_vec();
         let (be, signed) = (fv.fs.settings.big_endian, fv.fs.settings.signed);
         let mut define = None;
+        // A candidate that already is a defined signal gets the Graph and
+        // Dashboard buttons.
+        let known: Vec<Option<SignalDef>> = cands
+            .iter()
+            .map(|c| {
+                self.an
+                    .usigs
+                    .iter()
+                    .find(|s| s.cob_id == c.key.id && s.extended == c.key.extended && s.start_bit == c.start_bit && s.bits == c.bits && s.big_endian == be)
+                    .map(|s| s.to_def())
+            })
+            .collect();
+        let mut to_graph = None;
+        let mut to_dash = None;
         TableBuilder::new(ui)
             .id_salt("findsig_table")
             .striped(self.settings.zebra)
@@ -758,7 +772,7 @@ impl App {
                 }
             })
             .body(|mut body| {
-                for c in &cands {
+                for (c, def) in cands.iter().zip(known.iter()) {
                     body.row(22.0, |mut row| {
                         row.col(|ui| {
                             ui.monospace(key_text(c.key));
@@ -776,12 +790,27 @@ impl App {
                             if ui.small_button("Define signal...").clicked() {
                                 define = Some(*c);
                             }
+                            if let Some(d) = def {
+                                let (g, b) = messages_view::signal_buttons(ui, &d.name);
+                                if g {
+                                    to_graph = Some(d.clone());
+                                }
+                                if b {
+                                    to_dash = Some(d.clone());
+                                }
+                            }
                         });
                     });
                 }
             });
         if let Some(c) = define {
             self.define_signal(c.key, c.start_bit, c.bits, be, signed);
+        }
+        if let Some(d) = to_graph {
+            self.signal_to_graph(d);
+        }
+        if let Some(d) = to_dash {
+            self.signal_to_dashboard(d);
         }
     }
 
