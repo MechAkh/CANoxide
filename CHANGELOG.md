@@ -48,6 +48,16 @@ download files and their SHA-256 checksums.
 - **Dashboard:** large values, bars, dials and lamps of the Graph signals,
   with warning and alarm thresholds and dimmed stale values. Saved in the
   data folder.
+- **SLCAN adapters** (Lawicel ASCII protocol: CANable / candleLight slcan
+  firmware, Lawicel CANUSB, USBtin, network gateways). GUI: "SLCAN
+  (serial)" with the COM port list and "SLCAN (TCP)" with a host:port
+  field. CLI: `--adapter slcan --channel COM5` or `--channel host:port`.
+  Opening sends no CAN frame; a lost connection is reported once. Not
+  tested on hardware.
+- **Kvaser adapter** through CANlib (`canlib32.dll`, loaded at run time).
+  GUI: a "Kvaser" entry with the channel list; virtual channels work.
+  CLI: `--adapter kvaser --channel <number>`. Every driver call has a
+  time-out. Not tested on hardware.
 
 ### Changed
 

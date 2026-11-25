@@ -14,11 +14,25 @@ pub enum AdapterKind {
     Replay,
     /// ifm CANfox through the Sontheim MT-API.
     Canfox,
+    /// Kvaser through CANlib.
+    Kvaser,
+    /// SLCAN (Lawicel ASCII) on a COM port.
+    SlcanSerial,
+    /// SLCAN (Lawicel ASCII) over TCP.
+    SlcanTcp,
 }
 
 impl AdapterKind {
     /// In the order of the adapter picker.
-    pub const ALL: [AdapterKind; 4] = [AdapterKind::Simulator, AdapterKind::Peak, AdapterKind::Canfox, AdapterKind::Replay];
+    pub const ALL: [AdapterKind; 7] = [
+        AdapterKind::Simulator,
+        AdapterKind::Peak,
+        AdapterKind::Canfox,
+        AdapterKind::Kvaser,
+        AdapterKind::SlcanSerial,
+        AdapterKind::SlcanTcp,
+        AdapterKind::Replay,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -26,6 +40,9 @@ impl AdapterKind {
             AdapterKind::Peak => "PEAK PCAN",
             AdapterKind::Replay => "Log file (replay)",
             AdapterKind::Canfox => "CANfox",
+            AdapterKind::Kvaser => "Kvaser",
+            AdapterKind::SlcanSerial => "SLCAN (serial)",
+            AdapterKind::SlcanTcp => "SLCAN (TCP)",
         }
     }
 }
@@ -166,6 +183,12 @@ pub struct Settings {
     pub sparkline_s: f32,
     /// The net number of the CANfox adapter (`channel` is the PCAN channel).
     pub canfox_net: u32,
+    /// The COM port of the SLCAN (serial) adapter, for example `COM5`.
+    pub slcan_port: String,
+    /// `host:port` of the SLCAN (TCP) adapter.
+    pub slcan_tcp: String,
+    /// The channel number of the Kvaser adapter.
+    pub kvaser_channel: u32,
 }
 
 /// Table row height.
@@ -259,6 +282,9 @@ impl Default for Settings {
             replay_file: String::new(),
             sparkline_s: 10.0,
             canfox_net: crate::can::sontheim::CANFOX_NET,
+            slcan_port: String::new(),
+            slcan_tcp: String::new(),
+            kvaser_channel: 0,
         }
     }
 }

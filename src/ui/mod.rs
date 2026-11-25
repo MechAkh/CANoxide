@@ -31,6 +31,7 @@ mod tx_view;
 mod ui_tests;
 
 use crate::bus::{AdapterChoice, BusCommand, BusEvent, BusHandle};
+use crate::can::slcan::SlcanTarget;
 use crate::can::{pcan, sontheim, Bitrate, ChannelInfo};
 use crate::canopen::decode::{decode, DecodeContext};
 use crate::canopen::sdo::SdoRequest;
@@ -608,6 +609,21 @@ impl App {
         let (adapter, channel) = match self.settings.adapter {
             AdapterKind::Peak => (AdapterChoice::Peak, self.settings.channel),
             AdapterKind::Canfox => (AdapterChoice::Canfox, self.settings.canfox_net),
+            AdapterKind::Kvaser => (AdapterChoice::Kvaser, self.settings.kvaser_channel),
+            AdapterKind::SlcanSerial => match SlcanTarget::parse(&self.settings.slcan_port) {
+                Ok(t @ SlcanTarget::Serial(_)) => (AdapterChoice::Slcan(t), 0),
+                _ => {
+                    self.set_status("Choose a COM port first", true);
+                    return;
+                }
+            },
+            AdapterKind::SlcanTcp => match SlcanTarget::parse(&self.settings.slcan_tcp) {
+                Ok(t @ SlcanTarget::Tcp(_)) => (AdapterChoice::Slcan(t), 0),
+                _ => {
+                    self.set_status("Enter the address of the SLCAN gateway as host:port", true);
+                    return;
+                }
+            },
             AdapterKind::Replay => {
                 if self.settings.replay_file.trim().is_empty() {
                     self.set_status("Choose a log file first (Browse...)", true);
@@ -733,7 +749,11 @@ impl App {
                     if kind == self.settings.adapter {
                         match result {
                             Ok(v) => {
-                                self.channel_note = if v.is_empty() && kind == AdapterKind::Peak { Some("no available channel".to_string()) } else { None };
+                                self.channel_note = match kind {
+                                    AdapterKind::Peak | AdapterKind::Kvaser if v.is_empty() => Some("no available channel".to_string()),
+                                    AdapterKind::SlcanSerial if v.is_empty() => Some("no COM port found".to_string()),
+                                    _ => None,
+                                };
                                 self.channels = v;
                             }
                             Err(e) => {
@@ -1024,7 +1044,13 @@ impl App {
             }
 
             let replay = self.settings.adapter == AdapterKind::Replay;
-            ui.label(egui::RichText::new(if replay { "File" } else { "Channel" }).small().color(p.text_secondary));
+            let what = match self.settings.adapter {
+                AdapterKind::Replay => "File",
+                AdapterKind::SlcanSerial => "Port",
+                AdapterKind::SlcanTcp => "Address",
+                _ => "Channel",
+            };
+            ui.label(egui::RichText::new(what).small().color(p.text_secondary));
             if replay {
                 self.replay_file_picker(ui, locked);
             } else if self.settings.adapter == AdapterKind::Peak {
@@ -1076,6 +1102,68 @@ impl App {
                 }
                 if let Some(n) = &self.channel_note {
                     ui.colored_label(p.warning, n);
+                }
+            } else if self.settings.adapter == AdapterKind::Kvaser {
+                let ch = self.settings.kvaser_channel;
+                let cur = self.channels.iter().find(|c| c.handle == ch).map(|c| c.name.clone()).unwrap_or_else(|| format!("Channel {ch}"));
+                ui.add_enabled_ui(!locked, |ui| {
+                    egui::ComboBox::from_id_salt("kvaser_channel").width(180.0).selected_text(cur).show_ui(ui, |ui| {
+                        if self.channels.is_empty() {
+                            ui.label("No channel list reported");
+                        }
+                        for c in &self.channels {
+                            ui.selectable_value(&mut self.settings.kvaser_channel, c.handle, c.name.clone());
+                        }
+                        ui.separator();
+                        ui.label("Manual choice");
+                        for n in 0..4u32 {
+                            ui.selectable_value(&mut self.settings.kvaser_channel, n, format!("Channel {n}"));
+                        }
+                    });
+                    if ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Ask the driver which channels exist (opens no channel, sends nothing)").clicked() {
+                        self.bus.send(BusCommand::ListChannels(AdapterKind::Kvaser));
+                    }
+                });
+                if self.settings.kvaser_channel != ch {
+                    self.mark_settings();
+                }
+                if let Some(n) = &self.channel_note {
+                    ui.colored_label(p.warning, n);
+                }
+            } else if self.settings.adapter == AdapterKind::SlcanSerial {
+                let port = self.settings.slcan_port.clone();
+                let cur = if port.is_empty() { "Choose a port".to_string() } else { port.clone() };
+                ui.add_enabled_ui(!locked, |ui| {
+                    egui::ComboBox::from_id_salt("slcan_port").width(110.0).selected_text(cur).show_ui(ui, |ui| {
+                        if self.channels.is_empty() {
+                            ui.label("No COM port found");
+                        }
+                        for c in &self.channels {
+                            ui.selectable_value(&mut self.settings.slcan_port, c.name.clone(), c.name.clone());
+                        }
+                    });
+                    if ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("List the COM ports of this PC again (opens no port, sends nothing)").clicked() {
+                        self.bus.send(BusCommand::ListChannels(AdapterKind::SlcanSerial));
+                    }
+                });
+                if self.settings.slcan_port != port {
+                    self.mark_settings();
+                }
+                if let Some(n) = &self.channel_note {
+                    ui.colored_label(p.warning, n);
+                }
+            } else if self.settings.adapter == AdapterKind::SlcanTcp {
+                let before = self.settings.slcan_tcp.clone();
+                ui.add_enabled_ui(!locked, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.settings.slcan_tcp).hint_text("host:port").desired_width(150.0))
+                        .on_hover_text("The address of the SLCAN gateway, for example 192.168.1.10:2001");
+                });
+                if self.settings.slcan_tcp != before {
+                    self.mark_settings();
+                }
+                let t = self.settings.slcan_tcp.trim();
+                if !t.is_empty() && !matches!(SlcanTarget::parse(t), Ok(SlcanTarget::Tcp(_))) {
+                    ui.colored_label(p.warning, "not host:port");
                 }
             } else {
                 ui.label("virtual bus");
@@ -1160,7 +1248,7 @@ impl App {
                 }
                 if self.connected {
                     let s = status.to_ascii_lowercase();
-                    let (fg, bg) = if s.contains("off") {
+                    let (fg, bg) = if s.contains("off") || s.contains("connection lost") {
                         (p.error, p.error_tint)
                     } else if s.contains("passive") || s.contains("warn") {
                         (p.warning, p.warning_tint)
@@ -1186,6 +1274,9 @@ impl App {
                 let ch = match self.settings.adapter {
                     AdapterKind::Simulator => "virtual bus".to_string(),
                     AdapterKind::Canfox => format!("net {}", self.settings.canfox_net),
+                    AdapterKind::Kvaser => format!("channel {}", self.settings.kvaser_channel),
+                    AdapterKind::SlcanSerial => self.settings.slcan_port.clone(),
+                    AdapterKind::SlcanTcp => self.settings.slcan_tcp.trim().to_string(),
                     _ => pcan::channel_name(self.settings.channel as u16),
                 };
                 let br = Bitrate::from_kbit(self.settings.bitrate_kbit).map(|b| b.label()).unwrap_or_default();

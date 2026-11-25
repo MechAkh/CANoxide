@@ -1,6 +1,8 @@
 //! Tests of the command-line tool: the built exe is run on the simulator
 //! (no window: CREATE_NO_WINDOW), and its JSON and exit codes are checked.
 
+mod slcan_fake;
+
 use serde_json::Value;
 use std::io::Write;
 use std::path::PathBuf;
@@ -155,16 +157,57 @@ fn cli_listen_only_refuses_sending_commands() {
     // A bad net number is a usage error (`version` never opens an adapter).
     let v = fails(&["--adapter", "canfox", "--channel", "usb1", "version"], 2, "usage");
     assert!(v["error"]["message"].as_str().unwrap().contains("net number"), "{v}");
+    // The same for --adapter kvaser (the driver is not loaded).
+    fails(&["--adapter", "kvaser", "--listen-only", "nmt", "start"], 2, "listen_only");
+    let v = fails(&["--adapter", "kvaser", "--channel", "usb1", "version"], 2, "usage");
+    assert!(v["error"]["message"].as_str().unwrap().contains("Kvaser channel"), "{v}");
     // A receive-only command runs.
     let v = ok(&["--listen-only", "monitor", "--count", "1"]);
     assert_eq!(v["frames"], 1);
+}
+
+/// `--adapter slcan --channel 127.0.0.1:<port>` against the fake SLCAN
+/// device, which answers with a simulated node 1.
+#[test]
+fn cli_slcan_over_tcp() {
+    let f = slcan_fake::Fake::start(slcan_fake::Opts { acks: true, sim_node: Some(1), ..Default::default() });
+    // Without --eds the value is shown raw.
+    let v = ok(&["--adapter", "slcan", "--channel", &f.addr, "sdo", "read", "0x1018:1"]);
+    assert_eq!(v["raw"], "9B 06 00 00", "{v}");
+    let log = f.log();
+    assert_eq!(&log[..4], ["C", "V", "S5", "O"], "{log:?}");
+    assert!(log.iter().any(|c| c == "t60184018100100000000"), "{log:?}");
+    // A silent (CANable) device and the 500k code.
+    let f = slcan_fake::Fake::start(slcan_fake::Opts { sim_node: Some(1), ..Default::default() });
+    let v = ok(&["--adapter", "slcan", "--channel", &f.addr, "--bitrate", "500k", "sdo", "read", "0x1018:1"]);
+    assert_eq!(v["raw"], "9B 06 00 00", "{v}");
+    assert_eq!(&f.log()[..4], ["C", "V", "S6", "O"]);
+    // Listen only: L, and a transmitting command is refused before opening.
+    fails(&["--adapter", "slcan", "--channel", &f.addr, "--listen-only", "nmt", "start"], 2, "listen_only");
+    // The adapter list names the COM ports (from the registry; none is opened).
+    let v = ok(&["--adapter", "slcan", "adapters"]);
+    let s = v["adapters"].as_array().unwrap().iter().find(|a| a["name"] == "slcan").cloned().unwrap();
+    assert!(s["ports"].is_array(), "{v}");
+}
+
+#[test]
+fn cli_slcan_bad_channel_is_a_usage_error() {
+    for bad in ["usb1", "COM0", "host:0", "host:", ":2001", "192.168.1.10:99999", "1"] {
+        let v = fails(&["--adapter", "slcan", "--channel", bad, "version"], 2, "usage");
+        assert!(v["error"]["message"].as_str().unwrap().contains("--channel"), "{bad}: {v}");
+    }
+    // No --channel: a usage error when the adapter is opened.
+    let v = fails(&["--adapter", "slcan", "sdo", "read", "0x1018:1"], 2, "usage");
+    assert!(v["error"]["message"].as_str().unwrap().contains("host:port"), "{v}");
+    let v = fails(&["--adapter", "bogus", "version"], 2, "usage");
+    assert!(v["error"]["message"].as_str().unwrap().contains("slcan"), "{v}");
 }
 
 #[test]
 fn cli_adapters_and_eds() {
     let v = ok(&["adapters"]);
     let names: Vec<_> = v["adapters"].as_array().unwrap().iter().map(|a| a["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["sim", "pcan", "canfox"]);
+    assert_eq!(names, ["sim", "pcan", "canfox", "kvaser", "slcan"]);
 
     let dir = temp("eds");
     let eds = dir.join("sim.eds");

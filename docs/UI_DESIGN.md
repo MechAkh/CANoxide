@@ -387,7 +387,7 @@ Top to bottom (window 1280 × 800):
    - Help: User guide, Keyboard shortcuts, Open log folder, About CANoxide (modal 420 wide: the app icon 48 × 48 and app name `CANoxide` in `title`, version `x.y.z` mono, licence, font and icon licences, project link).
 3. **Connection bar** — height 38, fill bg.frame, bottom 1 px border.strong.
    Left to right, gap 8, separators 1 px border.subtle × 20 between groups:
-   - `Adapter` label (small, secondary) + ComboBox 150 (`Simulator`, `PEAK PCAN`, `CANfox`, `Log file (replay)`).
+   - `Adapter` label (small, secondary) + ComboBox 150 (`Simulator`, `PEAK PCAN`, `CANfox`, `Kvaser`, `SLCAN (serial)`, `SLCAN (TCP)`, `Log file (replay)`).
    - `Channel` + ComboBox 120 (`virtual bus`).
    - `Bitrate` + ComboBox 110 (`250 kbit/s`).
    - Checkbox `Listen only`.

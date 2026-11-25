@@ -3,15 +3,17 @@
 //! Every result is one JSON object on stdout (`monitor`, `watch` and
 //! `shell` write JSON Lines); `--text` gives tables for a human. The
 //! default adapter is the built-in simulator, so nothing touches hardware
-//! unless `--adapter pcan` or `--adapter canfox` is given, and nothing is sent unless the command
+//! unless `--adapter pcan`, `canfox`, `kvaser` or `slcan` is given, and nothing is sent unless the command
 //! transmits. With `--listen-only` a transmitting command fails before the
 //! adapter is opened. `help --json` prints the full command schema.
 
 mod cmds;
 mod spec;
 
+use canoxide::can::kvaser::KvaserAdapter;
 use canoxide::can::pcan::{PcanAdapter, PCAN_USB_CHANNELS};
 use canoxide::can::sim::{builtin_dictionary, SimNode, BUILTIN_EDS};
+use canoxide::can::slcan::{SlcanAdapter, SlcanTarget};
 use canoxide::can::sontheim::SontheimAdapter;
 use canoxide::can::Bitrate;
 use canoxide::canopen::types::parse_int;
@@ -148,6 +150,8 @@ impl Args {
 pub struct Global {
     pub adapter: String,
     pub channel: u32,
+    /// The COM port or `host:port` of `--adapter slcan` (needed to open it).
+    pub slcan: Option<SlcanTarget>,
     pub bitrate: Bitrate,
     pub node: u8,
     pub eds: Option<PathBuf>,
@@ -193,6 +197,14 @@ fn parse_channel(s: &str) -> Result<u32, CliError> {
     }
 }
 
+/// The CANlib channel number of `--adapter kvaser` (0, 1, ...).
+fn parse_kvaser_channel(s: &str) -> Result<u32, CliError> {
+    match parse_int(s.trim(), false) {
+        Some(n) if (0..=255).contains(&n) => Ok(n as u32),
+        _ => Err(CliError::usage(format!("--channel: '{s}' is not a Kvaser channel number (0, 1, ...)"))),
+    }
+}
+
 /// The net number of `--adapter canfox` (CANfox: 105).
 fn parse_net(s: &str) -> Result<u32, CliError> {
     match parse_int(s.trim(), false) {
@@ -206,11 +218,15 @@ impl Global {
     /// `--file` is not a replay log.
     fn from_args(a: &Args, own_file: bool) -> Result<Global, CliError> {
         let adapter = a.get("adapter").unwrap_or("sim").to_ascii_lowercase();
-        if !["sim", "pcan", "canfox", "replay"].contains(&adapter.as_str()) {
-            return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim, pcan, canfox or replay")));
+        if !["sim", "pcan", "canfox", "kvaser", "slcan", "replay"].contains(&adapter.as_str()) {
+            return Err(CliError::usage(format!("--adapter: '{adapter}' is not sim, pcan, canfox, kvaser, slcan or replay")));
         }
         let replay = adapter == "replay";
         let canfox = adapter == "canfox";
+        let slcan = match a.get("channel").filter(|_| adapter == "slcan") {
+            Some(c) => Some(SlcanTarget::parse(c).map_err(|e| CliError::usage(format!("--channel: {e}")))?),
+            None => None,
+        };
         let file = if own_file { None } else { a.get("file").map(PathBuf::from) };
         if replay && file.is_none() {
             return Err(CliError::usage("--adapter replay needs --file <log> (a trace CSV of CANoxide or a candump log)"));
@@ -231,9 +247,12 @@ impl Global {
             replay_speed: speed,
             // A replay sends nothing.
             listen_only: a.flag("listen-only") || replay,
-            adapter,
             channel: if canfox {
                 parse_net(a.get("channel").unwrap_or("105"))?
+            } else if adapter == "kvaser" {
+                parse_kvaser_channel(a.get("channel").unwrap_or("0"))?
+            } else if adapter == "slcan" {
+                0
             } else {
                 parse_channel(a.get("channel").unwrap_or("usb1"))?
             },
@@ -247,6 +266,8 @@ impl Global {
             data_dir: a.get("data-dir").map(PathBuf::from),
             device: a.get("device").map(str::to_string),
             text: a.flag("text"),
+            adapter,
+            slcan,
         };
         if g.device.is_some() && g.data_dir.is_none() {
             return Err(CliError::usage("--device needs --data-dir (the data folder of the device library)"));
@@ -358,6 +379,15 @@ impl Ctx {
             } else if self.g.adapter == "canfox" {
                 let a = SontheimAdapter::load().map_err(|e| CliError::new("adapter", format!("CANfox driver: {e}")))?;
                 Session::open(Box::new(a), self.g.channel, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open net: {e}")))?
+            } else if self.g.adapter == "kvaser" {
+                let a = KvaserAdapter::load().map_err(|e| CliError::new("adapter", format!("Kvaser driver: {e}")))?;
+                Session::open(Box::new(a), self.g.channel, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open channel: {e}")))?
+            } else if self.g.adapter == "slcan" {
+                let Some(t) = self.g.slcan.clone() else {
+                    return Err(CliError::usage("--adapter slcan needs --channel COM<n> or --channel host:port"));
+                };
+                let a = SlcanAdapter::new(t);
+                Session::open(Box::new(a), 0, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open: {e}")))?
             } else {
                 let a = PcanAdapter::load().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
                 Session::open(Box::new(a), self.g.channel, self.g.bitrate, self.g.listen_only).map_err(|e| CliError::new("adapter", format!("open channel: {e}")))?

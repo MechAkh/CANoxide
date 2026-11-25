@@ -24,9 +24,9 @@ canoxide-cli help sdo write  # one command
 
 ## Safety model
 
-Read this before you use `--adapter pcan` or `--adapter canfox`.
+Read this before you use `--adapter pcan`, `canfox`, `kvaser` or `slcan`.
 
-1. **The simulator is the default.** Without `--adapter pcan` or `canfox` every command
+1. **The simulator is the default.** Without `--adapter pcan`, `canfox`, `kvaser` or `slcan` every command
    runs against the built-in simulated node. Nothing touches hardware.
 2. **Nothing is sent unless a command transmits.** The schema marks each
    command with `"sends": true` or `false`. `monitor`, `eds ...`, `help`,
@@ -53,7 +53,7 @@ before you write, and know what an NMT command does to a running machine.
 
 ## Simulator-first workflow
 
-Develop every script against the simulator, then add `--adapter pcan` (or `canfox`)
+Develop every script against the simulator, then add `--adapter pcan` (or `canfox`, `kvaser`, `slcan`)
 (and `--channel`, `--bitrate`, `--node`) only when the script is right.
 
 The simulated node: node-ID = `--node` (default 1), boots pre-operational,
@@ -123,8 +123,9 @@ A `shell` run returns the code of the last failed line, else 0.
 
 `help --json` has the options and the output fields of each command.
 
-Global options: `--adapter sim|pcan|canfox|replay`, `--file log`,
-`--speed max|factor`, `--channel usb1..usb8` (PCAN) or a net number (CANfox, default 105),
+Global options: `--adapter sim|pcan|canfox|kvaser|slcan|replay`, `--file log`,
+`--speed max|factor`, `--channel usb1..usb8` (PCAN), a net number (CANfox, default 105),
+a channel number (Kvaser, default 0) or `COM<n>` / `host:port` (SLCAN, no default),
 `--bitrate 10k..1M`, `--node 1..127`, `--eds file`, `--listen-only`,
 `--timeout ms` (SDO), `--data-dir dir`, `--device name`, `--text`.
 
@@ -464,6 +465,41 @@ CANfox firmware update) the command ends after about 3 s with the same exit
 code; close CoDeSys and restart the PC. `open` never forces the bitrate:
 when another program (for example CoDeSys) owns the net and the bitrate
 cannot be set, the command fails and says so.
+
+### Kvaser (not tested on hardware)
+
+The Kvaser adapter works through CANlib (`canlib32.dll` of the Kvaser
+drivers, from `System32` or the exe folder). `--channel` is the CANlib
+channel number (default 0); the Kvaser virtual channels work too. The
+channel is opened shared, listen only uses the silent driver mode, and
+every driver call has a time-out of about 3 s. Not tested on hardware:
+please report results.
+
+```
+canoxide-cli adapters --adapter kvaser                       # the channels (none opened)
+canoxide-cli --adapter kvaser --channel 0 --bitrate 500k --listen-only monitor --duration 10
+```
+
+Without the driver a command with `--adapter kvaser` ends with exit code 3,
+kind `adapter` ("Kvaser driver not found: install the Kvaser drivers").
+
+### SLCAN (not tested on hardware)
+
+The SLCAN adapter talks the Lawicel ASCII protocol (CANable or candleLight
+with slcan firmware, Lawicel CANUSB, USBtin, network gateways). `--channel`
+is a COM port or `host:port`; a channel with a colon and a port number is
+TCP. There is no default: without `--channel` a command that opens the
+adapter ends with exit code 2, kind `usage`, and so does a channel text
+that is neither. Opening sends `C`, `V`, `S<n>` and `O` (`L` with
+`--listen-only`), never a CAN frame; a device that does not answer `V`
+ends with exit code 3, kind `adapter`. Not tested on hardware: please
+report results.
+
+```
+canoxide-cli adapters --adapter slcan                        # the COM ports (none opened)
+canoxide-cli --adapter slcan --channel COM5 --bitrate 250k --listen-only monitor --duration 10
+canoxide-cli --adapter slcan --channel 192.168.1.10:2001 --node 5 sdo read 0x1008
+```
 
 ## Replay of a log file
 

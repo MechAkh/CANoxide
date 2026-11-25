@@ -1,8 +1,10 @@
 # CANoxide
 
 A small, free Windows tool to test, configure and debug CANopen devices
-on a bench. It works with a PEAK PCAN-USB adapter, an ifm CANfox, or with
-no hardware at all through a built-in simulated node.
+on a bench. It works with a PEAK PCAN-USB adapter, an ifm CANfox, a Kvaser
+interface, an SLCAN device (CANable, CANUSB, USBtin, or a gateway over TCP),
+or with no hardware at all through a built-in simulated node. The Kvaser
+and SLCAN adapters are not tested on hardware yet.
 
 - **GUI** (`CANoxide.exe`): one portable exe of about 9 MB, or a standard
   Windows installer.
@@ -113,7 +115,7 @@ CANoxide is younger and has had far less use on real networks.
 | CAN FD / CANopen FD | Yes | No |
 | CiA 447 and other application profiles | Yes | No |
 | Error frame display | Yes | No |
-| CAN interfaces | PEAK, Kvaser and others | PEAK PCAN-USB, ifm CANfox |
+| CAN interfaces | PEAK, Kvaser and others | PEAK PCAN-USB, ifm CANfox; Kvaser and SLCAN (not tested on hardware) |
 | Portable single exe | No (installer) | Yes, plus an installer |
 | Vendor support, long field history | Yes | No |
 
@@ -298,7 +300,8 @@ See [docs/CLI.md](docs/CLI.md) for the safety model and worked examples.
 
 Nothing is sent unless you press a button or give a command. Connect only
 opens the channel. "Listen only" opens the PCAN channel (or the CANfox
-net, with the silent flag of the Sontheim driver) in listen-only
+net, with the silent flag of the Sontheim driver; the Kvaser channel in
+the silent driver mode; the SLCAN channel with `L`) in listen-only
 mode and disables every send control. The node scan sends one SDO request
 at a time.
 
@@ -310,7 +313,8 @@ make a motor move. The tool asks before these actions (see the Safety
 settings).
 
 The PEAK adapter has had only light use on real hardware; the CANfox
-adapter was tested on one unit only. Try listen-only
+adapter was tested on one unit only; the Kvaser and SLCAN adapters are
+not tested on hardware at all. Try listen-only
 mode on a bench bus before you rely on the tool on a live system.
 
 ## Data folder
@@ -354,6 +358,47 @@ one CANfox at 500 kbit/s: the net list, reception and one SDO read. It
 is not known whether a CANfox in listen-only mode still
 acknowledges frames.
 
+## Kvaser driver
+
+**Not tested on hardware: please report results** (an issue on GitHub).
+The Kvaser adapter needs the Kvaser drivers with CANlib (`canlib32.dll`;
+the 64-bit DLL has the same name), loaded at run time from `System32` or
+from the exe folder. Without it the app still works and the channel list
+shows "Kvaser driver not found: install the Kvaser drivers". A `channel`
+is the CANlib channel number (0, 1, ...); the Kvaser virtual channels
+work too. A channel is opened shared (not exclusive); listen only uses the
+silent driver mode; the bus state comes from `canReadStatus`. As with the
+CANfox, every driver call has a time-out of about 3 s. 20 and 800 kbit/s
+have no predefined CANlib setting and are set from bit timing values
+(16 and 10 time quanta per bit).
+
+## SLCAN adapters
+
+**Not tested on hardware: please report results** (an issue on GitHub).
+"SLCAN (serial)" talks the Lawicel ASCII protocol on a COM port (CANable
+or candleLight with slcan firmware, Lawicel CANUSB, USBtin; 115200 8N1,
+which a USB device ignores). "SLCAN (TCP)" talks the same protocol to a
+network gateway at `host:port` (for example a VSCOM NET-CAN in ASCII mode).
+No driver DLL is needed. Opening sends `C`, `V`, `S<n>` and `O` (or `L`
+for listen only), never a CAN frame; a device that does not answer `V`
+is refused. Received time stamps are ignored (the PC time is used).
+A lost connection or a removed device is reported once and the bus shows
+"Connection lost"; connect again after you fix it.
+
+What is not known without hardware:
+
+- whether each device answers `V` (a device that does not is refused);
+- what a device that does not know `L` does (the CANable firmware has no
+  listen-only command: it is expected to ignore `L`, so the channel stays
+  closed and nothing is received; it is never opened with `O` instead);
+- the 800 kbit/s code `S7` (the CANable firmware uses `S7` for 750
+  kbit/s);
+- the COM port settings and time-outs on a real port, the COM port list,
+  and how a removed USB device is seen;
+- the time-outs of a real TCP gateway, and whether it closes the
+  connection when the CAN side has a fault;
+- the error flags of `F` on a real bus.
+
 ## Build
 
 Rust stable (MSVC), from this folder:
@@ -385,8 +430,8 @@ cargo build --release
 - Firmware download (CiA 302-3) as a guided function (a block download of
   a file to an object is possible).
 - Gauges, error frame display, application profiles such as CiA 447.
-- Adapters other than PEAK, the CANfox and the simulator (the `CanAdapter` trait
-  allows more backends later).
+- Adapters other than PEAK, the CANfox, Kvaser, SLCAN and the simulator
+  (the `CanAdapter` trait allows more backends later).
 
 ## Licence
 
@@ -395,6 +440,6 @@ are under the SIL Open Font License, see `licenses\`. The icons are
 Phosphor icons (MIT). The licences of the Rust crates and fonts in the
 exes are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
 
-No driver file of PEAK or Sontheim is part of CANoxide. Product and company
+No driver file of PEAK, Sontheim or Kvaser is part of CANoxide. Product and company
 names in this file are trademarks of their owners and are used only to
 describe compatibility.

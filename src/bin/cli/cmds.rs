@@ -2,7 +2,9 @@
 //! `CliError`; `monitor` and `watch` also write one JSON line per sample.
 
 use super::{parse_node, spec, Args, CliError, CmdResult, Ctx, CLI_NAME};
+use canoxide::can::kvaser::KvaserAdapter;
 use canoxide::can::pcan::PcanAdapter;
+use canoxide::can::slcan;
 use canoxide::can::sontheim::SontheimAdapter;
 use canoxide::can::{CanAdapter, CanFrame};
 use canoxide::canopen::decode::{DecodeContext, MsgClass, SdoBlockTracker};
@@ -450,7 +452,9 @@ fn adapters(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
         "description": "PEAK PCAN-USB through PCANBasic.dll. Channels are listed with --adapter pcan (the driver is asked; no channel is opened).",
     });
     let canfox_asked = ctx.g.adapter == "canfox";
-    if !ctx.is_sim() && !canfox_asked {
+    let kvaser_asked = ctx.g.adapter == "kvaser";
+    let slcan_asked = ctx.g.adapter == "slcan";
+    if !ctx.is_sim() && !canfox_asked && !kvaser_asked && !slcan_asked {
         let mut a = PcanAdapter::load().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
         let ch = a.list_channels().map_err(|e| CliError::new("adapter", format!("PCAN driver: {e}")))?;
         pcan["channels"] = Value::Array(
@@ -473,6 +477,24 @@ fn adapters(ctx: &mut Ctx, pos: &[String]) -> CmdResult {
         canfox["channels"] = Value::Array(ch.iter().map(|c| json!({"net": c.handle, "label": c.name, "available": c.available})).collect());
     }
     list.push(canfox);
+    let mut kvaser = json!({
+        "name": "kvaser",
+        "description": "Kvaser through CANlib (canlib32.dll). --channel is the CANlib channel number (default 0); virtual channels work. Channels are listed with --adapter kvaser (the driver is asked; no channel is opened). Not tested on hardware.",
+    });
+    if kvaser_asked {
+        let mut a = KvaserAdapter::load().map_err(|e| CliError::new("adapter", format!("Kvaser driver: {e}")))?;
+        let ch = a.list_channels().map_err(|e| CliError::new("adapter", format!("Kvaser driver: {e}")))?;
+        kvaser["channels"] = Value::Array(ch.iter().map(|c| json!({"channel": c.handle, "label": c.name})).collect());
+    }
+    list.push(kvaser);
+    let mut slcan = json!({
+        "name": "slcan",
+        "description": "SLCAN (Lawicel ASCII: CANable, CANUSB, USBtin, network gateways). --channel COM<n> or host:port (TCP). COM ports are listed with --adapter slcan (from the registry; no port is opened). Not tested on hardware.",
+    });
+    if slcan_asked {
+        slcan["ports"] = Value::Array(slcan::list_com_ports().into_iter().map(Value::String).collect());
+    }
+    list.push(slcan);
     Ok(json!({ "adapters": list }))
 }
 

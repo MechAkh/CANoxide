@@ -1,9 +1,14 @@
 //! CAN frame model and the adapter trait. Classic CAN only (no CAN FD).
 
-// `unsafe` code is only in the PCAN and Sontheim FFI modules and in the Win32 queries of ui::diag.
+// `unsafe` code is only in the PCAN, Sontheim and Kvaser FFI modules, the
+// COM port of the SLCAN module and the Win32 queries of ui::diag.
+#[allow(unsafe_code)]
+pub mod kvaser;
 #[allow(unsafe_code)]
 pub mod pcan;
 pub mod sim;
+#[allow(unsafe_code)]
+pub mod slcan;
 #[allow(unsafe_code)]
 pub mod sontheim;
 

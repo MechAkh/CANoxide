@@ -597,6 +597,32 @@ fn s2_adapter_picker_offers_canfox() {
     assert_eq!(AdapterKind::Canfox.label(), "CANfox");
 }
 
+/// The adapter picker offers Kvaser and both SLCAN entries; "SLCAN (TCP)"
+/// shows the host:port field, saved in the settings. Kvaser and SLCAN
+/// (serial) are not chosen (no driver is loaded, no COM port listed), and
+/// Connect is never pressed.
+#[test]
+fn s2_adapter_picker_offers_slcan_and_kvaser() {
+    let tmp = TempDir::new("s2_slcan");
+    let mut h = build(&tmp.data());
+    let labels = ["Kvaser", "SLCAN (serial)", "SLCAN (TCP)"];
+    let before: Vec<Vec<NodeId>> = labels.iter().map(|l| buttons(&h, l)).collect();
+    let combo = right_of(&h, "Adapter", Role::ComboBox);
+    click_id(&mut h, combo);
+    for (l, b) in labels.iter().zip(&before) {
+        let new: Vec<NodeId> = buttons(&h, l).into_iter().filter(|id| !b.contains(id)).collect();
+        assert_eq!(new.len(), 1, "no {l} entry in the adapter list\nUI:\n{}", dump(&h));
+    }
+    click_new_button(&mut h, "SLCAN (TCP)", &before[2]);
+    assert_eq!(h.state().settings.adapter, AdapterKind::SlcanTcp);
+    let field = right_of(&h, "Address", Role::TextInput);
+    set_text(&mut h, field, "127.0.0.1:2001");
+    assert_eq!(h.state().settings.slcan_tcp, "127.0.0.1:2001");
+    assert!(!has(&h, "not host:port"), "a valid address is flagged\nUI:\n{}", dump(&h));
+    set_text(&mut h, field, "gateway");
+    assert!(has(&h, "not host:port"), "a bad address is not flagged\nUI:\n{}", dump(&h));
+}
+
 #[test]
 fn s3_trace() {
     let tmp = TempDir::new("s3");
@@ -2941,8 +2967,8 @@ fn s42_program_download_wizard() {
     assert!(has(&h, "as program 1 to node 1?"), "question\nUI:\n{}", dump(&h));
     let before: Vec<NodeId> = Vec::new();
     click_new_button(&mut h, "Download", &before);
-    wait_for(&mut h, "download done", |h| has_exact(h, "Download done"));
-    assert!(has(&h, "Program download to node 1 done"), "status\nUI:\n{}", dump(&h));
+    // The status line follows the wizard text by a frame: wait for both.
+    wait_for(&mut h, "download done", |h| has_exact(h, "Download done") && has(h, "Program download to node 1 done"));
     assert!(has(&h, "2000 / 2000 bytes"), "progress\nUI:\n{}", dump(&h));
     let crc = crate::progdl::crc32(&data);
     assert!(has(&h, &format!("0x{crc:08X} (CRC-32")), "new identification\nUI:\n{}", dump(&h));

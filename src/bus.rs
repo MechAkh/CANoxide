@@ -13,8 +13,10 @@
 //! then signal polls. One request at a time.
 
 use crate::busload::{BusLoad, BusLoadStats};
+use crate::can::kvaser::KvaserAdapter;
 use crate::can::pcan::PcanAdapter;
 use crate::can::sim::{SimAdapter, SimNode};
+use crate::can::slcan::{self, SlcanAdapter, SlcanTarget};
 use crate::can::sontheim::SontheimAdapter;
 use crate::can::{Bitrate, CanAdapter, CanFrame, ChannelInfo, Dir};
 use crate::canopen::decode::{DecodeContext, Decoded, SdoBlockTracker};
@@ -44,6 +46,10 @@ pub enum AdapterChoice {
     Peak,
     /// ifm CANfox (Sontheim MT-API); the channel is the net number.
     Canfox,
+    /// Kvaser CANlib; the channel is the CANlib channel number.
+    Kvaser,
+    /// SLCAN on a COM port or over TCP (the channel is not used).
+    Slcan(SlcanTarget),
     Sim { node_id: u8, od: Option<Arc<ObjectDictionary>> },
     /// Play a log file back (listen-only, never transmits). `tail` is the
     /// trace capacity (the newest decoded frames sent after a seek); `ctx`
@@ -470,6 +476,13 @@ impl Worker {
                     AdapterKind::Peak => PcanAdapter::load().and_then(|mut a| a.list_channels()).map_err(|e| e.to_string()),
                     AdapterKind::Replay => Ok(Vec::new()),
                     AdapterKind::Canfox => SontheimAdapter::load().and_then(|mut a| a.list_channels()).map_err(|e| e.to_string()),
+                    AdapterKind::Kvaser => KvaserAdapter::load().and_then(|mut a| a.list_channels()).map_err(|e| e.to_string()),
+                    // The COM ports of the registry; no port is opened.
+                    AdapterKind::SlcanSerial => Ok(slcan::list_com_ports()
+                        .into_iter()
+                        .map(|p| ChannelInfo { handle: slcan::com_number(&p).unwrap_or(0), name: p, available: true })
+                        .collect()),
+                    AdapterKind::SlcanTcp => Ok(Vec::new()),
                 };
                 self.emit(BusEvent::Channels { kind, result });
             }
@@ -494,6 +507,14 @@ impl Worker {
                             return;
                         }
                     },
+                    AdapterChoice::Kvaser => match KvaserAdapter::load() {
+                        Ok(a) => Box::new(a),
+                        Err(e) => {
+                            self.emit(BusEvent::Error(format!("Kvaser: {e}")));
+                            return;
+                        }
+                    },
+                    AdapterChoice::Slcan(target) => Box::new(SlcanAdapter::new(target)),
                     AdapterChoice::Sim { node_id, od } => {
                         let node = match od {
                             Some(od) => SimNode::new(node_id, od),

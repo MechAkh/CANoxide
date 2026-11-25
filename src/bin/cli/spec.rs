@@ -22,10 +22,10 @@ pub struct Spec {
 }
 
 pub const GLOBAL: &[Opt] = &[
-    ("adapter", Some("sim|pcan|canfox|replay"), "Adapter. Default sim (the built-in simulator; nothing touches hardware). pcan is a PEAK PCAN-USB, canfox an ifm CANfox (Sontheim driver). replay plays back a log file (--file) and sends nothing."),
+    ("adapter", Some("sim|pcan|canfox|kvaser|slcan|replay"), "Adapter. Default sim (the built-in simulator; nothing touches hardware). pcan is a PEAK PCAN-USB, canfox an ifm CANfox (Sontheim driver), kvaser a Kvaser interface (CANlib), slcan an SLCAN device on a COM port or over TCP. replay plays back a log file (--file) and sends nothing."),
     ("file", Some("log"), "Log file of --adapter replay: a trace CSV written by CANoxide, a candump log, a PEAK .trc (file version 1.0 to 3.0) or a Vector .asc file. The format is found from the content."),
     ("speed", Some("max|factor"), "Replay speed: max (as fast as possible, the default) or a factor of the log time (1 = real time)."),
-    ("channel", Some("usb1..usb8 | net"), "PCAN-USB channel (default usb1); with --adapter canfox the net number (default 105)."),
+    ("channel", Some("usb1..usb8 | net | n | COM<n> | host:port"), "PCAN-USB channel (default usb1); with --adapter canfox the net number (default 105); with --adapter kvaser the CANlib channel number (default 0); with --adapter slcan a COM port (COM5) or host:port (192.168.1.10:2001, TCP), no default."),
     ("bitrate", Some("10k..1M"), "Bit rate: 10k 20k 50k 125k 250k 500k 800k 1M. Default 250k."),
     ("node", Some("1..127"), "Node-ID of the device. Default 1. With the simulator, also the ID of the simulated node."),
     ("eds", Some("file"), "EDS/DCF: names and types in the output, and the dictionary of the simulated node."),
@@ -71,7 +71,7 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         name: "adapters",
         args: "",
-        summary: "The adapters. With --adapter pcan also the PCAN channels, with --adapter canfox the CANfox nets (the driver is asked; no channel is opened).",
+        summary: "The adapters. With --adapter pcan also the PCAN channels, with --adapter canfox the CANfox nets, with --adapter kvaser the Kvaser channels (the driver is asked; no channel is opened), with --adapter slcan the COM ports (no port is opened).",
         sends: false,
         bus: false,
         options: &[],
@@ -568,7 +568,7 @@ pub fn schema(name: &str, version: &str) -> Value {
         "version": version,
         "description": "Command-line CANopen master for scripts and AI agents. Every result is one JSON object (monitor, watch and shell write JSON Lines).",
         "safety": [
-            "The default adapter is the simulator: nothing touches hardware unless --adapter pcan or --adapter canfox is given.",
+            "The default adapter is the simulator: nothing touches hardware unless --adapter pcan, canfox, kvaser or slcan is given.",
             "Nothing is sent on the bus unless the command transmits (\"sends\": true below).",
             "With --listen-only every command with \"sends\": true fails with exit code 2 before the adapter is opened.",
             "monitor and watch are bounded: --duration or --count is required."
