@@ -31,7 +31,7 @@ Use `-ExeDir <folder>` to package exes from another folder. To call the
 compiler directly:
 
 ```powershell
-ISCC.exe /DAppVersion=0.5.2 [/DExeDir=..\target\release] installer\CANoxide.iss
+ISCC.exe /DAppVersion=0.6.0 [/DExeDir=..\target\release] installer\CANoxide.iss
 ```
 
 `AppVersion` is required; `ExeDir` is relative to the script and defaults to
@@ -80,11 +80,11 @@ always keeps the data.
 
 ```powershell
 # Per user, into a chosen folder, with canoxide-cli on PATH:
-CANoxide-0.5.2-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /NORESTART `
+CANoxide-0.6.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /NORESTART `
     /DIR="D:\Tools\CANoxide" /TASKS="addtopath" /LOG="install.log"
 
 # All users (run from an elevated prompt):
-CANoxide-0.5.2-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /ALLUSERS /TASKS="addtopath,desktopicon"
+CANoxide-0.6.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /ALLUSERS /TASKS="addtopath,desktopicon"
 
 # Silent uninstall (keeps %APPDATA%\CANoxide):
 "<install folder>\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART

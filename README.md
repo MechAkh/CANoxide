@@ -79,12 +79,12 @@ first start ("More info" then "Run anyway").
 ## Comparison with CANopen Magic Professional
 
 CANopen Magic is the established commercial tool in this field. The table
-compares the features of CANoxide 0.5 with those of CANopen Magic
+compares the features of CANoxide 0.6 with those of CANopen Magic
 Professional, taken from the vendor's public product pages in November
 2026. Check the vendor's pages for the current and complete list.
 CANoxide is younger and has had far less use on real networks.
 
-| Feature | CANopen Magic Pro | CANoxide 0.5 |
+| Feature | CANopen Magic Pro | CANoxide 0.6 |
 |---|---|---|
 | Price and licence | Commercial licence | Free, MIT, open source |
 | EDS / DCF import, object dictionary browser | Yes | Yes |

@@ -1,4 +1,4 @@
-THIRD-PARTY NOTICES FOR CANoxide 0.5.2
+THIRD-PARTY NOTICES FOR CANoxide 0.6.0
 ======================================
 
 CANoxide.exe and canoxide-cli.exe contain code from the Rust crates that
