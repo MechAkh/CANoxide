@@ -379,7 +379,7 @@ pub(crate) fn text_width(ui: &egui::Ui, text: &str, style: TextStyle) -> f32 {
 /// of the current one. Its width is measured as egui lays it out: the
 /// selected text with the icon, at least `width` (default
 /// `Spacing::combo_width`), the button padding, then the label.
-pub(crate) fn toolbar_combo<R>(ui: &mut egui::Ui, salt: impl std::hash::Hash, label: Option<&str>, selected: &str, width: Option<f32>, menu: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
+pub(crate) fn toolbar_combo<R>(ui: &mut egui::Ui, key: impl std::hash::Hash, label: Option<&str>, selected: &str, width: Option<f32>, menu: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<Option<R>> {
     let s = ui.spacing();
     let (pad, icon, gap, min) = (s.button_padding.x, s.icon_spacing + s.icon_width, s.item_spacing.x, width.unwrap_or(s.combo_width));
     let mut w = (text_width(ui, selected, TextStyle::Button) + icon).max(min - 2.0 * pad) + 2.0 * pad;
@@ -388,8 +388,8 @@ pub(crate) fn toolbar_combo<R>(ui: &mut egui::Ui, salt: impl std::hash::Hash, la
     }
     wrap_for(ui, w);
     let mut c = match label {
-        Some(l) => egui::ComboBox::new(salt, l),
-        None => egui::ComboBox::from_id_salt(salt),
+        Some(l) => egui::ComboBox::new(key, l),
+        None => egui::ComboBox::from_id_salt(key),
     }
     .selected_text(selected)
     .wrap_mode(egui::TextWrapMode::Extend);
@@ -404,9 +404,9 @@ pub(crate) fn toolbar_combo<R>(ui: &mut egui::Ui, salt: impl std::hash::Hash, la
 /// the rest of the current one. Their width is the one measured in the
 /// last pass: when it is new or has changed, egui runs the pass again
 /// (`request_discard`), so that no shown frame has the group at a wrong
-/// place. `salt` names the group; it must be unique in the window.
-pub(crate) fn toolbar_group<R>(ui: &mut egui::Ui, salt: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let id = egui::Id::new(("toolbar_group", salt));
+/// place. `key` names the group; it must be unique in the window.
+pub(crate) fn toolbar_group<R>(ui: &mut egui::Ui, key: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let id = egui::Id::new(("toolbar_group", key));
     let last: Option<f32> = ui.ctx().data(|d| d.get_temp(id));
     wrap_for(ui, last.unwrap_or(0.0));
     let r = ui.horizontal(add_contents);
